@@ -8,7 +8,10 @@ authors = [
     { name = "Rob Cox" }
 ]
 dependencies = [
+    "cryptography>=46.0.5",
     # Add your production dependencies here
+    "httpx>=0.28.1",
+    "python-dotenv>=1.2.1",
 ]
 
 [project.optional-dependencies]
