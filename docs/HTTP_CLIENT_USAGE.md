@@ -157,46 +157,7 @@ finally:
 
 ## Configuration
 
-### Using YAML Configuration
-
-Set up your `config/settings.yaml`:
-
-```yaml
-revolut_x:
-  api_key: ${REVOLUT_X_API_KEY}
-  private_key_path: ${REVOLUT_X_PRIVATE_KEY_PATH}
-  base_url: ${REVOLUT_X_BASE_URL:https://api.revolut.com/api/1.0}
-```
-
-Then use `from_config()`:
-
-```python
-# Automatically loads from config
-client = RevolutXClient.from_config()
-```
-
-### Using Environment Variables
-
-Set in `.env`:
-
-```bash
-REVOLUT_X_API_KEY=your_api_key_here
-REVOLUT_X_PRIVATE_KEY_PATH=/path/to/private_key.pem
-REVOLUT_X_BASE_URL=https://api.revolut.com/api/1.0
-```
-
-## Authentication
-
-The client automatically handles Ed25519 signature authentication:
-
-1. **Timestamp**: Generated automatically (Unix timestamp in milliseconds)
-2. **Signature**: Created from: `timestamp + method + path + query + body`
-3. **Headers**: Automatically added to every request:
-   - `X-Revx-API-Key`: Your API key
-   - `X-Revx-Timestamp`: Request timestamp
-   - `X-Revx-Signature`: Ed25519 signature
-
-You don't need to worry about these details - the client handles everything!
+See [GETTING_STARTED.md](GETTING_STARTED.md) for configuration and authentication setup. The client automatically handles Ed25519 signature authentication on every request.
 
 ## Advanced Usage
 
@@ -319,13 +280,3 @@ async def test_my_function():
 4. **Logging**: Add logging for debugging and monitoring
 5. **Configuration**: Use config files instead of hardcoding credentials
 6. **Testing**: Mock the client in tests to avoid real API calls
-
-## Next Steps
-
-- See [GETTING_STARTED.md](GETTING_STARTED.md) for initial setup
-- See [ARCHITECTURE.md](ARCHITECTURE.md) for project structure
-- Refer to [Revolut X API docs](https://developer.revolut.com/docs/x-api/revolut-x-crypto-exchange-rest-api) for endpoint details
-
----
-
-**Last Updated**: February 17, 2026

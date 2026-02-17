@@ -85,42 +85,9 @@ signature = signer.generate_signature(
 print(f"Signature generated successfully: {signature[:32]}...")
 ```
 
-## Next Steps
+## Using the HTTP Client
 
-### Implement API Client
-
-The next step is to create a full HTTP client that:
-
-1. Makes authenticated requests to the Revolut X API
-2. Handles rate limiting and retries
-3. Provides methods for common operations:
-   - Get account balance
-   - Fetch market data
-   - Place orders
-   - Get trade history
-
-### Example Usage (Coming Soon)
-
-```python
-from trading_tools.clients.revolut_x import RevolutXClient
-
-# Initialize client
-client = RevolutXClient()
-
-# Get balance
-balance = await client.get_balance()
-
-# Get market data
-btc_price = await client.get_ticker("BTC-USD")
-
-# Place an order
-order = await client.create_order(
-    symbol="BTC-USD",
-    side="buy",
-    quantity="0.001",
-    order_type="market"
-)
-```
+Once configured, see **[HTTP Client Usage](HTTP_CLIENT_USAGE.md)** for the complete API reference including all methods, error handling, and examples.
 
 ## API Documentation
 

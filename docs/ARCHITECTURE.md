@@ -73,55 +73,34 @@ Data providers, storage, and access:
 **Example**: PostgreSQL repository, Redis cache
 
 ### `/config` - Configuration Files
-YAML configuration files with environment-based overrides:
+YAML configuration files with environment variable substitution (`${VAR_NAME:default}`):
 - `settings.yaml` - Base configuration (committed)
 - `settings.local.yaml` - Local overrides (gitignored)
-- Environment variable substitution: `${VAR_NAME:default}`
+- Dot-notation access: `config.get("revolut_x.api_key")`
 
-## Configuration Management
-
-### YAML-Based Configuration
-Configuration uses YAML files with environment variable substitution:
-
-```yaml
-# settings.yaml
-revolut_x:
-  api_key: ${REVOLUT_X_API_KEY}
-  base_url: ${REVOLUT_X_BASE_URL:https://api.revolut.com/api/1.0}
-
-environment: ${ENVIRONMENT:sandbox}
-```
-
-### Configuration Loading
-```python
-from trading_tools.core.config import config
-
-# Get configuration values
-api_key = config.get("revolut_x.api_key")
-environment = config.get("environment", "sandbox")
-
-# Get typed configuration
-revolut_config = config.get_revolut_x_config()
-```
-
-### Local Overrides
-Create `settings.local.yaml` for local development:
-```yaml
-revolut_x:
-  api_key: your_local_key
-environment: development
-```
+See [GETTING_STARTED.md](GETTING_STARTED.md) for full configuration and authentication setup.
 
 ## Design Principles
 
-### 1. Separation of Concerns
-Each module has a single, well-defined responsibility:
+### 1. DRY (Don't Repeat Yourself)
+- Extract shared logic into core utilities
+- Use configuration files instead of duplicating values
+- Single source of truth for all business rules and constants
+
+### 2. SOLID Principles
+- **Single Responsibility**: Each module/class has one well-defined purpose
+- **Open/Closed**: Extend behaviour through new modules, not modifying existing ones
+- **Liskov Substitution**: Subtypes must be substitutable for their base types
+- **Interface Segregation**: Small, focused interfaces over large general-purpose ones
+- **Dependency Inversion**: Depend on abstractions, not concrete implementations
+
+### 3. Separation of Concerns
 - **apps**: What to run
 - **clients**: How to communicate with external services
 - **core**: Shared functionality
 - **data**: How to store and retrieve data
 
-### 2. Dependency Direction
+### 4. Dependency Direction
 ```
 apps → clients → core
 apps → data → core
@@ -130,20 +109,15 @@ data → clients
 
 Core should never depend on apps, clients, or data.
 
-### 3. Configuration Over Code
+### 5. Configuration Over Code
 - Use YAML configuration files
 - Environment-specific overrides
 - Avoid hardcoding values
 
-### 4. Test-Driven Development
+### 6. Test-Driven Development
 - Write tests first (Red-Green-Refactor)
 - Maintain 80%+ coverage
 - Test at appropriate levels (unit, integration)
-
-### 5. Modularity
-- Small, focused modules
-- Clear interfaces
-- Easy to test in isolation
 
 ## Application Entry Points
 
@@ -246,7 +220,3 @@ Design supports scaling:
 - Stateless applications
 - External data storage
 - Message queues for async processing
-
----
-
-**Last Updated**: February 17, 2026
