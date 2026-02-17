@@ -5,45 +5,55 @@
     "language": "python",
     "pythonVersion": "3.14"
   },
+  "tooling": {
+    "testFramework": "pytest",
+    "linter": "ruff",
+    "formatter": "ruff",
+    "typeChecker": "mypy",
+    "packageManager": "uv",
+    "minCoverage": 80,
+    "tdd": true
+  },
   "commands": {
     "test": "uv run pytest",
+    "test:verbose": "uv run pytest -v",
     "test:coverage": "uv run pytest --cov=src --cov-report=html",
+    "test:watch": "uv run pytest-watch",
     "lint": "uv run ruff check .",
     "lint:fix": "uv run ruff check --fix .",
     "format": "uv run ruff format .",
+    "format:check": "uv run ruff format --check .",
     "typecheck": "uv run mypy src tests",
+    "check:all": "uv run ruff check . && uv run ruff format --check . && uv run mypy src tests",
     "pre-commit": "uv run pre-commit run --all-files",
     "install": "uv sync --all-extras",
-    "update": "uv sync --upgrade"
+    "update": "uv sync --upgrade",
+    "clean": "rm -rf .pytest_cache .ruff_cache .mypy_cache htmlcov .coverage"
   },
   "permissions": {
     "allow": [
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git push:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git remote:*)",
       "Bash(gh run list:*)",
       "Bash(gh run view:*)",
-      "Bash(export PATH=\"$HOME/.local/bin:$PATH\")",
+      "Bash(gh auth status:*)",
+      "Bash(export PATH=*)",
       "Bash(uv add:*)",
+      "Bash(uv sync:*)",
       "Bash(uv run pytest:*)",
-      "Bash(uv run mypy:*)"
+      "Bash(uv run ruff:*)",
+      "Bash(uv run mypy:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(mkdir:*)",
+      "Bash(rm:*)",
+      "Bash(which:*)"
     ]
-  },
-  "autoApprovePatterns": [
-    "^uv run pytest",
-    "^uv run ruff check",
-    "^uv run ruff format",
-    "^uv run mypy",
-    "^uv sync",
-    "^git status$",
-    "^git diff",
-    "^git log"
-  ],
-  "testFramework": "pytest",
-  "linter": "ruff",
-  "formatter": "ruff",
-  "typeChecker": "mypy",
-  "packageManager": "uv",
-  "minCoverage": 80,
-  "tdd": true
+  }
 }
