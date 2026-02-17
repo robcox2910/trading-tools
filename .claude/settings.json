@@ -16,6 +16,19 @@
     "install": "uv sync --all-extras",
     "update": "uv sync --upgrade"
   },
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(export PATH=\"$HOME/.local/bin:$PATH\")",
+      "Bash(uv add:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run mypy:*)"
+    ]
+  },
   "autoApprovePatterns": [
     "^uv run pytest",
     "^uv run ruff check",
