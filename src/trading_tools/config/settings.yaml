@@ -1,0 +1,23 @@
+# Trading Tools Configuration
+
+# Revolut X API Settings
+revolut_x:
+  # Set these in environment variables or override in settings.local.yaml
+  api_key: ${REVOLUT_X_API_KEY}
+  private_key_path: ${REVOLUT_X_PRIVATE_KEY_PATH}
+  base_url: ${REVOLUT_X_BASE_URL:https://api.revolut.com/api/1.0}
+
+# Environment Configuration
+environment: ${ENVIRONMENT:sandbox}
+
+# Application Settings
+app:
+  name: trading-tools
+  version: 0.1.0
+  log_level: ${LOG_LEVEL:INFO}
+
+# Database Settings (future use)
+database:
+  host: ${DB_HOST:localhost}
+  port: ${DB_PORT:5432}
+  name: ${DB_NAME:trading_tools}

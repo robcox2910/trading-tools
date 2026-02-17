@@ -5,7 +5,11 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(gh run list:*)",
-      "Bash(gh run view:*)"
+      "Bash(gh run view:*)",
+      "Bash(export PATH=\"$HOME/.local/bin:$PATH\")",
+      "Bash(uv add:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run mypy:*)"
     ]
   }
 }

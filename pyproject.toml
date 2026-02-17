@@ -12,6 +12,7 @@ dependencies = [
     # Add your production dependencies here
     "httpx>=0.28.1",
     "python-dotenv>=1.2.1",
+    "pyyaml>=6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -104,3 +105,8 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+[dependency-groups]
+dev = [
+    "types-pyyaml>=6.0.12.20250915",
+]

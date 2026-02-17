@@ -87,19 +87,26 @@ python -m trading_tools
 
 ```
 trading-tools/
-├── src/
-│   └── trading_tools/          # Main package
-│       └── __init__.py
-├── tests/                      # Test suite
-│   └── __init__.py
-├── .github/
-│   └── workflows/
-│       └── ci.yml             # GitHub Actions CI/CD
-├── .pre-commit-config.yaml    # Pre-commit hooks
-├── pyproject.toml             # Project configuration
-├── .python-version            # Python version pinning
+├── src/trading_tools/
+│   ├── apps/                  # Runnable applications (entry: run.py)
+│   ├── clients/               # External API clients
+│   │   └── revolut_x/        # Revolut X API client
+│   ├── core/                 # Core utilities and shared code
+│   │   └── config.py        # YAML configuration loader
+│   ├── data/                 # Data providers and storage
+│   └── config/               # Configuration files (YAML)
+│       └── settings.yaml
+├── tests/                     # Test suite (mirrors src structure)
+├── docs/                      # Documentation
+│   ├── ARCHITECTURE.md       # Architecture and design principles
+│   └── GETTING_STARTED.md   # Setup guide
+├── .github/workflows/        # CI/CD pipelines
+├── .pre-commit-config.yaml  # Pre-commit hooks
+├── pyproject.toml           # Project configuration
 └── README.md
 ```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
 
 ## Coverage Requirements
 

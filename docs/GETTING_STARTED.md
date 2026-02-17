@@ -61,19 +61,18 @@ uv sync --all-extras
 Create a simple test script to verify your setup:
 
 ```python
-from trading_tools.config import config
-from trading_tools.revolut_x.auth.signer import Ed25519Signer
+from trading_tools.core.config import config
+from trading_tools.clients.revolut_x.auth.signer import Ed25519Signer
+import time
 
 # Load your private key
-private_key = Ed25519Signer.load_private_key_from_file(
-    config.REVOLUT_X_PRIVATE_KEY_PATH
-)
+private_key_path = config.get("revolut_x.private_key_path")
+private_key = Ed25519Signer.load_private_key_from_file(private_key_path)
 
 # Create signer
 signer = Ed25519Signer(private_key)
 
 # Generate a test signature
-import time
 timestamp = str(int(time.time() * 1000))
 signature = signer.generate_signature(
     timestamp=timestamp,
@@ -103,7 +102,7 @@ The next step is to create a full HTTP client that:
 ### Example Usage (Coming Soon)
 
 ```python
-from trading_tools.revolut_x import RevolutXClient
+from trading_tools.clients.revolut_x import RevolutXClient
 
 # Initialize client
 client = RevolutXClient()

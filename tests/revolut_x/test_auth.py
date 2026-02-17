@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from trading_tools.revolut_x.auth.signer import Ed25519Signer
+from trading_tools.clients.revolut_x.auth.signer import Ed25519Signer
 
 
 class TestEd25519Signer:

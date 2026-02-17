@@ -130,21 +130,29 @@ git push
 ### Project Structure
 ```
 trading-tools/
-├── src/trading_tools/          # Source code
-│   ├── config.py              # Configuration
-│   └── revolut_x/             # Revolut X integration
-│       ├── auth/              # Authentication
-│       ├── models/            # Data models
-│       └── endpoints/         # API endpoints
-├── tests/                     # Test suite
+├── src/trading_tools/
+│   ├── apps/                  # Runnable applications (entry: run.py)
+│   ├── clients/               # External API clients
+│   │   └── revolut_x/        # Revolut X API client
+│   │       ├── auth/         # Authentication
+│   │       ├── models/       # Data models
+│   │       └── endpoints/    # API endpoints
+│   ├── core/                 # Core utilities and shared code
+│   │   └── config.py        # YAML configuration loader
+│   ├── data/                 # Data providers and storage
+│   └── config/               # Configuration files (YAML)
+│       └── settings.yaml
+├── tests/                     # Test suite (mirrors src)
 ├── docs/                      # Documentation
+│   └── ARCHITECTURE.md       # Architecture guide
 ├── .github/workflows/         # CI/CD
 └── .claude/                   # Claude Code settings
 ```
 
 ## 📚 Documentation
 
-- **Getting Started**: `docs/GETTING_STARTED.md`
+- **Architecture**: `docs/ARCHITECTURE.md` - Project structure and design principles
+- **Getting Started**: `docs/GETTING_STARTED.md` - Setup and authentication guide
 - **API Documentation**: https://developer.revolut.com/docs/x-api/revolut-x-crypto-exchange-rest-api
 - **Project README**: `README.md`
 - **Claude Settings**: `.claude/README.md`

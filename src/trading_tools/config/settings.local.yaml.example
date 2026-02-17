@@ -1,0 +1,12 @@
+# Local Settings Override Example
+# Copy this file to settings.local.yaml and customize
+
+revolut_x:
+  api_key: your_api_key_here
+  private_key_path: /path/to/your/private_key.pem
+  base_url: https://sandbox.revolut.com/api/1.0
+
+environment: development
+
+app:
+  log_level: DEBUG
