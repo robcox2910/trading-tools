@@ -1,0 +1,36 @@
+{
+  "project": {
+    "name": "trading-tools",
+    "description": "Cryptocurrency trading tools using Revolut X API",
+    "language": "python",
+    "pythonVersion": "3.14"
+  },
+  "commands": {
+    "test": "uv run pytest",
+    "test:coverage": "uv run pytest --cov=src --cov-report=html",
+    "lint": "uv run ruff check .",
+    "lint:fix": "uv run ruff check --fix .",
+    "format": "uv run ruff format .",
+    "typecheck": "uv run mypy src tests",
+    "pre-commit": "uv run pre-commit run --all-files",
+    "install": "uv sync --all-extras",
+    "update": "uv sync --upgrade"
+  },
+  "autoApprovePatterns": [
+    "^uv run pytest",
+    "^uv run ruff check",
+    "^uv run ruff format",
+    "^uv run mypy",
+    "^uv sync",
+    "^git status$",
+    "^git diff",
+    "^git log"
+  ],
+  "testFramework": "pytest",
+  "linter": "ruff",
+  "formatter": "ruff",
+  "typeChecker": "mypy",
+  "packageManager": "uv",
+  "minCoverage": 80,
+  "tdd": true
+}
