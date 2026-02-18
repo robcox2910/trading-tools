@@ -132,17 +132,26 @@ All applications follow the same pattern:
 # src/trading_tools/apps/my_app/run.py
 """My Application entry point."""
 
-import argparse
+from typing import Annotated
+
+import typer
+
 from trading_tools.core.config import config
 
-def main() -> None:
-    """Run the application."""
-    parser = argparse.ArgumentParser(description="My Application")
-    parser.add_argument("--verbose", action="store_true")
-    args = parser.parse_args()
+app = typer.Typer(help="My Application")
 
-    # Application logic here
-    print(f"Running in {config.get('environment')} mode")
+
+@app.command()
+def run(
+    verbose: Annotated[bool, typer.Option(help="Enable verbose output")] = False,
+) -> None:
+    """Run the application."""
+    print(f"Running in {config.get('environment')} mode (verbose={verbose})")
+
+
+def main() -> None:
+    app()
+
 
 if __name__ == "__main__":
     main()

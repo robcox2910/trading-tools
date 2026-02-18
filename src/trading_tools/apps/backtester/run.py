@@ -1,10 +1,11 @@
 """CLI entry point for the backtester."""
 
-import argparse
 import asyncio
-import sys
 from decimal import Decimal
 from pathlib import Path
+from typing import Annotated
+
+import typer
 
 from trading_tools.apps.backtester.engine import BacktestEngine
 from trading_tools.apps.backtester.strategies.sma_crossover import (
@@ -18,29 +19,23 @@ _STRATEGIES: dict[str, type[SmaCrossoverStrategy]] = {
     "sma_crossover": SmaCrossoverStrategy,
 }
 
-
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a backtest")
-    parser.add_argument("--symbol", default="BTC-USD", help="Trading pair symbol")
-    parser.add_argument("--interval", default=None, help="Candle interval (1m,5m,15m,1h,4h,1d,1w)")
-    parser.add_argument("--csv", type=Path, help="Path to CSV candle data file")
-    parser.add_argument("--capital", type=Decimal, default=None, help="Initial capital")
-    parser.add_argument("--strategy", default="sma_crossover", choices=list(_STRATEGIES.keys()))
-    parser.add_argument("--short-period", type=int, default=10, help="SMA short period")
-    parser.add_argument("--long-period", type=int, default=20, help="SMA long period")
-    parser.add_argument("--start", type=int, default=0, help="Start timestamp")
-    parser.add_argument("--end", type=int, default=2**53, help="End timestamp")
-    return parser.parse_args(argv)
+app = typer.Typer(help="Run a backtest")
 
 
-def _resolve_interval(args: argparse.Namespace) -> Interval:
-    raw = args.interval or config.get("backtester.default_interval", "1h")
-    return Interval(raw)
+def _validate_strategy(value: str) -> str:
+    if value not in _STRATEGIES:
+        raise typer.BadParameter(f"Must be one of: {', '.join(_STRATEGIES)}")
+    return value
 
 
-def _resolve_capital(args: argparse.Namespace) -> Decimal:
-    if args.capital is not None:
-        return Decimal(str(args.capital))
+def _resolve_interval(raw: str | None) -> Interval:
+    value = raw or config.get("backtester.default_interval", "1h")
+    return Interval(str(value))
+
+
+def _resolve_capital(capital: float | None) -> Decimal:
+    if capital is not None:
+        return Decimal(str(capital))
     raw: object = config.get("backtester.initial_capital", 10000)
     return Decimal(str(raw))
 
@@ -60,31 +55,68 @@ def _print_result(result: BacktestResult) -> None:
     print(f"{'=' * 50}\n")
 
 
-async def _run(argv: list[str] | None = None) -> BacktestResult:
-    args = _parse_args(argv)
+@app.command()
+def run(
+    csv: Annotated[Path, typer.Option(..., help="Path to CSV candle data file")],
+    symbol: Annotated[str, typer.Option(help="Trading pair symbol")] = "BTC-USD",
+    interval: Annotated[
+        str | None, typer.Option(help="Candle interval (1m,5m,15m,1h,4h,1d,1w)")
+    ] = None,
+    capital: Annotated[float | None, typer.Option(help="Initial capital")] = None,
+    strategy: Annotated[
+        str, typer.Option(help="Strategy name", callback=_validate_strategy)
+    ] = "sma_crossover",
+    short_period: Annotated[int, typer.Option(help="SMA short period")] = 10,
+    long_period: Annotated[int, typer.Option(help="SMA long period")] = 20,
+    start: Annotated[int, typer.Option(help="Start timestamp")] = 0,
+    end: Annotated[int, typer.Option(help="End timestamp")] = 2**53,
+) -> None:
+    """Run a backtest against historical candle data."""
+    asyncio.run(
+        _run(
+            csv=csv,
+            symbol=symbol,
+            interval=interval,
+            capital=capital,
+            strategy=strategy,
+            short_period=short_period,
+            long_period=long_period,
+            start=start,
+            end=end,
+        )
+    )
 
-    if args.csv is None:
-        print("Error: --csv is required (Revolut X live provider coming soon)")
-        sys.exit(1)
 
-    provider = CsvCandleProvider(args.csv)
-    strategy = _STRATEGIES[args.strategy](args.short_period, args.long_period)
-    interval = _resolve_interval(args)
-    capital = _resolve_capital(args)
+async def _run(
+    *,
+    csv: Path,
+    symbol: str,
+    interval: str | None,
+    capital: float | None,
+    strategy: str,
+    short_period: int,
+    long_period: int,
+    start: int,
+    end: int,
+) -> BacktestResult:
+    provider = CsvCandleProvider(csv)
+    strat = _STRATEGIES[strategy](short_period, long_period)
+    resolved_interval = _resolve_interval(interval)
+    resolved_capital = _resolve_capital(capital)
 
     engine = BacktestEngine(
         provider=provider,
-        strategy=strategy,
-        initial_capital=capital,
+        strategy=strat,
+        initial_capital=resolved_capital,
     )
 
-    result = await engine.run(args.symbol, interval, args.start, args.end)
+    result = await engine.run(symbol, resolved_interval, start, end)
     _print_result(result)
     return result
 
 
-def main(argv: list[str] | None = None) -> None:
-    asyncio.run(_run(argv))
+def main() -> None:
+    app()
 
 
 if __name__ == "__main__":
