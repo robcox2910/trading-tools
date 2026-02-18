@@ -1,7 +1,7 @@
 [project]
 name = "trading-tools"
 version = "0.1.0"
-description = "Trading tools for analyzing and trading cryptocurrencies via Revolt API"
+description = "Trading tools for analyzing and trading cryptocurrencies via Revolut X API"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [
