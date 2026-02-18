@@ -16,6 +16,16 @@ app:
   version: 0.1.0
   log_level: ${LOG_LEVEL:INFO}
 
+# Backtester Settings
+backtester:
+  initial_capital: 10000
+  default_interval: "1h"
+  symbols:
+    - BTC-USD
+    - ETH-USD
+    - XRP-USD
+    - SOL-USD
+
 # Database Settings (future use)
 database:
   host: ${DB_HOST:localhost}

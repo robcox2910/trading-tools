@@ -72,11 +72,15 @@ revolut_x:
 """)
 
         with patch("trading_tools.clients.revolut_x.client.config") as mock_config:
-            mock_config.get.side_effect = lambda k, default=None: {
-                "revolut_x.api_key": "test_key_123",
-                "revolut_x.base_url": "https://test.revolut.com",
-                "revolut_x.private_key_path": str(key_file),
-            }.get(k, default)
+
+            def _fake_get(k: str, default: str | None = None) -> str | None:
+                return {
+                    "revolut_x.api_key": "test_key_123",
+                    "revolut_x.base_url": "https://test.revolut.com",
+                    "revolut_x.private_key_path": str(key_file),
+                }.get(k, default)
+
+            mock_config.get.side_effect = _fake_get
             mock_config.get_private_key.return_value = pem
 
             client = RevolutXClient.from_config()

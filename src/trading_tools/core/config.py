@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from dotenv import load_dotenv
@@ -39,7 +39,7 @@ class ConfigLoader:
         local_settings = self.config_dir / "settings.local.yaml"
         if local_settings.exists():
             with local_settings.open() as f:
-                local_config = yaml.safe_load(f) or {}
+                local_config = cast("dict[str, Any]", yaml.safe_load(f) or {})
                 self._deep_merge(self._config, local_config)
 
         # Substitute environment variables
@@ -54,7 +54,7 @@ class ConfigLoader:
         """
         for key, value in override.items():
             if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-                self._deep_merge(base[key], value)
+                self._deep_merge(base[key], cast("dict[str, Any]", value))
             else:
                 base[key] = value
 
@@ -70,9 +70,15 @@ class ConfigLoader:
             Configuration with environment variables substituted.
         """
         if isinstance(config, dict):
-            return {k: self._substitute_env_vars(v) for k, v in config.items()}
+            return {
+                k: self._substitute_env_vars(v)
+                for k, v in config.items()  # pyright: ignore[reportUnknownVariableType]
+            }
         if isinstance(config, list):
-            return [self._substitute_env_vars(item) for item in config]
+            return [
+                self._substitute_env_vars(item)
+                for item in config  # pyright: ignore[reportUnknownVariableType]
+            ]
         if isinstance(config, str) and config.startswith("${") and config.endswith("}"):
             # Extract variable name and default value
             var_expr = config[2:-1]  # Remove ${ and }
@@ -99,15 +105,15 @@ class ConfigLoader:
             Configuration value.
         """
         keys = key.split(".")
-        value: Any = self._config
+        current: Any = self._config
         for k in keys:
-            if isinstance(value, dict):
-                value = value.get(k)
-                if value is None:
+            if isinstance(current, dict):
+                current = cast("dict[str, Any]", current).get(k)
+                if current is None:
                     return default
             else:
                 return default
-        return value
+        return current  # pyright: ignore[reportReturnType]
 
     def get_revolut_x_config(self) -> dict[str, Any]:
         """Get Revolut X API configuration.
@@ -115,9 +121,9 @@ class ConfigLoader:
         Returns:
             Dictionary with Revolut X settings.
         """
-        result = self.get("revolut_x", {})
+        result: Any = self.get("revolut_x", {})
         if isinstance(result, dict):
-            return result
+            return cast("dict[str, Any]", result)
         return {}
 
     def get_private_key(self) -> bytes:
