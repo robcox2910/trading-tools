@@ -22,7 +22,7 @@ dev = [
     "pytest-asyncio>=0.25.2",
     "ruff>=0.9.3",
     "pre-commit>=4.0.1",
-    "mypy>=1.14.1",
+    "pyright>=1.1.400",
 ]
 
 [build-system]
@@ -96,16 +96,19 @@ precision = 2
 show_missing = true
 skip_covered = false
 
-# MyPy configuration
-[tool.mypy]
-python_version = "3.14"
-strict = true
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
+# Pyright configuration
+[tool.pyright]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+include = ["src", "tests"]
+venvPath = "."
+venv = ".venv"
+
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+reportPrivateUsage = false
 
 [dependency-groups]
 dev = [
     "pip-audit>=2.10.0",
-    "types-pyyaml>=6.0.12.20250915",
 ]
