@@ -58,5 +58,8 @@ Thumbs.db
 **/*.local.yaml
 **/*.local.json
 
+# Auto-generated version file (hatch-vcs)
+src/trading_tools/_version.py
+
 # Logs
 *.log
