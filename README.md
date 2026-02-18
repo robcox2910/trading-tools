@@ -37,10 +37,10 @@ uv run ruff check --fix .    # Auto-fix issues
 uv run ruff format .         # Format code
 
 # Type check
-uv run mypy src tests
+uv run pyright src tests
 
 # Run all checks
-uv run ruff check . && uv run ruff format --check . && uv run mypy src tests
+uv run ruff check . && uv run ruff format --check . && uv run pyright src tests
 
 # Install/add dependencies
 uv sync --all-extras
@@ -58,6 +58,8 @@ All code follows TDD (Red-Green-Refactor) and must adhere to DRY and SOLID princ
 - **[Getting Started](docs/GETTING_STARTED.md)** - Setup, authentication, and first API call
 - **[Architecture](docs/ARCHITECTURE.md)** - Project structure, design principles, and configuration
 - **[HTTP Client Usage](docs/HTTP_CLIENT_USAGE.md)** - Complete HTTP client API reference
+- **[Backtester](docs/BACKTESTER.md)** - CSV format, CLI flags, custom strategies, and metrics
+- **[Contributing](CONTRIBUTING.md)** - Developer workflow, code standards, and PR process
 
 ## License
 

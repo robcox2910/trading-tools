@@ -9,25 +9,34 @@ trading-tools/
 ├── src/trading_tools/
 │   ├── __init__.py
 │   ├── apps/                   # Runnable applications
-│   │   └── [app_name]/
-│   │       └── run.py         # Entry point for each application
+│   │   └── backtester/        # Candle-based backtesting engine
+│   │       ├── engine.py      # Backtest orchestration
+│   │       ├── portfolio.py   # Portfolio state tracking
+│   │       ├── metrics.py     # Performance metrics (Sharpe, drawdown, etc.)
+│   │       ├── strategies/    # Pluggable trading strategies
+│   │       │   └── sma_crossover.py
+│   │       └── run.py         # CLI entry point
 │   ├── clients/               # External API clients
 │   │   └── revolut_x/         # Revolut X API client
-│   │       ├── auth/          # Authentication logic
+│   │       ├── auth/          # Ed25519 authentication
 │   │       ├── models/        # Data models
 │   │       └── endpoints/     # API endpoint implementations
 │   ├── core/                  # Core utilities and shared code
-│   │   └── config.py         # Configuration loader
-│   ├── data/                  # Data providers and storage
-│   │   └── [provider_name]/  # Database, cache, etc.
+│   │   ├── config.py          # YAML configuration loader
+│   │   ├── models.py          # Candle, Signal, Trade, Position, BacktestResult
+│   │   └── protocols.py       # CandleProvider, TradingStrategy protocols
+│   ├── data/                  # Data providers
+│   │   └── providers/         # Candle data sources
+│   │       ├── csv_provider.py    # Offline CSV candle provider
+│   │       └── revolut_x.py       # Revolut X API candle provider
 │   └── config/                # Configuration files (YAML)
 │       ├── settings.yaml      # Base configuration
 │       └── settings.local.yaml # Local overrides (gitignored)
-├── tests/                     # Test suite
-│   ├── apps/                 # Application tests
-│   ├── clients/              # Client tests
-│   ├── core/                 # Core utility tests
-│   └── data/                 # Data provider tests
+├── tests/                     # Test suite (mirrors src structure)
+│   ├── apps/                  # Application tests
+│   ├── clients/               # Client tests
+│   ├── core/                  # Core model/protocol tests
+│   └── data/                  # Data provider tests
 ├── docs/                      # Documentation
 └── .github/workflows/         # CI/CD pipelines
 ```
@@ -53,24 +62,20 @@ Clients for external services and APIs. Each client includes:
 **Example**: `revolut_x/` - Revolut X API client
 
 ### `/core` - Core Utilities
-Shared utilities and common functionality:
-- Configuration management
-- Logging setup
-- Database connections
-- Generic utilities (date/time, calculations)
-- Base classes and interfaces
+Shared utilities, models, and protocols:
+- Configuration management (`config.py`)
+- Domain models: Candle, Signal, Trade, Position, BacktestResult (`models.py`)
+- Structural protocols: CandleProvider, TradingStrategy (`protocols.py`)
 
 **Example**: `config.py` - YAML-based configuration loader
 
 ### `/data` - Data Layer
-Data providers, storage, and access:
-- Database models and repositories
-- Cache implementations
-- Data transformation
-- Market data providers
-- Historical data storage
+Data providers and access:
+- Market data providers (candles, tickers)
+- Pluggable via the `CandleProvider` protocol
+- Async I/O for external data sources
 
-**Example**: PostgreSQL repository, Redis cache
+**Example**: `providers/csv_provider.py`, `providers/revolut_x.py`
 
 ### `/config` - Configuration Files
 YAML configuration files with environment variable substitution (`${VAR_NAME:default}`):
@@ -165,15 +170,14 @@ clients/
 
 ## Data Layer Structure
 
-Data providers follow this pattern:
+Data providers implement the `CandleProvider` protocol:
 
 ```
 data/
-└── provider_name/
-    ├── __init__.py       # Provider export
-    ├── repository.py     # Data access
-    ├── models.py         # Data models
-    └── migrations/       # Database migrations
+└── providers/
+    ├── __init__.py
+    ├── csv_provider.py       # Offline/testing provider
+    └── revolut_x.py          # Live API provider
 ```
 
 ## Testing Strategy
