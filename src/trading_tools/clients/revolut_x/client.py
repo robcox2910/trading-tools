@@ -17,6 +17,11 @@ from trading_tools.clients.revolut_x.exceptions import (
 )
 from trading_tools.core.config import config
 
+_HTTP_BAD_REQUEST = 400
+_HTTP_UNAUTHORIZED = 401
+_HTTP_NOT_FOUND = 404
+_HTTP_TOO_MANY_REQUESTS = 429
+
 
 class RevolutXClient:
     """HTTP client for Revolut X cryptocurrency API.
@@ -39,6 +44,7 @@ class RevolutXClient:
             private_key: Ed25519 private key for signing requests.
             base_url: Base URL for the API.
             timeout: Request timeout in seconds.
+
         """
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -55,6 +61,7 @@ class RevolutXClient:
 
         Raises:
             ValueError: If configuration is missing required values.
+
         """
         api_key = config.get("revolut_x.api_key")
         if not api_key:
@@ -90,6 +97,7 @@ class RevolutXClient:
 
         Returns:
             Dictionary of authentication headers.
+
         """
         timestamp = str(int(time.time() * 1000))
         signature = self.signer.generate_signature(
@@ -114,6 +122,7 @@ class RevolutXClient:
 
         Returns:
             Query string (without leading ?).
+
         """
         if not params:
             return ""
@@ -146,6 +155,7 @@ class RevolutXClient:
             RevolutXNotFoundError: For 404 errors.
             RevolutXRateLimitError: For 429 errors.
             RevolutXAPIError: For other API errors.
+
         """
         # Ensure path starts with /
         if not path.startswith("/"):
@@ -185,7 +195,7 @@ class RevolutXClient:
         )
 
         # Handle errors
-        if response.status_code >= 400:
+        if response.status_code >= _HTTP_BAD_REQUEST:
             self._handle_error(response)
 
         return response
@@ -202,6 +212,7 @@ class RevolutXClient:
             RevolutXNotFoundError: For 404 errors.
             RevolutXRateLimitError: For 429 errors.
             RevolutXAPIError: For other errors.
+
         """
         try:
             error_data = response.json()
@@ -209,13 +220,13 @@ class RevolutXClient:
         except Exception:
             message = f"HTTP {response.status_code}"
 
-        if response.status_code == 401:
+        if response.status_code == _HTTP_UNAUTHORIZED:
             raise RevolutXAuthenticationError(message, response.status_code)
-        if response.status_code == 400:
+        if response.status_code == _HTTP_BAD_REQUEST:
             raise RevolutXValidationError(message, response.status_code)
-        if response.status_code == 404:
+        if response.status_code == _HTTP_NOT_FOUND:
             raise RevolutXNotFoundError(message, response.status_code)
-        if response.status_code == 429:
+        if response.status_code == _HTTP_TOO_MANY_REQUESTS:
             raise RevolutXRateLimitError(message, response.status_code)
 
         raise RevolutXAPIError(message, response.status_code)
@@ -233,6 +244,7 @@ class RevolutXClient:
 
         Returns:
             Response JSON as dictionary.
+
         """
         response = await self._request("GET", path, params=params)
         result: dict[str, Any] = response.json()
@@ -253,6 +265,7 @@ class RevolutXClient:
 
         Returns:
             Response JSON as dictionary.
+
         """
         response = await self._request("POST", path, params=params, data=data)
         result: dict[str, Any] = response.json()
@@ -273,6 +286,7 @@ class RevolutXClient:
 
         Returns:
             Response JSON as dictionary.
+
         """
         response = await self._request("PUT", path, params=params, data=data)
         result: dict[str, Any] = response.json()
@@ -291,6 +305,7 @@ class RevolutXClient:
 
         Returns:
             Response JSON as dictionary.
+
         """
         response = await self._request("DELETE", path, params=params)
         result: dict[str, Any] = response.json()

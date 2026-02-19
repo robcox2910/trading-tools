@@ -35,9 +35,24 @@ uv run pre-commit install
 | **pyright** | Type checking (strict mode) | `pyproject.toml` |
 | **pytest** | Testing with 80%+ coverage required | `pyproject.toml` |
 
+### Docstrings
+
+All public modules, classes, methods, and functions **must** have a docstring. Use imperative mood (e.g., "Return the result." not "Returns the result."). This is enforced by ruff's `D` (pydocstyle) rules.
+
+### Commit Messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) format, enforced by commitizen:
+- `feat:` new features
+- `fix:` bug fixes
+- `refactor:` code restructuring
+- `test:` test additions/changes
+- `docs:` documentation updates
+- `ci:` CI/CD changes
+- `chore:` maintenance tasks
+
 ### Pre-commit Hooks
 
-Pre-commit runs ruff and pyright automatically on each commit. If a hook fails, fix the issue and commit again. To run hooks manually:
+Pre-commit runs ruff, ruff-format, pyright, pip-audit, and actionlint automatically on each commit. Commitizen validates commit messages on the `commit-msg` stage. If a hook fails, fix the issue and commit again. To run hooks manually:
 
 ```bash
 uv run pre-commit run --all-files

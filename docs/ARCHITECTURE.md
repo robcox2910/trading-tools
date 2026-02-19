@@ -124,6 +124,22 @@ Core should never depend on apps, clients, or data.
 - Maintain 80%+ coverage
 - Test at appropriate levels (unit, integration)
 
+### 7. Code Quality Enforcement
+All public APIs must have docstrings. The full ruff rule set enforces:
+- **Security**: `S` (flake8-bandit) — no hardcoded secrets, safe subprocess usage
+- **Performance**: `PERF` (Perflint) — avoid common performance anti-patterns
+- **Pythonic code**: `UP` (pyupgrade), `SIM` (simplify), `FURB` (refurb), `PIE` (flake8-pie)
+- **Correctness**: `PL` (Pylint subset), `B` (bugbear), `RET` (return consistency)
+- **Documentation**: `D` (pydocstyle) — all public classes, methods, and functions require docstrings
+- **Clean code**: `T20` (no print), `ERA` (no commented-out code), `ARG` (no unused arguments)
+- **API design**: `FBT` (no boolean traps), `DTZ` (timezone-aware datetimes)
+- **Testing**: `PT` (pytest best practices)
+
+Commit validation pipeline:
+- **pre-commit hooks**: ruff, ruff-format, pyright, pip-audit, actionlint
+- **commit-msg hook**: commitizen (conventional commits)
+- **Branch protection**: required status checks (lint, test, security), linear history
+
 ## Application Entry Points
 
 All applications follow the same pattern:

@@ -10,6 +10,8 @@ from trading_tools.core.models import Candle, Interval
 from trading_tools.core.protocols import CandleProvider
 from trading_tools.data.providers.revolut_x import RevolutXCandleProvider
 
+EXPECTED_CANDLE_COUNT = 2
+
 
 def _mock_client(response_data: list[dict[str, Any]]) -> AsyncMock:
     client = AsyncMock()
@@ -29,24 +31,29 @@ def _raw_candle(ts: int = 1000, close: str = "100") -> dict[str, Any]:
 
 
 class TestRevolutXCandleProvider:
+    """Tests for RevolutXCandleProvider."""
+
     def test_satisfies_protocol(self) -> None:
+        """Test that RevolutXCandleProvider satisfies CandleProvider protocol."""
         provider = RevolutXCandleProvider(AsyncMock())
         assert isinstance(provider, CandleProvider)
 
     @pytest.mark.asyncio
     async def test_get_candles(self) -> None:
+        """Test fetching and parsing candles from the API."""
         client = _mock_client([_raw_candle(1000, "100"), _raw_candle(2000, "110")])
         provider = RevolutXCandleProvider(client)
         candles = await provider.get_candles("BTC-USD", Interval.H1, 0, 5000)
 
-        assert len(candles) == 2
+        assert len(candles) == EXPECTED_CANDLE_COUNT
         assert all(isinstance(c, Candle) for c in candles)
-        assert candles[0].close == Decimal("100")
-        assert candles[1].close == Decimal("110")
+        assert candles[0].close == Decimal(100)
+        assert candles[1].close == Decimal(110)
         assert candles[0].interval == Interval.H1
 
     @pytest.mark.asyncio
     async def test_passes_correct_params(self) -> None:
+        """Test that correct API parameters are passed."""
         client = _mock_client([])
         provider = RevolutXCandleProvider(client)
         await provider.get_candles("ETH-USD", Interval.M5, 1000, 2000)
@@ -63,6 +70,7 @@ class TestRevolutXCandleProvider:
 
     @pytest.mark.asyncio
     async def test_empty_response(self) -> None:
+        """Test handling of empty API response."""
         client = _mock_client([])
         provider = RevolutXCandleProvider(client)
         candles = await provider.get_candles("BTC-USD", Interval.H1, 0, 5000)
@@ -70,6 +78,7 @@ class TestRevolutXCandleProvider:
 
     @pytest.mark.asyncio
     async def test_decimal_precision(self) -> None:
+        """Test that decimal values maintain precision."""
         raw = {
             "timestamp": 1000,
             "open": "29145.50",
@@ -86,6 +95,7 @@ class TestRevolutXCandleProvider:
 
     @pytest.mark.asyncio
     async def test_interval_mapping(self) -> None:
+        """Test interval-to-granularity mapping for all intervals."""
         client = _mock_client([])
         provider = RevolutXCandleProvider(client)
 

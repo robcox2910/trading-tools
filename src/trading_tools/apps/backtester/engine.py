@@ -17,6 +17,7 @@ class BacktestEngine:
         strategy: TradingStrategy,
         initial_capital: Decimal,
     ) -> None:
+        """Initialize the backtest engine."""
         self._provider = provider
         self._strategy = strategy
         self._initial_capital = initial_capital

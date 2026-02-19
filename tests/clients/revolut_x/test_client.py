@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from trading_tools.clients.revolut_x.client import RevolutXClient
@@ -50,7 +51,6 @@ class TestRevolutXClient:
         """Test client can be initialized from config."""
         # Create a test key file
         key = Ed25519PrivateKey.generate()
-        from cryptography.hazmat.primitives import serialization
 
         pem = key.private_bytes(
             encoding=serialization.Encoding.PEM,

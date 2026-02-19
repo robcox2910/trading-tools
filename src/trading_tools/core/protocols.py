@@ -15,7 +15,9 @@ class CandleProvider(Protocol):
         interval: Interval,
         start_ts: int,
         end_ts: int,
-    ) -> list[Candle]: ...
+    ) -> list[Candle]:
+        """Return candles for the given symbol, interval, and time range."""
+        ...
 
 
 @runtime_checkable
@@ -23,6 +25,10 @@ class TradingStrategy(Protocol):
     """Sync trading strategy that processes candles into signals."""
 
     @property
-    def name(self) -> str: ...
+    def name(self) -> str:
+        """Return the strategy name."""
+        ...
 
-    def on_candle(self, candle: Candle, history: list[Candle]) -> Signal | None: ...
+    def on_candle(self, candle: Candle, history: list[Candle]) -> Signal | None:
+        """Process a candle and return a signal or None."""
+        ...

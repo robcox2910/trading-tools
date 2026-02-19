@@ -19,6 +19,7 @@ class ConfigLoader:
 
         Args:
             config_dir: Directory containing config files. Defaults to src/trading_tools/config.
+
         """
         if config_dir is None:
             # Default to config directory relative to this file
@@ -51,6 +52,7 @@ class ConfigLoader:
         Args:
             base: Base dictionary to merge into (modified in place).
             override: Dictionary with values to override.
+
         """
         for key, value in override.items():
             if key in base and isinstance(base[key], dict) and isinstance(value, dict):
@@ -68,6 +70,7 @@ class ConfigLoader:
 
         Returns:
             Configuration with environment variables substituted.
+
         """
         if isinstance(config, dict):
             return {
@@ -103,6 +106,7 @@ class ConfigLoader:
 
         Returns:
             Configuration value.
+
         """
         keys = key.split(".")
         current: Any = self._config
@@ -120,6 +124,7 @@ class ConfigLoader:
 
         Returns:
             Dictionary with Revolut X settings.
+
         """
         result: Any = self.get("revolut_x", {})
         if isinstance(result, dict):
@@ -135,6 +140,7 @@ class ConfigLoader:
         Raises:
             ValueError: If private key path is not configured.
             FileNotFoundError: If private key file doesn't exist.
+
         """
         key_path = self.get("revolut_x.private_key_path")
         if not key_path:
