@@ -9,6 +9,7 @@ class SmaCrossoverStrategy:
     """Generates BUY when short SMA crosses above long SMA, SELL when below."""
 
     def __init__(self, short_period: int = 10, long_period: int = 20) -> None:
+        """Initialize the SMA crossover strategy."""
         if short_period >= long_period:
             msg = f"short_period ({short_period}) must be < long_period ({long_period})"
             raise ValueError(msg)
@@ -17,9 +18,11 @@ class SmaCrossoverStrategy:
 
     @property
     def name(self) -> str:
+        """Return the strategy name including period parameters."""
         return f"sma_crossover_{self._short_period}_{self._long_period}"
 
     def on_candle(self, candle: Candle, history: list[Candle]) -> Signal | None:
+        """Evaluate the candle and return a signal if SMA lines cross."""
         all_candles = [*history, candle]
         if len(all_candles) < self._long_period + 1:
             return None
@@ -33,14 +36,14 @@ class SmaCrossoverStrategy:
             return Signal(
                 side=Side.BUY,
                 symbol=candle.symbol,
-                strength=Decimal("1"),
+                strength=Decimal(1),
                 reason=f"SMA{self._short_period} crossed above SMA{self._long_period}",
             )
         if prev_short >= prev_long and current_short < current_long:
             return Signal(
                 side=Side.SELL,
                 symbol=candle.symbol,
-                strength=Decimal("1"),
+                strength=Decimal(1),
                 reason=f"SMA{self._short_period} crossed below SMA{self._long_period}",
             )
         return None

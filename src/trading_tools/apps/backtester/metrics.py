@@ -4,7 +4,8 @@ from decimal import Decimal
 
 from trading_tools.core.models import Trade
 
-ZERO = Decimal("0")
+ZERO = Decimal(0)
+_MIN_TRADES_FOR_SHARPE = 2
 
 
 def total_return(initial_capital: Decimal, final_capital: Decimal) -> Decimal:
@@ -21,11 +22,11 @@ def win_rate(trades: list[Trade]) -> Decimal:
 
 
 def profit_factor(trades: list[Trade]) -> Decimal:
-    """Gross profit divided by gross loss. Returns 0 if no losing trades."""
+    """Gross profit divided by gross loss. Returns Infinity if no losing trades."""
     gross_profit = sum((t.pnl for t in trades if t.pnl > ZERO), ZERO)
     gross_loss = abs(sum((t.pnl for t in trades if t.pnl < ZERO), ZERO))
     if gross_loss == ZERO:
-        return ZERO
+        return Decimal("Infinity") if gross_profit > ZERO else ZERO
     return gross_profit / gross_loss
 
 
@@ -38,11 +39,9 @@ def max_drawdown(trades: list[Trade], initial_capital: Decimal) -> Decimal:
     max_dd = ZERO
     for trade in trades:
         equity += trade.pnl
-        if equity > peak:
-            peak = equity
+        peak = max(peak, equity)
         dd = (peak - equity) / peak
-        if dd > max_dd:
-            max_dd = dd
+        max_dd = max(max_dd, dd)
     return max_dd
 
 
@@ -52,7 +51,7 @@ def sharpe_ratio(trades: list[Trade]) -> Decimal:
     Uses risk-free rate of 0 for simplicity. Returns 0 if fewer than 2 trades
     or zero standard deviation.
     """
-    if len(trades) < 2:
+    if len(trades) < _MIN_TRADES_FOR_SHARPE:
         return ZERO
     returns = [t.pnl_pct for t in trades]
     mean = sum(returns) / Decimal(len(returns))

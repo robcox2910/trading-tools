@@ -14,6 +14,7 @@ class RevolutXAPIError(RevolutXError):
         Args:
             message: Error message.
             status_code: HTTP status code if available.
+
         """
         super().__init__(message)
         self.status_code = status_code

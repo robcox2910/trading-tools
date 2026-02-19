@@ -9,20 +9,24 @@ class Portfolio:
     """Tracks capital, positions, and completed trades during a backtest."""
 
     def __init__(self, initial_capital: Decimal) -> None:
+        """Initialize the portfolio with starting capital."""
         self._capital = initial_capital
         self._position: Position | None = None
         self._trades: list[Trade] = []
 
     @property
     def capital(self) -> Decimal:
+        """Return current available capital."""
         return self._capital
 
     @property
     def position(self) -> Position | None:
+        """Return the current open position, if any."""
         return self._position
 
     @property
     def trades(self) -> list[Trade]:
+        """Return a copy of completed trades."""
         return list(self._trades)
 
     def process_signal(self, signal: Signal, price: Decimal, timestamp: int) -> Trade | None:
@@ -52,11 +56,12 @@ class Portfolio:
             entry_price=price,
             entry_time=timestamp,
         )
-        self._capital = Decimal("0")
-        return None
+        self._capital = Decimal(0)
 
     def _close_position(self, price: Decimal, timestamp: int) -> Trade:
-        assert self._position is not None
+        if self._position is None:
+            msg = "Cannot close position: no open position exists"
+            raise RuntimeError(msg)
         trade = self._position.close(exit_price=price, exit_time=timestamp)
         self._capital = trade.quantity * price
         self._position = None

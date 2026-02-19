@@ -59,11 +59,30 @@ select = [
     "SIM",    # flake8-simplify
     "TID",    # flake8-tidy-imports
     "TCH",    # flake8-type-checking
+    "S",      # flake8-bandit (security)
+    "PERF",   # Perflint (performance)
+    "FURB",   # refurb (modernization)
+    "PIE",    # flake8-pie (misc pythonic)
+    "T20",    # flake8-print (no leftover prints)
+    "ERA",    # eradicator (commented-out code)
+    "PL",     # Pylint rules (PLC, PLE, PLR, PLW)
+    "RET",    # flake8-return (consistent returns)
+    "ARG",    # flake8-unused-arguments
+    "FBT",    # flake8-boolean-trap
+    "DTZ",    # flake8-datetimez (timezone-aware)
+    "ICN",    # flake8-import-conventions
+    "PT",     # flake8-pytest-style
+    "D",      # pydocstyle (docstring conventions)
     "RUF",    # Ruff-specific rules
 ]
 ignore = [
     "E501",   # Line too long (handled by formatter)
+    "D203",   # Incompatible with D211 (no-blank-line-before-class)
+    "D213",   # Incompatible with D212 (multi-line-summary-first-line)
 ]
+
+[tool.ruff.lint.pylint]
+max-args = 9
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = [
@@ -115,7 +134,12 @@ venv = ".venv"
 root = "tests"
 reportPrivateUsage = false
 
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "scm"
+
 [dependency-groups]
 dev = [
+    "commitizen>=4.4.0",
     "pip-audit>=2.10.0",
 ]

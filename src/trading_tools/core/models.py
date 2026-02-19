@@ -48,7 +48,8 @@ class Signal:
     reason: str
 
     def __post_init__(self) -> None:
-        if not (Decimal("0") <= self.strength <= Decimal("1")):
+        """Validate signal strength is between 0 and 1."""
+        if not (Decimal(0) <= self.strength <= Decimal(1)):
             msg = f"strength must be between 0 and 1, got {self.strength}"
             raise ValueError(msg)
 
@@ -68,11 +69,15 @@ class Trade:
     @property
     def pnl(self) -> Decimal:
         """Absolute profit/loss."""
+        if self.side == Side.SELL:
+            return (self.entry_price - self.exit_price) * self.quantity
         return (self.exit_price - self.entry_price) * self.quantity
 
     @property
     def pnl_pct(self) -> Decimal:
         """Percentage return on entry."""
+        if self.side == Side.SELL:
+            return (self.entry_price - self.exit_price) / self.entry_price
         return (self.exit_price - self.entry_price) / self.entry_price
 
 

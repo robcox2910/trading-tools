@@ -14,6 +14,7 @@ class CsvCandleProvider:
     """
 
     def __init__(self, file_path: Path) -> None:
+        """Initialize the CSV candle provider."""
         self._file_path = file_path
 
     async def get_candles(

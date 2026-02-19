@@ -19,6 +19,7 @@ class Ed25519Signer:
 
         Args:
             private_key: The Ed25519 private key for signing requests.
+
         """
         self.private_key = private_key
 
@@ -41,6 +42,7 @@ class Ed25519Signer:
 
         Returns:
             Hexadecimal signature string (128 characters).
+
         """
         # Concatenate all components in the required order
         message = f"{timestamp}{method}{path}{query}{body}"
@@ -64,6 +66,7 @@ class Ed25519Signer:
         Raises:
             FileNotFoundError: If the key file doesn't exist.
             ValueError: If the file doesn't contain a valid Ed25519 key.
+
         """
         path = Path(key_path)
         if not path.exists():

@@ -3,9 +3,12 @@
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from trading_tools.clients.revolut_x.auth.signer import Ed25519Signer
+
+ED25519_SIGNATURE_HEX_LENGTH = 128
 
 
 class TestEd25519Signer:
@@ -38,7 +41,7 @@ class TestEd25519Signer:
 
         # Signature should be a hex string (128 characters for Ed25519)
         assert isinstance(signature, str)
-        assert len(signature) == 128
+        assert len(signature) == ED25519_SIGNATURE_HEX_LENGTH
         assert all(c in "0123456789abcdef" for c in signature)
 
     def test_signature_with_query_string(self, signer: Ed25519Signer) -> None:
@@ -52,7 +55,7 @@ class TestEd25519Signer:
         signature = signer.generate_signature(timestamp, method, path, query, body)
 
         assert isinstance(signature, str)
-        assert len(signature) == 128
+        assert len(signature) == ED25519_SIGNATURE_HEX_LENGTH
 
     def test_signature_with_body(self, signer: Ed25519Signer) -> None:
         """Test signature generation with request body."""
@@ -65,7 +68,7 @@ class TestEd25519Signer:
         signature = signer.generate_signature(timestamp, method, path, query, body)
 
         assert isinstance(signature, str)
-        assert len(signature) == 128
+        assert len(signature) == ED25519_SIGNATURE_HEX_LENGTH
 
     def test_signature_consistency(self, signer: Ed25519Signer) -> None:
         """Test that the same inputs produce the same signature."""
@@ -96,7 +99,6 @@ class TestEd25519Signer:
         """Test loading a private key from PEM file."""
         # Generate a test key and save it
         key = Ed25519PrivateKey.generate()
-        from cryptography.hazmat.primitives import serialization
 
         pem = key.private_bytes(
             encoding=serialization.Encoding.PEM,

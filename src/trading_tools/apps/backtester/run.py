@@ -41,18 +41,18 @@ def _resolve_capital(capital: float | None) -> Decimal:
 
 
 def _print_result(result: BacktestResult) -> None:
-    print(f"\n{'=' * 50}")
-    print(f"Strategy:        {result.strategy_name}")
-    print(f"Symbol:          {result.symbol}")
-    print(f"Interval:        {result.interval.value}")
-    print(f"Initial Capital: {result.initial_capital}")
-    print(f"Final Capital:   {result.final_capital}")
-    print(f"Trades:          {len(result.trades)}")
+    typer.echo(f"\n{'=' * 50}")
+    typer.echo(f"Strategy:        {result.strategy_name}")
+    typer.echo(f"Symbol:          {result.symbol}")
+    typer.echo(f"Interval:        {result.interval.value}")
+    typer.echo(f"Initial Capital: {result.initial_capital}")
+    typer.echo(f"Final Capital:   {result.final_capital}")
+    typer.echo(f"Trades:          {len(result.trades)}")
     if result.metrics:
-        print(f"\n{'--- Metrics ---':^50}")
+        typer.echo(f"\n{'--- Metrics ---':^50}")
         for key, value in result.metrics.items():
-            print(f"  {key:20s}: {value:.6f}")
-    print(f"{'=' * 50}\n")
+            typer.echo(f"  {key:20s}: {value:.6f}")
+    typer.echo(f"{'=' * 50}\n")
 
 
 @app.command()
@@ -116,6 +116,7 @@ async def _run(
 
 
 def main() -> None:
+    """Run the backtester CLI application."""
     app()
 
 

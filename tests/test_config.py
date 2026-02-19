@@ -8,6 +8,10 @@ import pytest
 
 from trading_tools.core.config import ConfigLoader
 
+EXPECTED_TIMEOUT = 30
+EXPECTED_MAX_ATTEMPTS = 5
+EXPECTED_BACKOFF = 2
+
 
 class TestConfigLoader:
     """Test suite for ConfigLoader."""
@@ -153,6 +157,6 @@ revolut_x:
 
         loader = ConfigLoader(config_dir=tmp_path)
         assert loader.get("revolut_x.api_key") == "local_key"
-        assert loader.get("revolut_x.timeout") == 30
-        assert loader.get("revolut_x.retry.max_attempts") == 5
-        assert loader.get("revolut_x.retry.backoff") == 2
+        assert loader.get("revolut_x.timeout") == EXPECTED_TIMEOUT
+        assert loader.get("revolut_x.retry.max_attempts") == EXPECTED_MAX_ATTEMPTS
+        assert loader.get("revolut_x.retry.backoff") == EXPECTED_BACKOFF

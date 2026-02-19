@@ -21,6 +21,7 @@ class RevolutXCandleProvider:
     """Fetches candle data from the Revolut X API."""
 
     def __init__(self, client: RevolutXClient) -> None:
+        """Initialize the Revolut X candle provider."""
         self._client = client
 
     async def get_candles(
