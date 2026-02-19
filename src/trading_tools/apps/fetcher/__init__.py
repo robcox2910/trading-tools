@@ -1,0 +1,1 @@
+"""Candle data fetcher application."""

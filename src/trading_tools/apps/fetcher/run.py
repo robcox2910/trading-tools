@@ -1,0 +1,111 @@
+"""CLI entry point for the candle data fetcher."""
+
+import asyncio
+import csv
+import time
+from pathlib import Path
+from typing import Annotated
+
+import typer
+
+from trading_tools.clients.revolut_x.client import RevolutXClient
+from trading_tools.core.models import Candle, Interval
+from trading_tools.core.timestamps import parse_timestamp
+from trading_tools.data.providers.revolut_x import RevolutXCandleProvider
+
+app = typer.Typer(help="Fetch candle data from Revolut X API")
+
+_CSV_COLUMNS = ("symbol", "timestamp", "open", "high", "low", "close", "volume", "interval")
+
+
+def _parse_ts_option(value: str) -> int:
+    """Parse a CLI timestamp option, raising BadParameter on failure."""
+    try:
+        return parse_timestamp(value)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def _write_csv(candles: list[Candle], output: Path) -> None:
+    """Write candles to a CSV file in CsvCandleProvider format."""
+    with output.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(_CSV_COLUMNS)
+        for c in candles:
+            writer.writerow(
+                (
+                    c.symbol,
+                    c.timestamp,
+                    c.open,
+                    c.high,
+                    c.low,
+                    c.close,
+                    c.volume,
+                    c.interval.value,
+                )
+            )
+
+
+@app.command()
+def fetch(
+    symbol: Annotated[str, typer.Option(help="Trading pair symbol")] = "BTC-USD",
+    interval: Annotated[
+        str,
+        typer.Option(
+            help="Candle interval (1m,5m,15m,1h,4h,1d,1w)",
+        ),
+    ] = "1h",
+    start: Annotated[str, typer.Option(help="Start date (ISO 8601) or Unix timestamp")] = "",
+    end: Annotated[
+        str,
+        typer.Option(
+            help="End date (ISO 8601) or Unix timestamp; defaults to now",
+        ),
+    ] = "",
+    output: Annotated[Path, typer.Option(help="Output CSV file path")] = Path("candles.csv"),
+) -> None:
+    """Fetch candle data from Revolut X and save to CSV."""
+    if not start:
+        raise typer.BadParameter("--start is required", param_hint="'--start'")
+
+    start_ts = _parse_ts_option(start)
+    end_ts = _parse_ts_option(end) if end else int(time.time())
+
+    asyncio.run(
+        _fetch(
+            symbol=symbol,
+            interval=interval,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            output=output,
+        )
+    )
+
+
+async def _fetch(
+    *,
+    symbol: str,
+    interval: str,
+    start_ts: int,
+    end_ts: int,
+    output: Path,
+) -> list[Candle]:
+    """Fetch candles from the API and write them to CSV."""
+    resolved_interval = Interval(interval)
+
+    async with RevolutXClient.from_config() as client:
+        provider = RevolutXCandleProvider(client)
+        candles = await provider.get_candles(symbol, resolved_interval, start_ts, end_ts)
+
+    _write_csv(candles, output)
+    typer.echo(f"Wrote {len(candles)} candles to {output}")
+    return candles
+
+
+def main() -> None:
+    """Run the fetcher CLI application."""
+    app()
+
+
+if __name__ == "__main__":
+    main()

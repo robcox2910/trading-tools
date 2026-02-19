@@ -85,6 +85,28 @@ signature = signer.generate_signature(
 print(f"Signature generated successfully: {signature[:32]}...")
 ```
 
+## Fetching Candle Data
+
+Once credentials are configured, use the fetch command to download historical candle data:
+
+```bash
+# Fetch BTC-USD hourly candles for January 2024
+trading-tools-fetch --symbol BTC-USD --interval 1h --start 2024-01-01 --end 2024-02-01 --output candles.csv
+
+# Or run as a module
+python -m trading_tools.apps.fetcher.run --start 2024-01-01 --output candles.csv
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--symbol` | `BTC-USD` | Trading pair |
+| `--interval` | `1h` | Candle interval (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`, `1w`) |
+| `--start` | *(required)* | Start date (ISO 8601 like `2024-01-01`) or Unix timestamp |
+| `--end` | now | End date or Unix timestamp |
+| `--output` | `candles.csv` | Output CSV file path |
+
+The output CSV is compatible with the backtester's `--source csv` mode.
+
 ## Using the HTTP Client
 
 Once configured, see **[HTTP Client Usage](HTTP_CLIENT_USAGE.md)** for the complete API reference including all methods, error handling, and examples.

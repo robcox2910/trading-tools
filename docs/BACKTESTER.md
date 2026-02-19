@@ -45,7 +45,8 @@ python -m trading_tools.apps.backtester.run --csv <path> [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--csv` | path | *(required)* | Path to CSV candle data file |
+| `--source` | string | `csv` | Data source: `csv` or `revolut-x` |
+| `--csv` | path | *(required for csv source)* | Path to CSV candle data file |
 | `--symbol` | string | `BTC-USD` | Trading pair symbol |
 | `--interval` | string | config or `1h` | Candle interval |
 | `--capital` | decimal | config or `10000` | Initial capital |
@@ -56,6 +57,22 @@ python -m trading_tools.apps.backtester.run --csv <path> [OPTIONS]
 | `--end` | int | `2^53` | End Unix timestamp |
 
 `--interval` and `--capital` fall back to values in `config/settings.yaml` under the `backtester` key when not provided on the command line.
+
+### Data Sources
+
+**CSV (default)** — Load candles from a local CSV file:
+
+```bash
+python -m trading_tools.apps.backtester.run --source csv --csv data/btc_1h.csv
+```
+
+**Revolut X** — Fetch candles live from the Revolut X API (requires credentials, see [Getting Started](GETTING_STARTED.md)):
+
+```bash
+python -m trading_tools.apps.backtester.run --source revolut-x --start 0 --end 9007199254740992
+```
+
+When using `--source revolut-x`, the `--csv` flag is not required. The client is constructed via `RevolutXClient.from_config()` using your configured API key and private key.
 
 ## Writing a Custom Strategy
 
