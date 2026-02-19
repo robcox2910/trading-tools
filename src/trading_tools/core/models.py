@@ -104,6 +104,11 @@ class Position:
         )
 
 
+def _empty_metrics() -> dict[str, Decimal]:
+    """Create an empty metrics dictionary."""
+    return {}
+
+
 @dataclass(frozen=True)
 class BacktestResult:
     """Results from a backtest run."""
@@ -114,4 +119,4 @@ class BacktestResult:
     initial_capital: Decimal
     final_capital: Decimal
     trades: tuple[Trade, ...]
-    metrics: dict[str, Decimal] = field(default_factory=lambda: dict[str, Decimal]())
+    metrics: dict[str, Decimal] = field(default_factory=_empty_metrics)
