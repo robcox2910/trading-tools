@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from trading_tools.clients.revolut_x.auth.signer import Ed25519Signer
 
-ED25519_SIGNATURE_HEX_LENGTH = 128
+ED25519_SIGNATURE_B64_LENGTH = 88
 
 
 class TestEd25519Signer:
@@ -39,10 +39,9 @@ class TestEd25519Signer:
 
         signature = signer.generate_signature(timestamp, method, path, query, body)
 
-        # Signature should be a hex string (128 characters for Ed25519)
+        # Signature should be a base64 string (88 characters for Ed25519)
         assert isinstance(signature, str)
-        assert len(signature) == ED25519_SIGNATURE_HEX_LENGTH
-        assert all(c in "0123456789abcdef" for c in signature)
+        assert len(signature) == ED25519_SIGNATURE_B64_LENGTH
 
     def test_signature_with_query_string(self, signer: Ed25519Signer) -> None:
         """Test signature generation with query parameters."""
@@ -55,7 +54,7 @@ class TestEd25519Signer:
         signature = signer.generate_signature(timestamp, method, path, query, body)
 
         assert isinstance(signature, str)
-        assert len(signature) == ED25519_SIGNATURE_HEX_LENGTH
+        assert len(signature) == ED25519_SIGNATURE_B64_LENGTH
 
     def test_signature_with_body(self, signer: Ed25519Signer) -> None:
         """Test signature generation with request body."""
@@ -68,7 +67,7 @@ class TestEd25519Signer:
         signature = signer.generate_signature(timestamp, method, path, query, body)
 
         assert isinstance(signature, str)
-        assert len(signature) == ED25519_SIGNATURE_HEX_LENGTH
+        assert len(signature) == ED25519_SIGNATURE_B64_LENGTH
 
     def test_signature_consistency(self, signer: Ed25519Signer) -> None:
         """Test that the same inputs produce the same signature."""

@@ -1,5 +1,6 @@
 """Ed25519 signature generation for Revolut X API authentication."""
 
+import base64
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -41,7 +42,7 @@ class Ed25519Signer:
             body: Request body as JSON string.
 
         Returns:
-            Hexadecimal signature string (128 characters).
+            Base64-encoded signature string.
 
         """
         # Concatenate all components in the required order
@@ -50,8 +51,8 @@ class Ed25519Signer:
         # Sign the message
         signature_bytes: bytes = self.private_key.sign(message.encode("utf-8"))
 
-        # Return as hex string
-        return signature_bytes.hex()
+        # Return as base64 string
+        return base64.b64encode(signature_bytes).decode("utf-8")
 
     @staticmethod
     def load_private_key_from_file(key_path: str) -> Ed25519PrivateKey:

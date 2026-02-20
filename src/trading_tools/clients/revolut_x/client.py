@@ -3,6 +3,7 @@
 import json
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -34,7 +35,7 @@ class RevolutXClient:
         self,
         api_key: str,
         private_key: Ed25519PrivateKey,
-        base_url: str = "https://api.revolut.com/api/1.0",
+        base_url: str = "https://revx.revolut.com/api/1.0",
         timeout: float = 30.0,
     ) -> None:
         """Initialize the Revolut X client.
@@ -48,6 +49,7 @@ class RevolutXClient:
         """
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        self._base_path = urlparse(self.base_url).path
         self.timeout = timeout
         self.signer = Ed25519Signer(private_key)
         self._http_client = httpx.AsyncClient(timeout=timeout)
@@ -67,7 +69,7 @@ class RevolutXClient:
         if not api_key:
             raise ValueError("revolut_x.api_key not configured")
 
-        base_url = config.get("revolut_x.base_url", "https://api.revolut.com/api/1.0")
+        base_url = config.get("revolut_x.base_url", "https://revx.revolut.com/api/1.0")
 
         # Load private key
         private_key = Ed25519Signer.load_private_key_from_file(
@@ -171,10 +173,11 @@ class RevolutXClient:
         if data:
             body_str = json.dumps(data, separators=(",", ":"))  # Minified JSON
 
-        # Generate authentication headers
+        # Generate authentication headers (signing path must start from /api)
+        signing_path = f"{self._base_path}{path}"
         auth_headers = self._generate_auth_headers(
             method=method,
-            path=path,
+            path=signing_path,
             query=query_string,
             body=body_str,
         )
