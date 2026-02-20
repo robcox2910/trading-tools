@@ -1,4 +1,10 @@
-"""CLI entry point for the backtester."""
+"""CLI entry point for the backtester.
+
+Wire together the data source (CSV, Revolut X, or Binance), a chosen
+trading strategy, and the backtest engine. Parse CLI options via Typer,
+resolve defaults from the YAML config, run the backtest, and print
+the resulting performance metrics to the terminal.
+"""
 
 import asyncio
 from decimal import Decimal
@@ -50,17 +56,32 @@ app = typer.Typer(help="Run a backtest")
 
 
 def _validate_strategy(value: str) -> str:
+    """Validate that the strategy name is one of the known strategy identifiers.
+
+    Raise ``typer.BadParameter`` if the name is not recognised.
+    """
     if value not in _STRATEGY_NAMES:
         raise typer.BadParameter(f"Must be one of: {', '.join(_STRATEGY_NAMES)}")
     return value
 
 
 def _resolve_interval(raw: str | None) -> Interval:
+    """Resolve the candle interval from the CLI option or YAML config default.
+
+    Fall back to ``1h`` when neither the CLI option nor the config key
+    ``backtester.default_interval`` is set.
+    """
     value = raw or config.get("backtester.default_interval", "1h")
     return Interval(str(value))
 
 
 def _resolve_capital(capital: float | None) -> Decimal:
+    """Resolve the initial capital from the CLI option or YAML config default.
+
+    Fall back to ``10000`` when neither the CLI option nor the config key
+    ``backtester.initial_capital`` is set. Convert to ``Decimal`` for
+    lossless arithmetic throughout the backtester.
+    """
     if capital is not None:
         return Decimal(str(capital))
     raw: object = config.get("backtester.initial_capital", 10000)
@@ -68,6 +89,10 @@ def _resolve_capital(capital: float | None) -> Decimal:
 
 
 def _validate_source(value: str) -> str:
+    """Validate that the data source is one of the supported providers.
+
+    Raise ``typer.BadParameter`` if the source is not recognised.
+    """
     if value not in _VALID_SOURCES:
         raise typer.BadParameter(f"Must be one of: {', '.join(_VALID_SOURCES)}")
     return value
@@ -110,7 +135,14 @@ def _build_strategy(  # noqa: PLR0913
     d_period: int,
     z_threshold: float,
 ) -> TradingStrategy:
-    """Build a strategy instance from CLI parameters."""
+    """Build a strategy instance from CLI parameters.
+
+    Use a dictionary dispatch to map the strategy name to a concrete
+    ``TradingStrategy`` implementation, passing through the relevant
+    subset of CLI parameters for each strategy type.
+
+    Raise ``typer.BadParameter`` if the strategy name is not recognised.
+    """
     builders: dict[str, TradingStrategy] = {
         "sma_crossover": SmaCrossoverStrategy(short_period, long_period),
         "ema_crossover": EmaCrossoverStrategy(short_period, long_period),
@@ -138,6 +170,7 @@ def _build_strategy(  # noqa: PLR0913
 
 
 def _print_result(result: BacktestResult) -> None:
+    """Print a formatted summary of the backtest result to the terminal."""
     typer.echo(f"\n{'=' * 50}")
     typer.echo(f"Strategy:        {result.strategy_name}")
     typer.echo(f"Symbol:          {result.symbol}")
@@ -237,6 +270,11 @@ async def _run(  # noqa: PLR0913
     start: int,
     end: int,
 ) -> BacktestResult:
+    """Orchestrate a single backtest run from resolved CLI parameters.
+
+    Build the candle provider and strategy, execute the backtest engine,
+    print the result, and close any HTTP client resources.
+    """
     provider, client = _build_provider(source, csv)
     try:
         strat = _build_strategy(

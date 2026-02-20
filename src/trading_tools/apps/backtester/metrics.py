@@ -1,4 +1,9 @@
-"""Performance metrics for backtest results."""
+"""Performance metrics for evaluating backtest results.
+
+Provide standalone functions that each compute a single metric from a
+list of ``Trade`` objects. The ``calculate_metrics`` convenience function
+runs all of them and returns a dictionary suitable for display.
+"""
 
 from decimal import Decimal
 
@@ -9,12 +14,12 @@ _MIN_TRADES_FOR_SHARPE = 2
 
 
 def total_return(initial_capital: Decimal, final_capital: Decimal) -> Decimal:
-    """Total return as a percentage."""
+    """Return the total portfolio return as a decimal fraction (e.g. 0.25 = +25%)."""
     return (final_capital - initial_capital) / initial_capital
 
 
 def win_rate(trades: list[Trade]) -> Decimal:
-    """Fraction of trades that were profitable."""
+    """Return the fraction of trades with positive PnL (0.0 to 1.0)."""
     if not trades:
         return ZERO
     winners = sum(1 for t in trades if t.pnl > ZERO)
@@ -22,7 +27,12 @@ def win_rate(trades: list[Trade]) -> Decimal:
 
 
 def profit_factor(trades: list[Trade]) -> Decimal:
-    """Gross profit divided by gross loss. Returns Infinity if no losing trades."""
+    """Return gross profit divided by gross loss.
+
+    A value above 1.0 means winning trades outweigh losers. Return
+    ``Infinity`` when there are no losing trades, or zero when there
+    are no trades at all.
+    """
     gross_profit = sum((t.pnl for t in trades if t.pnl > ZERO), ZERO)
     gross_loss = abs(sum((t.pnl for t in trades if t.pnl < ZERO), ZERO))
     if gross_loss == ZERO:
@@ -31,7 +41,11 @@ def profit_factor(trades: list[Trade]) -> Decimal:
 
 
 def max_drawdown(trades: list[Trade], initial_capital: Decimal) -> Decimal:
-    """Maximum peak-to-trough decline as a percentage of peak."""
+    """Return the maximum peak-to-trough equity decline as a fraction of the peak.
+
+    Walk the equity curve trade-by-trade, tracking the running high-water
+    mark and the largest percentage drop from that peak.
+    """
     if not trades:
         return ZERO
     equity = initial_capital
@@ -46,10 +60,10 @@ def max_drawdown(trades: list[Trade], initial_capital: Decimal) -> Decimal:
 
 
 def sharpe_ratio(trades: list[Trade]) -> Decimal:
-    """Simplified Sharpe ratio (mean return / std dev of returns).
+    """Return a simplified Sharpe ratio (mean return / std dev of returns).
 
-    Uses risk-free rate of 0 for simplicity. Returns 0 if fewer than 2 trades
-    or zero standard deviation.
+    Use a risk-free rate of zero for simplicity. Return zero when there
+    are fewer than 2 trades or the standard deviation is zero.
     """
     if len(trades) < _MIN_TRADES_FOR_SHARPE:
         return ZERO
@@ -65,7 +79,7 @@ def sharpe_ratio(trades: list[Trade]) -> Decimal:
 def calculate_metrics(
     trades: list[Trade], initial_capital: Decimal, final_capital: Decimal
 ) -> dict[str, Decimal]:
-    """Calculate all metrics and return as a dictionary."""
+    """Calculate all performance metrics and return them as a named dictionary."""
     return {
         "total_return": total_return(initial_capital, final_capital),
         "win_rate": win_rate(trades),

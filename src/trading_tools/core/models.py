@@ -1,4 +1,9 @@
-"""Core data models for the trading tools backtester."""
+"""Core data models shared across the trading tools application.
+
+Define the immutable value objects (Candle, Signal, Trade, BacktestResult)
+and mutable state (Position) that flow between the data providers,
+strategies, portfolio tracker, and backtester engine.
+"""
 
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -6,14 +11,14 @@ from enum import Enum
 
 
 class Side(Enum):
-    """Trade direction."""
+    """Direction of a trade: BUY (go long) or SELL (close / go short)."""
 
     BUY = "BUY"
     SELL = "SELL"
 
 
 class Interval(Enum):
-    """Candle time intervals."""
+    """Supported candle time intervals from 1-minute to 1-week."""
 
     M1 = "1m"
     M5 = "5m"
@@ -26,7 +31,12 @@ class Interval(Enum):
 
 @dataclass(frozen=True)
 class Candle:
-    """OHLCV candle data."""
+    """Immutable OHLCV candle representing one time period of market data.
+
+    Each candle captures the open, high, low, and close prices plus
+    the trading volume for a single interval (e.g. one hour) of a
+    specific symbol.
+    """
 
     symbol: str
     timestamp: int
@@ -40,7 +50,12 @@ class Candle:
 
 @dataclass(frozen=True)
 class Signal:
-    """Trading signal emitted by a strategy."""
+    """Immutable trading signal emitted by a strategy.
+
+    Carry the direction (BUY / SELL), target symbol, a confidence
+    strength between 0 and 1, and a human-readable reason string
+    explaining why the signal was generated.
+    """
 
     side: Side
     symbol: str
@@ -56,7 +71,12 @@ class Signal:
 
 @dataclass(frozen=True)
 class Trade:
-    """A completed round-trip trade."""
+    """Immutable record of a completed round-trip trade (entry + exit).
+
+    Store the symbol, direction, quantity, entry/exit prices, and
+    timestamps. Derived properties ``pnl`` and ``pnl_pct`` compute
+    the absolute and percentage profit or loss.
+    """
 
     symbol: str
     side: Side
@@ -68,14 +88,14 @@ class Trade:
 
     @property
     def pnl(self) -> Decimal:
-        """Absolute profit/loss."""
+        """Return the absolute profit or loss in quote currency."""
         if self.side == Side.SELL:
             return (self.entry_price - self.exit_price) * self.quantity
         return (self.exit_price - self.entry_price) * self.quantity
 
     @property
     def pnl_pct(self) -> Decimal:
-        """Percentage return on entry."""
+        """Return the percentage gain or loss relative to the entry price."""
         if self.side == Side.SELL:
             return (self.entry_price - self.exit_price) / self.entry_price
         return (self.exit_price - self.entry_price) / self.entry_price
@@ -83,7 +103,12 @@ class Trade:
 
 @dataclass
 class Position:
-    """An open position that can be closed into a Trade."""
+    """Mutable representation of an open position awaiting an exit.
+
+    Track the symbol, direction, quantity, entry price, and entry time.
+    Call ``close()`` with an exit price and time to produce an immutable
+    ``Trade`` record.
+    """
 
     symbol: str
     side: Side
@@ -92,7 +117,7 @@ class Position:
     entry_time: int
 
     def close(self, exit_price: Decimal, exit_time: int) -> Trade:
-        """Close this position and return the resulting Trade."""
+        """Close this position at the given exit price and time and return a Trade."""
         return Trade(
             symbol=self.symbol,
             side=self.side,
@@ -111,7 +136,12 @@ def _empty_metrics() -> dict[str, Decimal]:
 
 @dataclass(frozen=True)
 class BacktestResult:
-    """Results from a backtest run."""
+    """Immutable summary of a completed backtest run.
+
+    Bundle the strategy name, symbol, interval, capital figures,
+    the full list of trades, and computed performance metrics into
+    a single result object.
+    """
 
     strategy_name: str
     symbol: str

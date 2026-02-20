@@ -1,4 +1,9 @@
-"""CLI entry point for the candle data fetcher."""
+"""CLI entry point for the candle data fetcher.
+
+Provide a Typer CLI command that fetches historical OHLCV candle data
+from an exchange API (Revolut X or Binance) and writes the result to a
+CSV file compatible with the ``CsvCandleProvider``.
+"""
 
 import asyncio
 import csv
@@ -24,6 +29,10 @@ _VALID_SOURCES = ("revolut-x", "binance")
 
 
 def _validate_source(value: str) -> str:
+    """Validate that the data source is one of the supported exchange APIs.
+
+    Raise ``typer.BadParameter`` if the source is not recognised.
+    """
     if value not in _VALID_SOURCES:
         raise typer.BadParameter(f"Must be one of: {', '.join(_VALID_SOURCES)}")
     return value

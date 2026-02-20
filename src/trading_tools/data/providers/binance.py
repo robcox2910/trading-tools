@@ -1,4 +1,10 @@
-"""Binance candle data provider."""
+"""Binance candle data provider.
+
+Fetch OHLCV candle data from the public Binance klines REST API. The
+API returns at most 1 000 candles per request, so this provider
+paginates automatically by advancing the ``startTime`` parameter past
+the last returned candle until the full requested range is covered.
+"""
 
 from decimal import Decimal
 from typing import Any
@@ -42,10 +48,21 @@ def _symbol_to_binance(symbol: str) -> str:
 
 
 class BinanceCandleProvider:
-    """Fetch candle data from the Binance public klines API."""
+    """Fetch candle data from the Binance public klines REST API.
+
+    Implement the ``CandleProvider`` protocol. Symbols are converted
+    from the internal ``BTC-USD`` format to Binance's ``BTCUSDT``
+    format automatically. The API uses millisecond timestamps and
+    returns kline arrays, which are parsed into ``Candle`` objects.
+    """
 
     def __init__(self, client: BinanceClient) -> None:
-        """Initialize the Binance candle provider."""
+        """Initialize the provider with a Binance HTTP client.
+
+        Args:
+            client: A ``BinanceClient`` instance for making API requests.
+
+        """
         self._client = client
 
     async def get_candles(
@@ -55,12 +72,24 @@ class BinanceCandleProvider:
         start_ts: int,
         end_ts: int,
     ) -> list[Candle]:
-        """Fetch candles from the Binance klines endpoint.
+        """Fetch candles from the Binance klines endpoint for the given range.
 
-        Paginate in chunks of up to 1 000 candles per request.
+        Paginate in chunks of up to 1 000 candles per request, advancing
+        the ``startTime`` parameter past the last candle each time.
         Timestamps are converted from seconds to milliseconds for the API.
 
-        Raise ValueError if the interval is not supported.
+        Args:
+            symbol: Trading pair (e.g. ``BTC-USD``), auto-converted to ``BTCUSDT``.
+            interval: Candle time interval (must be in ``_INTERVAL_TO_BINANCE``).
+            start_ts: Start Unix timestamp in seconds.
+            end_ts: End Unix timestamp in seconds.
+
+        Returns:
+            List of ``Candle`` objects sorted by timestamp.
+
+        Raises:
+            ValueError: If the interval is not supported by the Binance API.
+
         """
         if interval not in _INTERVAL_TO_BINANCE:
             msg = f"Interval {interval.value} is not supported by the Binance API"
@@ -99,7 +128,11 @@ class BinanceCandleProvider:
 
     @staticmethod
     def _parse_candle(raw: list[Any], symbol: str, interval: Interval) -> Candle:
-        """Parse a raw kline array into a Candle model."""
+        """Parse a raw Binance kline array into a ``Candle`` model.
+
+        Convert the millisecond open-time to seconds and wrap all price
+        and volume fields in ``Decimal`` for lossless arithmetic.
+        """
         return Candle(
             symbol=symbol,
             timestamp=int(raw[_IDX_OPEN_TIME]) // _MS_PER_SECOND,
