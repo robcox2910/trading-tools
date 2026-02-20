@@ -46,7 +46,7 @@ class RevolutXCandleProvider:
             raise ValueError(msg)
 
         minutes = _INTERVAL_TO_MINUTES[interval]
-        path = f"/market-data/candles/{symbol}"
+        path = f"/candles/{symbol}"
         since_ms = start_ts * _MS_PER_SECOND
         until_ms = end_ts * _MS_PER_SECOND
 

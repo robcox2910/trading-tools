@@ -71,7 +71,7 @@ class TestRevolutXCandleProvider:
         await provider.get_candles("ETH-USD", Interval.M5, 1, 2)
 
         client.get.assert_called_once_with(
-            "/market-data/candles/ETH-USD",
+            "/candles/ETH-USD",
             params={
                 "interval": 5,
                 "since": 1 * MS_PER_SECOND,

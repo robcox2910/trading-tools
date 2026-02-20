@@ -5,7 +5,7 @@ revolut_x:
   # Set these in environment variables or override in settings.local.yaml
   api_key: ${REVOLUT_X_API_KEY}
   private_key_path: ${REVOLUT_X_PRIVATE_KEY_PATH}
-  base_url: ${REVOLUT_X_BASE_URL:https://api.revolut.com/api/1.0}
+  base_url: ${REVOLUT_X_BASE_URL:https://revx.revolut.com/api/1.0}
 
 # Environment Configuration
 environment: ${ENVIRONMENT:sandbox}
