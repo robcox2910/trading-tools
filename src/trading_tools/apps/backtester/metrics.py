@@ -76,6 +76,11 @@ def sharpe_ratio(trades: list[Trade]) -> Decimal:
     return mean / std_dev
 
 
+def total_fees(trades: list[Trade]) -> Decimal:
+    """Return the sum of all entry and exit fees across all trades."""
+    return sum((t.entry_fee + t.exit_fee for t in trades), ZERO)
+
+
 def calculate_metrics(
     trades: list[Trade], initial_capital: Decimal, final_capital: Decimal
 ) -> dict[str, Decimal]:
@@ -87,4 +92,5 @@ def calculate_metrics(
         "max_drawdown": max_drawdown(trades, initial_capital),
         "sharpe_ratio": sharpe_ratio(trades),
         "total_trades": Decimal(len(trades)),
+        "total_fees": total_fees(trades),
     }

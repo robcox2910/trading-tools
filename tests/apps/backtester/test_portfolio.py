@@ -3,7 +3,7 @@
 from decimal import Decimal
 
 from trading_tools.apps.backtester.portfolio import Portfolio
-from trading_tools.core.models import Side, Signal, Trade
+from trading_tools.core.models import ExecutionConfig, Side, Signal, Trade
 
 EXPECTED_ROUND_TRIP_COUNT = 2
 
@@ -103,3 +103,80 @@ class TestPortfolio:
         trades = p.trades
         trades.append(None)  # type: ignore[arg-type]
         assert p.trades == []
+
+
+class TestPortfolioWithFees:
+    """Tests for Portfolio with execution fees and slippage."""
+
+    def test_slippage_worsens_entry_price(self) -> None:
+        """Test that slippage increases the effective entry price."""
+        cfg = ExecutionConfig(slippage_pct=Decimal("0.01"))
+        p = Portfolio(Decimal(10000), execution_config=cfg)
+        p.process_signal(_buy_signal(), Decimal(100), 1000)
+        assert p.position is not None
+        expected_price = Decimal(101)  # 100 * 1.01
+        assert p.position.entry_price == expected_price
+
+    def test_slippage_worsens_exit_price(self) -> None:
+        """Test that slippage decreases the effective exit price."""
+        cfg = ExecutionConfig(slippage_pct=Decimal("0.01"))
+        p = Portfolio(Decimal(10000), execution_config=cfg)
+        p.process_signal(_buy_signal(), Decimal(100), 1000)
+        trade = p.process_signal(_sell_signal(), Decimal(110), 2000)
+        assert trade is not None
+        expected_exit = Decimal("108.9")  # 110 * 0.99
+        assert trade.exit_price == expected_exit
+
+    def test_fees_deducted(self) -> None:
+        """Test that entry and exit fees are recorded on the trade."""
+        cfg = ExecutionConfig(
+            taker_fee_pct=Decimal("0.001"),
+            maker_fee_pct=Decimal("0.001"),
+        )
+        p = Portfolio(Decimal(10000), execution_config=cfg)
+        p.process_signal(_buy_signal(), Decimal(100), 1000)
+        trade = p.process_signal(_sell_signal(), Decimal(100), 2000)
+        assert trade is not None
+        assert trade.entry_fee == Decimal(10)  # 10000 * 0.001
+        assert trade.exit_fee > Decimal(0)
+
+    def test_round_trip_with_fees_reduces_capital(self) -> None:
+        """Test that a flat-price round trip loses money due to fees."""
+        cfg = ExecutionConfig(
+            taker_fee_pct=Decimal("0.001"),
+            maker_fee_pct=Decimal("0.001"),
+        )
+        p = Portfolio(Decimal(10000), execution_config=cfg)
+        p.process_signal(_buy_signal(), Decimal(100), 1000)
+        p.process_signal(_sell_signal(), Decimal(100), 2000)
+        assert p.capital < Decimal(10000)
+
+
+class TestPortfolioPositionSizing:
+    """Tests for Portfolio position sizing."""
+
+    def test_half_position_uses_half_capital(self) -> None:
+        """Test that position_size_pct=0.5 deploys only half the capital."""
+        cfg = ExecutionConfig(position_size_pct=Decimal("0.5"))
+        p = Portfolio(Decimal(10000), execution_config=cfg)
+        p.process_signal(_buy_signal(), Decimal(100), 1000)
+        assert p.position is not None
+        expected_qty = Decimal(50)  # 5000 / 100
+        assert p.position.quantity == expected_qty
+
+    def test_remaining_capital_preserved(self) -> None:
+        """Test that unused capital is preserved when position_size_pct < 1."""
+        cfg = ExecutionConfig(position_size_pct=Decimal("0.5"))
+        p = Portfolio(Decimal(10000), execution_config=cfg)
+        p.process_signal(_buy_signal(), Decimal(100), 1000)
+        expected_remaining = Decimal(5000)
+        assert p.capital == expected_remaining
+
+    def test_default_full_deployment(self) -> None:
+        """Test that default position_size_pct=1 deploys all capital."""
+        p = Portfolio(Decimal(10000))
+        p.process_signal(_buy_signal(), Decimal(100), 1000)
+        assert p.capital == Decimal(0)
+        assert p.position is not None
+        expected_qty = Decimal(100)
+        assert p.position.quantity == expected_qty

@@ -7,6 +7,7 @@ from trading_tools.apps.backtester.metrics import (
     max_drawdown,
     profit_factor,
     sharpe_ratio,
+    total_fees,
     total_return,
     win_rate,
 )
@@ -121,6 +122,41 @@ class TestSharpeRatio:
         assert result > ZERO
 
 
+class TestTotalFees:
+    """Tests for total_fees calculation."""
+
+    def test_empty(self) -> None:
+        """Test total fees with no trades."""
+        assert total_fees([]) == ZERO
+
+    def test_calculation(self) -> None:
+        """Test total fees sums entry and exit fees across trades."""
+        t1 = Trade(
+            symbol="BTC-USD",
+            side=Side.BUY,
+            quantity=Decimal(1),
+            entry_price=Decimal(100),
+            entry_time=1000,
+            exit_price=Decimal(110),
+            exit_time=2000,
+            entry_fee=Decimal(5),
+            exit_fee=Decimal(3),
+        )
+        t2 = Trade(
+            symbol="BTC-USD",
+            side=Side.BUY,
+            quantity=Decimal(1),
+            entry_price=Decimal(100),
+            entry_time=3000,
+            exit_price=Decimal(105),
+            exit_time=4000,
+            entry_fee=Decimal(2),
+            exit_fee=Decimal(1),
+        )
+        expected_total = Decimal(11)  # 5+3+2+1
+        assert total_fees([t1, t2]) == expected_total
+
+
 class TestCalculateMetrics:
     """Tests for calculate_metrics aggregation."""
 
@@ -135,6 +171,7 @@ class TestCalculateMetrics:
             "max_drawdown",
             "sharpe_ratio",
             "total_trades",
+            "total_fees",
         }
         assert set(metrics.keys()) == expected_keys
         assert metrics["total_trades"] == Decimal(EXPECTED_TOTAL_TRADES)

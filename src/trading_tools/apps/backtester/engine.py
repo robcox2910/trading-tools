@@ -2,15 +2,24 @@
 
 Fetch candles from a ``CandleProvider``, feed them one-by-one to a
 ``TradingStrategy``, and track the resulting trades and portfolio state.
-Return a ``BacktestResult`` containing final capital, trade history,
-and performance metrics.
+Optionally apply execution costs (fees, slippage, position sizing) and
+risk-management exits (stop-loss, take-profit). Return a
+``BacktestResult`` containing final capital, trade history, and
+performance metrics.
 """
 
 from decimal import Decimal
 
 from trading_tools.apps.backtester.metrics import calculate_metrics
 from trading_tools.apps.backtester.portfolio import Portfolio
-from trading_tools.core.models import BacktestResult, Candle, Interval
+from trading_tools.core.models import (
+    BacktestResult,
+    Candle,
+    ExecutionConfig,
+    Interval,
+    RiskConfig,
+    Trade,
+)
 from trading_tools.core.protocols import CandleProvider, TradingStrategy
 
 
@@ -19,7 +28,8 @@ class BacktestEngine:
 
     Coordinate a ``CandleProvider`` (data source), ``TradingStrategy``
     (signal generation), and ``Portfolio`` (position tracking) to simulate
-    trading over a historical period.
+    trading over a historical period. Optionally apply execution costs
+    and risk-management exits.
     """
 
     def __init__(
@@ -27,6 +37,8 @@ class BacktestEngine:
         provider: CandleProvider,
         strategy: TradingStrategy,
         initial_capital: Decimal,
+        execution_config: ExecutionConfig | None = None,
+        risk_config: RiskConfig | None = None,
     ) -> None:
         """Initialize the backtest engine.
 
@@ -34,11 +46,17 @@ class BacktestEngine:
             provider: Data source that supplies historical candles.
             strategy: Trading strategy that evaluates each candle.
             initial_capital: Starting capital in quote currency.
+            execution_config: Optional execution cost configuration
+                (fees, slippage, position sizing).
+            risk_config: Optional risk-management configuration
+                (stop-loss, take-profit thresholds).
 
         """
         self._provider = provider
         self._strategy = strategy
         self._initial_capital = initial_capital
+        self._execution_config = execution_config
+        self._risk_config = risk_config
 
     async def run(
         self,
@@ -68,13 +86,15 @@ class BacktestEngine:
         if not candles:
             return self._empty_result(symbol, interval)
 
-        portfolio = Portfolio(self._initial_capital)
+        portfolio = Portfolio(self._initial_capital, self._execution_config)
         history: list[Candle] = []
 
         for candle in candles:
-            signal = self._strategy.on_candle(candle, history)
-            if signal is not None:
-                portfolio.process_signal(signal, candle.close, candle.timestamp)
+            risk_trade = self._check_risk_exit(candle, portfolio)
+            if risk_trade is None:
+                signal = self._strategy.on_candle(candle, history)
+                if signal is not None:
+                    portfolio.process_signal(signal, candle.close, candle.timestamp)
             history.append(candle)
 
         last = candles[-1]
@@ -92,6 +112,47 @@ class BacktestEngine:
             trades=tuple(trades),
             metrics=metrics,
         )
+
+    def _check_risk_exit(self, candle: Candle, portfolio: Portfolio) -> Trade | None:
+        """Check whether a risk-management exit is triggered on this candle.
+
+        For BUY positions, check whether the candle's low breaches
+        the stop-loss level or the candle's high breaches the
+        take-profit level. If both trigger on the same candle,
+        stop-loss takes priority (conservative assumption).
+
+        Args:
+            candle: The current candle being processed.
+            portfolio: The portfolio to check for open positions.
+
+        Returns:
+            A ``Trade`` if a risk exit was triggered, ``None`` otherwise.
+
+        """
+        if self._risk_config is None or portfolio.position is None:
+            return None
+
+        pos = portfolio.position
+        entry = pos.entry_price
+        stop_loss_pct = self._risk_config.stop_loss_pct
+        take_profit_pct = self._risk_config.take_profit_pct
+
+        stop_triggered = stop_loss_pct is not None and candle.low <= entry * (
+            Decimal(1) - stop_loss_pct
+        )
+        tp_triggered = take_profit_pct is not None and candle.high >= entry * (
+            Decimal(1) + take_profit_pct
+        )
+
+        if stop_triggered and stop_loss_pct is not None:
+            exit_price = entry * (Decimal(1) - stop_loss_pct)
+            return portfolio.force_close(exit_price, candle.timestamp)
+
+        if tp_triggered and take_profit_pct is not None:
+            exit_price = entry * (Decimal(1) + take_profit_pct)
+            return portfolio.force_close(exit_price, candle.timestamp)
+
+        return None
 
     def _empty_result(self, symbol: str, interval: Interval) -> BacktestResult:
         """Return a zero-trade result when no candle data is available."""
