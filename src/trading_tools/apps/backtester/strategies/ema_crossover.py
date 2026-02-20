@@ -18,6 +18,13 @@ class EmaCrossoverStrategy:
             raise ValueError(msg)
         self._short_period = short_period
         self._long_period = long_period
+        self._short_mult = TWO / (Decimal(short_period) + ONE)
+        self._long_mult = TWO / (Decimal(long_period) + ONE)
+
+        self._short_ema = Decimal(0)
+        self._long_ema = Decimal(0)
+        self._candle_count = 0
+        self._seeded = False
 
     @property
     def name(self) -> str:
@@ -26,16 +33,29 @@ class EmaCrossoverStrategy:
 
     def on_candle(self, candle: Candle, history: list[Candle]) -> Signal | None:
         """Evaluate the candle and return a signal if EMA lines cross."""
-        all_candles = [*history, candle]
-        if len(all_candles) < self._long_period + 1:
+        all_count = len(history) + 1
+        if all_count < self._long_period + 1:
+            self._candle_count = all_count
             return None
 
-        closes = [c.close for c in all_candles]
+        close = candle.close
 
-        curr_short = self._ema(closes, self._short_period)
-        curr_long = self._ema(closes, self._long_period)
-        prev_short = self._ema(closes[:-1], self._short_period)
-        prev_long = self._ema(closes[:-1], self._long_period)
+        if self._seeded and len(history) == self._candle_count:
+            prev_short = self._short_ema
+            prev_long = self._long_ema
+            curr_short = prev_short + self._short_mult * (close - prev_short)
+            curr_long = prev_long + self._long_mult * (close - prev_long)
+        else:
+            closes = [c.close for c in history] + [close]
+            curr_short = self._ema(closes, self._short_period)
+            curr_long = self._ema(closes, self._long_period)
+            prev_short = self._ema(closes[:-1], self._short_period)
+            prev_long = self._ema(closes[:-1], self._long_period)
+
+        self._short_ema = curr_short
+        self._long_ema = curr_long
+        self._candle_count = all_count
+        self._seeded = True
 
         if prev_short <= prev_long and curr_short > curr_long:
             return Signal(
