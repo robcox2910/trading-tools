@@ -1,4 +1,37 @@
-"""Exponential Moving Average crossover strategy."""
+"""Exponential Moving Average (EMA) crossover strategy.
+
+How it works:
+    An EMA is like an SMA (a running average of prices), but it gives more
+    weight to the most recent prices. Imagine you're grading homework and
+    the latest assignments count more than the ones from weeks ago -- that's
+    how an EMA treats price data. The formula is:
+
+        new_ema = previous_ema + multiplier * (new_price - previous_ema)
+
+    where multiplier = 2 / (period + 1). A smaller period makes the EMA
+    react faster to price changes.
+
+    This strategy watches two EMAs: a short (fast) one and a long (slow)
+    one. When the fast EMA crosses above the slow EMA it means recent
+    prices are climbing faster than the longer-term trend -- BUY signal.
+    When the fast EMA crosses below -- SELL signal.
+
+What it tries to achieve:
+    Catch trend reversals earlier than the SMA crossover strategy. Because
+    the EMA puts more emphasis on recent prices, crossovers happen sooner,
+    which means you enter trades earlier. The downside is more false signals
+    in choppy (sideways) markets.
+
+Performance note:
+    This strategy caches its EMA values internally. After the first candle,
+    each subsequent candle only needs one multiplication and one addition
+    per EMA (O(1) per candle) instead of recalculating from the entire
+    history each time.
+
+Params:
+    short_period: Number of candles for the fast EMA (default 10).
+    long_period:  Number of candles for the slow EMA (default 20).
+"""
 
 from decimal import Decimal
 
@@ -9,7 +42,12 @@ TWO = Decimal(2)
 
 
 class EmaCrossoverStrategy:
-    """Generate BUY when short EMA crosses above long EMA, SELL when below."""
+    """Generate BUY when the short EMA crosses above the long EMA, SELL when below.
+
+    Like the SMA crossover but more sensitive to recent price action. The
+    EMA "forgets" old prices gradually rather than dropping them all at once,
+    which produces smoother crossover signals.
+    """
 
     def __init__(self, short_period: int = 10, long_period: int = 20) -> None:
         """Initialize the EMA crossover strategy."""

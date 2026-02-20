@@ -1,4 +1,43 @@
-"""Stochastic oscillator strategy."""
+"""Stochastic oscillator strategy.
+
+How it works:
+    The Stochastic oscillator answers one question: "Where is today's
+    closing price relative to the recent price range?"
+
+    It produces two lines, both between 0 and 100:
+
+    - %K (the "fast" line):
+        %K = (close - lowest_low) / (highest_high - lowest_low) * 100
+
+      If %K = 90, the close is near the top of the recent range (90% of
+      the way up). If %K = 10, it's near the bottom.
+
+    - %D (the "slow" line):
+        %D = simple moving average of the last few %K values.
+
+      %D smooths out %K so it doesn't jump around as much.
+
+    The strategy generates signals when %K crosses %D, but ONLY in
+    extreme zones:
+    - BUY when %K crosses above %D while both are in the oversold zone
+      (below 20 by default). This means the price was near its recent
+      low but is starting to turn up.
+    - SELL when %K crosses below %D while both are in the overbought
+      zone (above 80 by default). This means the price was near its
+      recent high but is starting to turn down.
+
+What it tries to achieve:
+    Spot turning points in sideways or range-bound markets. The Stochastic
+    works best when the price is bouncing between a floor and a ceiling.
+    By only trading in the extreme zones, it avoids acting on meaningless
+    mid-range noise.
+
+Params:
+    k_period:   Number of candles to look back for the high/low range (default 14).
+    d_period:   Number of %K values to average for %D (default 3).
+    overbought: %K level above which SELL signals are allowed (default 80).
+    oversold:   %K level below which BUY signals are allowed (default 20).
+"""
 
 from collections import deque
 from decimal import Decimal
@@ -11,7 +50,13 @@ HUNDRED = Decimal(100)
 
 
 class StochasticStrategy:
-    """Generate BUY/SELL on %K/%D crossovers in oversold/overbought zones."""
+    """Generate BUY/SELL on %K/%D crossovers in oversold/overbought zones.
+
+    Imagine a thermometer where 0 = coldest recent price and 100 = hottest.
+    This strategy buys when the thermometer is very low and starts ticking
+    up (oversold + %K crossing above %D), and sells when it's very high
+    and starts ticking down (overbought + %K crossing below %D).
+    """
 
     def __init__(
         self,

@@ -1,4 +1,43 @@
-"""Moving Average Convergence Divergence strategy."""
+"""Moving Average Convergence Divergence (MACD) strategy.
+
+How it works:
+    MACD combines two ideas: trend detection and momentum measurement.
+
+    1. Compute a fast EMA (e.g. 12-period) and a slow EMA (e.g. 26-period).
+    2. MACD line = fast EMA - slow EMA. When the fast EMA is above the
+       slow EMA, the MACD line is positive (upward momentum). When below,
+       it's negative (downward momentum).
+    3. Signal line = an EMA of the MACD line itself (e.g. 9-period). This
+       smooths out the MACD so you don't react to every tiny wiggle.
+
+    The strategy generates a BUY when the MACD line crosses above the
+    signal line (momentum is accelerating upward) and a SELL when the
+    MACD line crosses below the signal line (momentum is fading or
+    reversing).
+
+    Think of it like this: the MACD line is the "speedometer" showing how
+    fast the price is moving. The signal line is a smoothed version of
+    that speedometer. When the speedometer jumps above its smoothed line,
+    the car (price) is accelerating -- time to buy. When it drops below,
+    the car is slowing down -- time to sell.
+
+What it tries to achieve:
+    Identify changes in the strength, direction, and duration of a trend.
+    MACD is one of the most popular indicators because it works in both
+    trending and moderately choppy markets. It catches trends earlier than
+    a simple moving average crossover because it measures the *gap* between
+    two averages, not just which one is higher.
+
+Performance note:
+    After the initial warm-up, this strategy updates three EMAs
+    incrementally (O(1) per candle) instead of recalculating the full
+    MACD series from scratch.
+
+Params:
+    fast_period:   Period for the fast EMA (default 12).
+    slow_period:   Period for the slow EMA (default 26).
+    signal_period: Period for the signal line EMA (default 9).
+"""
 
 from decimal import Decimal
 
@@ -9,7 +48,12 @@ TWO = Decimal(2)
 
 
 class MacdStrategy:
-    """Generate BUY when MACD crosses above signal line, SELL when below."""
+    """Generate BUY when the MACD line crosses above the signal line, SELL when below.
+
+    The MACD line shows momentum (is the price speeding up or slowing
+    down?). The signal line smooths it out. Crossovers between the two
+    indicate shifts in momentum direction.
+    """
 
     def __init__(
         self,

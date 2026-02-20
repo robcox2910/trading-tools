@@ -1,4 +1,42 @@
-"""Relative Strength Index mean-reversion strategy."""
+"""Relative Strength Index (RSI) mean-reversion strategy.
+
+How it works:
+    RSI measures how much of a stock's recent price movement has been
+    upward vs downward. It produces a number between 0 and 100:
+
+    - RSI near 100 = almost all recent moves were UP (price may be
+      "overbought" -- it went up too fast and might come back down).
+    - RSI near 0 = almost all recent moves were DOWN (price may be
+      "oversold" -- it dropped too fast and might bounce back up).
+
+    The calculation uses "Wilder's smoothing":
+      1. Look at each candle-to-candle price change over the last N candles.
+      2. Separate the changes into gains (went up) and losses (went down).
+      3. Calculate the average gain and average loss.
+      4. RS = average_gain / average_loss
+      5. RSI = 100 - 100 / (1 + RS)
+
+    When RSI crosses below the oversold threshold (e.g. 30), it signals a
+    BUY (the asset has dropped a lot and may bounce). When RSI crosses above
+    the overbought threshold (e.g. 70), it signals a SELL (the asset has
+    risen a lot and may pull back).
+
+What it tries to achieve:
+    Profit from price "snapback" -- the tendency for prices that moved too
+    far in one direction to reverse. This is the opposite of trend-following;
+    instead of riding a trend, it bets the trend has gone too far and will
+    correct.
+
+Performance note:
+    Uses incremental Wilder's smoothing internally. After the warm-up
+    period, each candle requires only one addition and one division per
+    average (O(1) per candle).
+
+Params:
+    period:     Lookback window for RSI calculation (default 14).
+    overbought: RSI level above which a SELL signal fires (default 70).
+    oversold:   RSI level below which a BUY signal fires (default 30).
+"""
 
 from decimal import Decimal
 
@@ -10,7 +48,13 @@ HUNDRED = Decimal(100)
 
 
 class RsiStrategy:
-    """Generate BUY when RSI drops below oversold, SELL when above overbought."""
+    """Generate BUY when RSI drops below oversold, SELL when above overbought.
+
+    RSI is a "contrarian" indicator. When everyone is selling (RSI low),
+    this strategy buys because it expects the price to bounce back up.
+    When everyone is buying (RSI high), it sells because it expects the
+    price to come back down.
+    """
 
     def __init__(
         self,

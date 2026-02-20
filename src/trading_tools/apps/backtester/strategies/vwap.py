@@ -1,4 +1,35 @@
-"""Volume Weighted Average Price strategy."""
+"""Volume Weighted Average Price (VWAP) strategy.
+
+How it works:
+    VWAP is the average price of an asset, weighted by how much was traded
+    at each price. Instead of treating every candle equally (like an SMA),
+    VWAP gives more importance to candles with higher trading volume.
+
+    The formula over a rolling window of N candles:
+
+        VWAP = sum(close_i * volume_i) / sum(volume_i)
+
+    If a lot of trading happened at $100 and very little at $95, the VWAP
+    will be close to $100 even though the simple average would be $97.50.
+    VWAP represents the "fair price" that most market participants actually
+    traded at.
+
+    The strategy generates:
+    - BUY when the current price drops below VWAP. The asset is trading
+      below its recent "fair value" -- it may be underpriced.
+    - SELL when the current price rises above VWAP. The asset is trading
+      above its fair value -- it may be overpriced.
+
+What it tries to achieve:
+    Buy cheap, sell expensive relative to what the crowd paid. Large
+    institutional traders often use VWAP as a benchmark -- they want to
+    buy below VWAP and sell above it. This strategy piggybacks on that
+    behavior, betting that prices will revert toward the volume-weighted
+    average.
+
+Params:
+    period: Number of candles for the rolling VWAP window (default 20).
+"""
 
 from collections import deque
 from decimal import Decimal
@@ -9,7 +40,12 @@ ONE = Decimal(1)
 
 
 class VwapStrategy:
-    """Generate BUY when price crosses below VWAP, SELL when above."""
+    """Generate BUY when price crosses below VWAP, SELL when above.
+
+    VWAP acts like a "gravity line" for the price. When the price drifts
+    below this line, it's considered cheap (buy opportunity). When it floats
+    above, it's considered expensive (sell opportunity).
+    """
 
     def __init__(self, period: int = 20) -> None:
         """Initialize the VWAP strategy."""

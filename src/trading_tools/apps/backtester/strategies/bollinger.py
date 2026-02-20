@@ -1,4 +1,32 @@
-"""Bollinger Band breakout strategy."""
+"""Bollinger Band breakout strategy.
+
+How it works:
+    Bollinger Bands draw a "channel" around the price using statistics:
+
+    1. Middle band = the average (SMA) of the last N closing prices.
+    2. Upper band  = middle + (num_std * standard deviation).
+    3. Lower band  = middle - (num_std * standard deviation).
+
+    Standard deviation measures how spread out the prices are. When prices
+    are calm, the bands narrow; when prices are volatile, they widen. Think
+    of the bands as a rubber band around the price -- the price stays inside
+    most of the time (roughly 95% with 2 standard deviations).
+
+    This strategy signals a BUY when the price breaks *above* the upper
+    band (momentum breakout -- price is unusually strong, buy the trend).
+    It signals a SELL when the price drops *below* the lower band
+    (breakdown -- price is unusually weak, sell/short the trend).
+
+What it tries to achieve:
+    Catch strong breakout moves. When the price pushes through a band it
+    means the market is doing something statistically unusual -- there's
+    real conviction behind the move. The strategy bets that these breakouts
+    will continue rather than reverse.
+
+Params:
+    period:  Lookback window for the SMA and standard deviation (default 20).
+    num_std: Number of standard deviations for the bands (default 2.0).
+"""
 
 from decimal import Decimal
 
@@ -8,7 +36,12 @@ ONE = Decimal(1)
 
 
 class BollingerStrategy:
-    """Generate BUY when close crosses above upper band, SELL below lower band."""
+    """Generate BUY when close crosses above the upper band, SELL below lower.
+
+    The bands act like "speed limits" for the price. When the price blows
+    past one, something significant is happening and this strategy follows
+    the momentum.
+    """
 
     def __init__(self, period: int = 20, num_std: float = 2.0) -> None:
         """Initialize the Bollinger Band strategy."""
