@@ -17,16 +17,18 @@ from trading_tools.apps.backtester.strategies.rsi import RsiStrategy
 from trading_tools.apps.backtester.strategies.sma_crossover import (
     SmaCrossoverStrategy,
 )
+from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.clients.revolut_x.client import RevolutXClient
 from trading_tools.core.config import config
 from trading_tools.core.models import BacktestResult, Interval
 from trading_tools.core.protocols import CandleProvider, TradingStrategy
+from trading_tools.data.providers.binance import BinanceCandleProvider
 from trading_tools.data.providers.csv_provider import CsvCandleProvider
 from trading_tools.data.providers.revolut_x import RevolutXCandleProvider
 
 _STRATEGY_NAMES = ("sma_crossover", "ema_crossover", "rsi", "bollinger", "macd")
 
-_VALID_SOURCES = ("csv", "revolut-x")
+_VALID_SOURCES = ("csv", "revolut-x", "binance")
 
 app = typer.Typer(help="Run a backtest")
 
@@ -58,14 +60,18 @@ def _validate_source(value: str) -> str:
 def _build_provider(
     source: str,
     csv_path: Path | None,
-) -> tuple[CandleProvider, RevolutXClient | None]:
+) -> tuple[CandleProvider, RevolutXClient | BinanceClient | None]:
     """Build a candle provider based on the selected source.
 
     Return the provider and an optional client that must be closed after use.
     """
     if source == "revolut-x":
-        client = RevolutXClient.from_config()
+        client: RevolutXClient | BinanceClient = RevolutXClient.from_config()
         return RevolutXCandleProvider(client), client
+
+    if source == "binance":
+        binance_client = BinanceClient()
+        return BinanceCandleProvider(binance_client), binance_client
 
     if csv_path is None:
         raise typer.BadParameter("--csv is required when --source is csv", param_hint="'--csv'")
@@ -124,7 +130,7 @@ def run(  # noqa: PLR0913
     source: Annotated[
         str,
         typer.Option(
-            help="Data source: csv or revolut-x",
+            help="Data source: csv, revolut-x, or binance",
             callback=_validate_source,
         ),
     ] = "csv",
