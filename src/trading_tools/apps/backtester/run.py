@@ -32,7 +32,7 @@ from trading_tools.apps.backtester.strategies.vwap import VwapStrategy
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.clients.revolut_x.client import RevolutXClient
 from trading_tools.core.config import config
-from trading_tools.core.models import BacktestResult, Interval
+from trading_tools.core.models import BacktestResult, ExecutionConfig, Interval, RiskConfig
 from trading_tools.core.protocols import CandleProvider, TradingStrategy
 from trading_tools.data.providers.binance import BinanceCandleProvider
 from trading_tools.data.providers.csv_provider import CsvCandleProvider
@@ -217,6 +217,14 @@ def run(  # noqa: PLR0913
     k_period: Annotated[int, typer.Option(help="Stochastic %K period")] = 14,
     d_period: Annotated[int, typer.Option(help="Stochastic %D period")] = 3,
     z_threshold: Annotated[float, typer.Option(help="Mean reversion z-score threshold")] = 2.0,
+    maker_fee: Annotated[float, typer.Option(help="Maker fee as decimal (e.g. 0.001)")] = 0.0,
+    taker_fee: Annotated[float, typer.Option(help="Taker fee as decimal (e.g. 0.001)")] = 0.0,
+    slippage: Annotated[float, typer.Option(help="Slippage as decimal (e.g. 0.0005)")] = 0.0,
+    stop_loss: Annotated[float | None, typer.Option(help="Stop-loss threshold as decimal")] = None,
+    take_profit: Annotated[
+        float | None, typer.Option(help="Take-profit threshold as decimal")
+    ] = None,
+    position_size: Annotated[float, typer.Option(help="Fraction of capital per trade (0-1)")] = 1.0,
     start: Annotated[int, typer.Option(help="Start timestamp")] = 0,
     end: Annotated[int, typer.Option(help="End timestamp")] = 2**53,
 ) -> None:
@@ -241,6 +249,12 @@ def run(  # noqa: PLR0913
             k_period=k_period,
             d_period=d_period,
             z_threshold=z_threshold,
+            maker_fee=maker_fee,
+            taker_fee=taker_fee,
+            slippage=slippage,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            position_size=position_size,
             start=start,
             end=end,
         )
@@ -267,13 +281,20 @@ async def _run(  # noqa: PLR0913
     k_period: int,
     d_period: int,
     z_threshold: float,
+    maker_fee: float,
+    taker_fee: float,
+    slippage: float,
+    stop_loss: float | None,
+    take_profit: float | None,
+    position_size: float,
     start: int,
     end: int,
 ) -> BacktestResult:
     """Orchestrate a single backtest run from resolved CLI parameters.
 
-    Build the candle provider and strategy, execute the backtest engine,
-    print the result, and close any HTTP client resources.
+    Build the candle provider and strategy, construct execution and
+    risk configurations, execute the backtest engine, print the result,
+    and close any HTTP client resources.
     """
     provider, client = _build_provider(source, csv)
     try:
@@ -295,10 +316,23 @@ async def _run(  # noqa: PLR0913
         resolved_interval = _resolve_interval(interval)
         resolved_capital = _resolve_capital(capital)
 
+        exec_config = ExecutionConfig(
+            maker_fee_pct=Decimal(str(maker_fee)),
+            taker_fee_pct=Decimal(str(taker_fee)),
+            slippage_pct=Decimal(str(slippage)),
+            position_size_pct=Decimal(str(position_size)),
+        )
+        risk_config = RiskConfig(
+            stop_loss_pct=Decimal(str(stop_loss)) if stop_loss is not None else None,
+            take_profit_pct=Decimal(str(take_profit)) if take_profit is not None else None,
+        )
+
         engine = BacktestEngine(
             provider=provider,
             strategy=strat,
             initial_capital=resolved_capital,
+            execution_config=exec_config,
+            risk_config=risk_config,
         )
 
         result = await engine.run(symbol, resolved_interval, start, end)

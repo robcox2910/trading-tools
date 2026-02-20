@@ -9,6 +9,9 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
 
+ZERO = Decimal(0)
+ONE = Decimal(1)
+
 
 class Side(Enum):
     """Direction of a trade: BUY (go long) or SELL (close / go short)."""
@@ -27,6 +30,38 @@ class Interval(Enum):
     H4 = "4h"
     D1 = "1d"
     W1 = "1w"
+
+
+@dataclass(frozen=True)
+class ExecutionConfig:
+    """Configure trade execution costs and position sizing.
+
+    Control the realistic simulation of trade execution by specifying
+    maker/taker fees, slippage, and the fraction of capital to deploy
+    per trade. All percentages are expressed as decimals (e.g. 0.001
+    for 0.1%). Default values preserve zero-cost, full-deployment
+    behavior for backward compatibility.
+    """
+
+    maker_fee_pct: Decimal = ZERO
+    taker_fee_pct: Decimal = ZERO
+    slippage_pct: Decimal = ZERO
+    position_size_pct: Decimal = ONE
+
+
+@dataclass(frozen=True)
+class RiskConfig:
+    """Configure automatic risk-management exits.
+
+    Define stop-loss and take-profit thresholds as decimal fractions
+    of the entry price. When set, the backtest engine will close a
+    position automatically if the candle's low breaches the stop-loss
+    level or the candle's high breaches the take-profit level. ``None``
+    disables the corresponding exit.
+    """
+
+    stop_loss_pct: Decimal | None = None
+    take_profit_pct: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -85,20 +120,34 @@ class Trade:
     entry_time: int
     exit_price: Decimal
     exit_time: int
+    entry_fee: Decimal = field(default=ZERO)
+    exit_fee: Decimal = field(default=ZERO)
 
     @property
     def pnl(self) -> Decimal:
-        """Return the absolute profit or loss in quote currency."""
+        """Return the absolute profit or loss in quote currency, net of fees."""
         if self.side == Side.SELL:
-            return (self.entry_price - self.exit_price) * self.quantity
-        return (self.exit_price - self.entry_price) * self.quantity
+            raw = (self.entry_price - self.exit_price) * self.quantity
+        else:
+            raw = (self.exit_price - self.entry_price) * self.quantity
+        return raw - self.entry_fee - self.exit_fee
 
     @property
     def pnl_pct(self) -> Decimal:
-        """Return the percentage gain or loss relative to the entry price."""
+        """Return the percentage gain or loss relative to cost basis.
+
+        Cost basis is the total entry value plus the entry fee. This
+        gives a more realistic return percentage that accounts for
+        transaction costs.
+        """
+        entry_value = self.entry_price * self.quantity
+        cost_basis = entry_value + self.entry_fee
         if self.side == Side.SELL:
-            return (self.entry_price - self.exit_price) / self.entry_price
-        return (self.exit_price - self.entry_price) / self.entry_price
+            raw = (self.entry_price - self.exit_price) * self.quantity
+        else:
+            raw = (self.exit_price - self.entry_price) * self.quantity
+        net = raw - self.entry_fee - self.exit_fee
+        return net / cost_basis
 
 
 @dataclass
@@ -116,8 +165,25 @@ class Position:
     entry_price: Decimal
     entry_time: int
 
-    def close(self, exit_price: Decimal, exit_time: int) -> Trade:
-        """Close this position at the given exit price and time and return a Trade."""
+    def close(
+        self,
+        exit_price: Decimal,
+        exit_time: int,
+        entry_fee: Decimal = ZERO,
+        exit_fee: Decimal = ZERO,
+    ) -> Trade:
+        """Close this position at the given exit price and time and return a Trade.
+
+        Args:
+            exit_price: Price at which the position is closed.
+            exit_time: Unix timestamp of the exit.
+            entry_fee: Fee paid when opening the position.
+            exit_fee: Fee paid when closing the position.
+
+        Returns:
+            An immutable ``Trade`` recording the round-trip.
+
+        """
         return Trade(
             symbol=self.symbol,
             side=self.side,
@@ -126,6 +192,8 @@ class Position:
             entry_time=self.entry_time,
             exit_price=exit_price,
             exit_time=exit_time,
+            entry_fee=entry_fee,
+            exit_fee=exit_fee,
         )
 
 

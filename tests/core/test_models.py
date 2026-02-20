@@ -7,8 +7,10 @@ import pytest
 from trading_tools.core.models import (
     BacktestResult,
     Candle,
+    ExecutionConfig,
     Interval,
     Position,
+    RiskConfig,
     Side,
     Signal,
     Trade,
@@ -160,6 +162,108 @@ class TestTrade:
             exit_time=2000,
         )
         assert trade.pnl_pct == Decimal(10) / Decimal(110)
+
+
+class TestTradeWithFees:
+    """Tests for Trade PnL calculations when fees are present."""
+
+    def test_pnl_with_fees(self) -> None:
+        """Test that fees are subtracted from raw PnL."""
+        trade = Trade(
+            symbol="BTC-USD",
+            side=Side.BUY,
+            quantity=Decimal(2),
+            entry_price=Decimal(100),
+            entry_time=1000,
+            exit_price=Decimal(110),
+            exit_time=2000,
+            entry_fee=Decimal(5),
+            exit_fee=Decimal(3),
+        )
+        # raw pnl = (110-100)*2 = 20, net = 20 - 5 - 3 = 12
+        expected_pnl = Decimal(12)
+        assert trade.pnl == expected_pnl
+
+    def test_pnl_pct_with_fees(self) -> None:
+        """Test that pnl_pct uses cost basis (entry_value + entry_fee)."""
+        trade = Trade(
+            symbol="BTC-USD",
+            side=Side.BUY,
+            quantity=Decimal(2),
+            entry_price=Decimal(100),
+            entry_time=1000,
+            exit_price=Decimal(110),
+            exit_time=2000,
+            entry_fee=Decimal(5),
+            exit_fee=Decimal(3),
+        )
+        # cost_basis = 100*2 + 5 = 205, net_pnl = 12
+        expected_pct = Decimal(12) / Decimal(205)
+        assert trade.pnl_pct == expected_pct
+
+    def test_zero_fees_backward_compat(self) -> None:
+        """Test that default zero fees produce the same results as before."""
+        trade = Trade(
+            symbol="BTC-USD",
+            side=Side.BUY,
+            quantity=Decimal(2),
+            entry_price=Decimal(100),
+            entry_time=1000,
+            exit_price=Decimal(110),
+            exit_time=2000,
+        )
+        expected_pnl = Decimal(20)
+        expected_pct = Decimal("0.1")
+        assert trade.pnl == expected_pnl
+        assert trade.pnl_pct == expected_pct
+
+
+class TestExecutionConfig:
+    """Tests for ExecutionConfig defaults and construction."""
+
+    def test_defaults(self) -> None:
+        """Test all defaults are zero/one for backward compatibility."""
+        cfg = ExecutionConfig()
+        assert cfg.maker_fee_pct == Decimal(0)
+        assert cfg.taker_fee_pct == Decimal(0)
+        assert cfg.slippage_pct == Decimal(0)
+        assert cfg.position_size_pct == Decimal(1)
+
+    def test_custom_values(self) -> None:
+        """Test constructing with custom fee and sizing values."""
+        cfg = ExecutionConfig(
+            maker_fee_pct=Decimal("0.001"),
+            taker_fee_pct=Decimal("0.002"),
+            slippage_pct=Decimal("0.0005"),
+            position_size_pct=Decimal("0.5"),
+        )
+        assert cfg.maker_fee_pct == Decimal("0.001")
+        assert cfg.position_size_pct == Decimal("0.5")
+
+    def test_frozen(self) -> None:
+        """Test ExecutionConfig is immutable."""
+        cfg = ExecutionConfig()
+        with pytest.raises(AttributeError):
+            cfg.maker_fee_pct = Decimal("0.01")  # type: ignore[misc]
+
+
+class TestRiskConfig:
+    """Tests for RiskConfig defaults and construction."""
+
+    def test_defaults(self) -> None:
+        """Test defaults are None (no risk exits)."""
+        cfg = RiskConfig()
+        assert cfg.stop_loss_pct is None
+        assert cfg.take_profit_pct is None
+
+    def test_custom_values(self) -> None:
+        """Test constructing with stop-loss and take-profit thresholds."""
+        cfg = RiskConfig(
+            stop_loss_pct=Decimal("0.05"),
+            take_profit_pct=Decimal("0.10"),
+        )
+        assert cfg.stop_loss_pct == Decimal("0.05")
+        assert cfg.take_profit_pct == Decimal("0.10")
 
 
 class TestPosition:
