@@ -8,19 +8,23 @@ from typing import Annotated
 import typer
 
 from trading_tools.apps.backtester.engine import BacktestEngine
+from trading_tools.apps.backtester.strategies.bollinger import BollingerStrategy
+from trading_tools.apps.backtester.strategies.ema_crossover import (
+    EmaCrossoverStrategy,
+)
+from trading_tools.apps.backtester.strategies.macd import MacdStrategy
+from trading_tools.apps.backtester.strategies.rsi import RsiStrategy
 from trading_tools.apps.backtester.strategies.sma_crossover import (
     SmaCrossoverStrategy,
 )
 from trading_tools.clients.revolut_x.client import RevolutXClient
 from trading_tools.core.config import config
 from trading_tools.core.models import BacktestResult, Interval
-from trading_tools.core.protocols import CandleProvider
+from trading_tools.core.protocols import CandleProvider, TradingStrategy
 from trading_tools.data.providers.csv_provider import CsvCandleProvider
 from trading_tools.data.providers.revolut_x import RevolutXCandleProvider
 
-_STRATEGIES: dict[str, type[SmaCrossoverStrategy]] = {
-    "sma_crossover": SmaCrossoverStrategy,
-}
+_STRATEGY_NAMES = ("sma_crossover", "ema_crossover", "rsi", "bollinger", "macd")
 
 _VALID_SOURCES = ("csv", "revolut-x")
 
@@ -28,8 +32,8 @@ app = typer.Typer(help="Run a backtest")
 
 
 def _validate_strategy(value: str) -> str:
-    if value not in _STRATEGIES:
-        raise typer.BadParameter(f"Must be one of: {', '.join(_STRATEGIES)}")
+    if value not in _STRATEGY_NAMES:
+        raise typer.BadParameter(f"Must be one of: {', '.join(_STRATEGY_NAMES)}")
     return value
 
 
@@ -68,6 +72,38 @@ def _build_provider(
     return CsvCandleProvider(csv_path), None
 
 
+def _build_strategy(
+    name: str,
+    *,
+    short_period: int,
+    long_period: int,
+    period: int,
+    overbought: int,
+    oversold: int,
+    num_std: float,
+    fast_period: int,
+    slow_period: int,
+    signal_period: int,
+) -> TradingStrategy:
+    """Build a strategy instance from CLI parameters."""
+    if name == "sma_crossover":
+        return SmaCrossoverStrategy(short_period, long_period)
+    if name == "ema_crossover":
+        return EmaCrossoverStrategy(short_period, long_period)
+    if name == "rsi":
+        return RsiStrategy(period=period, overbought=overbought, oversold=oversold)
+    if name == "bollinger":
+        return BollingerStrategy(period=period, num_std=num_std)
+    if name == "macd":
+        return MacdStrategy(
+            fast_period=fast_period,
+            slow_period=slow_period,
+            signal_period=signal_period,
+        )
+    msg = f"Unknown strategy: {name}"
+    raise typer.BadParameter(msg)
+
+
 def _print_result(result: BacktestResult) -> None:
     typer.echo(f"\n{'=' * 50}")
     typer.echo(f"Strategy:        {result.strategy_name}")
@@ -84,7 +120,7 @@ def _print_result(result: BacktestResult) -> None:
 
 
 @app.command()
-def run(
+def run(  # noqa: PLR0913
     source: Annotated[
         str,
         typer.Option(
@@ -101,8 +137,15 @@ def run(
     strategy: Annotated[
         str, typer.Option(help="Strategy name", callback=_validate_strategy)
     ] = "sma_crossover",
-    short_period: Annotated[int, typer.Option(help="SMA short period")] = 10,
-    long_period: Annotated[int, typer.Option(help="SMA long period")] = 20,
+    short_period: Annotated[int, typer.Option(help="Short EMA/SMA period")] = 10,
+    long_period: Annotated[int, typer.Option(help="Long EMA/SMA period")] = 20,
+    period: Annotated[int, typer.Option(help="Period for RSI or Bollinger")] = 14,
+    overbought: Annotated[int, typer.Option(help="RSI overbought threshold")] = 70,
+    oversold: Annotated[int, typer.Option(help="RSI oversold threshold")] = 30,
+    num_std: Annotated[float, typer.Option(help="Bollinger Band std deviations")] = 2.0,
+    fast_period: Annotated[int, typer.Option(help="MACD fast EMA period")] = 12,
+    slow_period: Annotated[int, typer.Option(help="MACD slow EMA period")] = 26,
+    signal_period: Annotated[int, typer.Option(help="MACD signal EMA period")] = 9,
     start: Annotated[int, typer.Option(help="Start timestamp")] = 0,
     end: Annotated[int, typer.Option(help="End timestamp")] = 2**53,
 ) -> None:
@@ -117,13 +160,20 @@ def run(
             strategy=strategy,
             short_period=short_period,
             long_period=long_period,
+            period=period,
+            overbought=overbought,
+            oversold=oversold,
+            num_std=num_std,
+            fast_period=fast_period,
+            slow_period=slow_period,
+            signal_period=signal_period,
             start=start,
             end=end,
         )
     )
 
 
-async def _run(
+async def _run(  # noqa: PLR0913
     *,
     source: str,
     csv: Path | None,
@@ -133,12 +183,30 @@ async def _run(
     strategy: str,
     short_period: int,
     long_period: int,
+    period: int,
+    overbought: int,
+    oversold: int,
+    num_std: float,
+    fast_period: int,
+    slow_period: int,
+    signal_period: int,
     start: int,
     end: int,
 ) -> BacktestResult:
     provider, client = _build_provider(source, csv)
     try:
-        strat = _STRATEGIES[strategy](short_period, long_period)
+        strat = _build_strategy(
+            strategy,
+            short_period=short_period,
+            long_period=long_period,
+            period=period,
+            overbought=overbought,
+            oversold=oversold,
+            num_std=num_std,
+            fast_period=fast_period,
+            slow_period=slow_period,
+            signal_period=signal_period,
+        )
         resolved_interval = _resolve_interval(interval)
         resolved_capital = _resolve_capital(capital)
 
