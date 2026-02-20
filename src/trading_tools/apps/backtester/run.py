@@ -9,14 +9,20 @@ import typer
 
 from trading_tools.apps.backtester.engine import BacktestEngine
 from trading_tools.apps.backtester.strategies.bollinger import BollingerStrategy
+from trading_tools.apps.backtester.strategies.donchian import DonchianStrategy
 from trading_tools.apps.backtester.strategies.ema_crossover import (
     EmaCrossoverStrategy,
 )
 from trading_tools.apps.backtester.strategies.macd import MacdStrategy
+from trading_tools.apps.backtester.strategies.mean_reversion import (
+    MeanReversionStrategy,
+)
 from trading_tools.apps.backtester.strategies.rsi import RsiStrategy
 from trading_tools.apps.backtester.strategies.sma_crossover import (
     SmaCrossoverStrategy,
 )
+from trading_tools.apps.backtester.strategies.stochastic import StochasticStrategy
+from trading_tools.apps.backtester.strategies.vwap import VwapStrategy
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.clients.revolut_x.client import RevolutXClient
 from trading_tools.core.config import config
@@ -26,7 +32,17 @@ from trading_tools.data.providers.binance import BinanceCandleProvider
 from trading_tools.data.providers.csv_provider import CsvCandleProvider
 from trading_tools.data.providers.revolut_x import RevolutXCandleProvider
 
-_STRATEGY_NAMES = ("sma_crossover", "ema_crossover", "rsi", "bollinger", "macd")
+_STRATEGY_NAMES = (
+    "sma_crossover",
+    "ema_crossover",
+    "rsi",
+    "bollinger",
+    "macd",
+    "stochastic",
+    "vwap",
+    "donchian",
+    "mean_reversion",
+)
 
 _VALID_SOURCES = ("csv", "revolut-x", "binance")
 
@@ -78,7 +94,7 @@ def _build_provider(
     return CsvCandleProvider(csv_path), None
 
 
-def _build_strategy(
+def _build_strategy(  # noqa: PLR0913
     name: str,
     *,
     short_period: int,
@@ -90,24 +106,35 @@ def _build_strategy(
     fast_period: int,
     slow_period: int,
     signal_period: int,
+    k_period: int,
+    d_period: int,
+    z_threshold: float,
 ) -> TradingStrategy:
     """Build a strategy instance from CLI parameters."""
-    if name == "sma_crossover":
-        return SmaCrossoverStrategy(short_period, long_period)
-    if name == "ema_crossover":
-        return EmaCrossoverStrategy(short_period, long_period)
-    if name == "rsi":
-        return RsiStrategy(period=period, overbought=overbought, oversold=oversold)
-    if name == "bollinger":
-        return BollingerStrategy(period=period, num_std=num_std)
-    if name == "macd":
-        return MacdStrategy(
+    builders: dict[str, TradingStrategy] = {
+        "sma_crossover": SmaCrossoverStrategy(short_period, long_period),
+        "ema_crossover": EmaCrossoverStrategy(short_period, long_period),
+        "rsi": RsiStrategy(period=period, overbought=overbought, oversold=oversold),
+        "bollinger": BollingerStrategy(period=period, num_std=num_std),
+        "macd": MacdStrategy(
             fast_period=fast_period,
             slow_period=slow_period,
             signal_period=signal_period,
-        )
-    msg = f"Unknown strategy: {name}"
-    raise typer.BadParameter(msg)
+        ),
+        "stochastic": StochasticStrategy(
+            k_period=k_period,
+            d_period=d_period,
+            overbought=overbought,
+            oversold=oversold,
+        ),
+        "vwap": VwapStrategy(period=period),
+        "donchian": DonchianStrategy(period=period),
+        "mean_reversion": MeanReversionStrategy(period=period, z_threshold=z_threshold),
+    }
+    if name not in builders:
+        msg = f"Unknown strategy: {name}"
+        raise typer.BadParameter(msg)
+    return builders[name]
 
 
 def _print_result(result: BacktestResult) -> None:
@@ -145,13 +172,18 @@ def run(  # noqa: PLR0913
     ] = "sma_crossover",
     short_period: Annotated[int, typer.Option(help="Short EMA/SMA period")] = 10,
     long_period: Annotated[int, typer.Option(help="Long EMA/SMA period")] = 20,
-    period: Annotated[int, typer.Option(help="Period for RSI or Bollinger")] = 14,
-    overbought: Annotated[int, typer.Option(help="RSI overbought threshold")] = 70,
-    oversold: Annotated[int, typer.Option(help="RSI oversold threshold")] = 30,
+    period: Annotated[
+        int, typer.Option(help="Period for RSI, Bollinger, VWAP, Donchian, or Mean Reversion")
+    ] = 14,
+    overbought: Annotated[int, typer.Option(help="RSI/Stochastic overbought threshold")] = 70,
+    oversold: Annotated[int, typer.Option(help="RSI/Stochastic oversold threshold")] = 30,
     num_std: Annotated[float, typer.Option(help="Bollinger Band std deviations")] = 2.0,
     fast_period: Annotated[int, typer.Option(help="MACD fast EMA period")] = 12,
     slow_period: Annotated[int, typer.Option(help="MACD slow EMA period")] = 26,
     signal_period: Annotated[int, typer.Option(help="MACD signal EMA period")] = 9,
+    k_period: Annotated[int, typer.Option(help="Stochastic %K period")] = 14,
+    d_period: Annotated[int, typer.Option(help="Stochastic %D period")] = 3,
+    z_threshold: Annotated[float, typer.Option(help="Mean reversion z-score threshold")] = 2.0,
     start: Annotated[int, typer.Option(help="Start timestamp")] = 0,
     end: Annotated[int, typer.Option(help="End timestamp")] = 2**53,
 ) -> None:
@@ -173,6 +205,9 @@ def run(  # noqa: PLR0913
             fast_period=fast_period,
             slow_period=slow_period,
             signal_period=signal_period,
+            k_period=k_period,
+            d_period=d_period,
+            z_threshold=z_threshold,
             start=start,
             end=end,
         )
@@ -196,6 +231,9 @@ async def _run(  # noqa: PLR0913
     fast_period: int,
     slow_period: int,
     signal_period: int,
+    k_period: int,
+    d_period: int,
+    z_threshold: float,
     start: int,
     end: int,
 ) -> BacktestResult:
@@ -212,6 +250,9 @@ async def _run(  # noqa: PLR0913
             fast_period=fast_period,
             slow_period=slow_period,
             signal_period=signal_period,
+            k_period=k_period,
+            d_period=d_period,
+            z_threshold=z_threshold,
         )
         resolved_interval = _resolve_interval(interval)
         resolved_capital = _resolve_capital(capital)
