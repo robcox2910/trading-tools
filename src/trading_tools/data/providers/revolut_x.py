@@ -1,4 +1,10 @@
-"""Revolut X candle data provider."""
+"""Revolut X candle data provider.
+
+Fetch OHLCV candle data from the Revolut X exchange API. The API
+returns at most 100 candles per request, so this provider paginates
+automatically by advancing the ``since`` parameter past the last
+returned candle until the full requested range is covered.
+"""
 
 from decimal import Decimal
 from typing import Any
@@ -21,10 +27,21 @@ _MS_PER_SECOND = 1000
 
 
 class RevolutXCandleProvider:
-    """Fetch candle data from the Revolut X API."""
+    """Fetch candle data from the Revolut X exchange API.
+
+    Implement the ``CandleProvider`` protocol. The Revolut X API uses
+    millisecond timestamps and returns at most 100 candles per request,
+    so this provider converts between seconds and milliseconds and
+    paginates transparently.
+    """
 
     def __init__(self, client: RevolutXClient) -> None:
-        """Initialize the Revolut X candle provider."""
+        """Initialize the provider with an authenticated Revolut X client.
+
+        Args:
+            client: An already-configured ``RevolutXClient`` instance.
+
+        """
         self._client = client
 
     async def get_candles(
@@ -34,12 +51,24 @@ class RevolutXCandleProvider:
         start_ts: int,
         end_ts: int,
     ) -> list[Candle]:
-        """Fetch candles from Revolut X API.
+        """Fetch candles from the Revolut X API for the given range.
 
-        Paginate in chunks of up to 100 candles per request.
+        Paginate in chunks of up to 100 candles per request, advancing
+        the ``since`` parameter past the last candle each time.
         Timestamps are converted from seconds to milliseconds for the API.
 
-        Raise ValueError if the interval is not supported by the API.
+        Args:
+            symbol: Trading pair (e.g. ``BTC-USD``).
+            interval: Candle time interval (must be in ``_INTERVAL_TO_MINUTES``).
+            start_ts: Start Unix timestamp in seconds.
+            end_ts: End Unix timestamp in seconds.
+
+        Returns:
+            List of ``Candle`` objects sorted by timestamp.
+
+        Raises:
+            ValueError: If the interval is not supported by the API.
+
         """
         if interval not in _INTERVAL_TO_MINUTES:
             msg = f"Interval {interval.value} is not supported by the Revolut X API"
@@ -76,7 +105,11 @@ class RevolutXCandleProvider:
 
     @staticmethod
     def _parse_candle(raw: dict[str, Any], symbol: str, interval: Interval) -> Candle:
-        """Parse a raw API candle dict into a Candle model."""
+        """Parse a raw API response dict into a ``Candle`` model.
+
+        Convert the millisecond ``start`` timestamp to seconds and wrap
+        all numeric fields in ``Decimal`` for lossless arithmetic.
+        """
         return Candle(
             symbol=symbol,
             timestamp=int(raw["start"]) // _MS_PER_SECOND,

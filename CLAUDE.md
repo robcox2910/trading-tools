@@ -3,8 +3,13 @@
 ## Code Style
 
 - All public functions, methods, classes, and modules **must** have a docstring
+- Docstrings must be **thorough, clean, and informative** — not just one-word placeholders
+  - Classes: explain what the class represents, its role in the system, and key behaviour
+  - Methods/functions: explain what it does, include `Args:`, `Returns:`, and `Raises:` sections where applicable
+  - Modules: describe the purpose of the file and what it contains
+  - Always write docstrings so someone new to the codebase can understand the code without reading the implementation
 - Use imperative mood: "Return the trade." not "Returns the trade."
-- One-line docstrings for simple functions; multi-line with summary + details for complex ones
+- One-line docstrings for truly trivial functions; multi-line with summary + details for everything else
 - Follow the Google docstring convention (D211, D212 selected via ruff)
 
 ## Linting
