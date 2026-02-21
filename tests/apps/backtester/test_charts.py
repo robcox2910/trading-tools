@@ -13,6 +13,8 @@ import plotly.graph_objects as go
 import pytest
 
 from trading_tools.apps.backtester.charts import (
+    build_drawdown_series,
+    build_equity_series,
     create_benchmark_chart,
     create_comparison_chart,
     create_dashboard,
@@ -405,6 +407,59 @@ class TestWalkForwardChart:
         fig = create_walk_forward_chart(self._make_wf_result())
         bar_traces = [t for t in fig.data if isinstance(t, go.Bar)]
         assert len(bar_traces) == 1
+
+
+class TestBuildEquitySeries:
+    """Test the build_equity_series helper function."""
+
+    def test_starts_at_initial_capital(self) -> None:
+        """Start the series at the initial capital value."""
+        result = _make_result()
+        timestamps, equity = build_equity_series(result)
+        assert equity[0] == float(_INITIAL_CAPITAL)
+        assert timestamps[0] == result.trades[0].entry_time
+
+    def test_accumulates_pnl(self) -> None:
+        """Accumulate trade PnL to produce final equity."""
+        result = _make_result()
+        _, equity = build_equity_series(result)
+        expected_final = float(_INITIAL_CAPITAL) + sum(float(t.pnl) for t in result.trades)
+        assert equity[-1] == pytest.approx(expected_final)
+
+    def test_length_matches_trades_plus_one(self) -> None:
+        """Return one more point than the number of trades."""
+        result = _make_result()
+        timestamps, equity = build_equity_series(result)
+        assert len(timestamps) == len(result.trades) + 1
+        assert len(equity) == len(result.trades) + 1
+
+
+class TestBuildDrawdownSeries:
+    """Test the build_drawdown_series helper function."""
+
+    def test_all_values_non_positive(self) -> None:
+        """Return only zero or negative values."""
+        equity = [10000.0, 10500.0, 10200.0, 10800.0, 10600.0]
+        drawdowns = build_drawdown_series(equity)
+        assert all(d <= 0 for d in drawdowns)
+
+    def test_starts_at_zero(self) -> None:
+        """First drawdown is always zero (equity equals peak)."""
+        equity = [10000.0, 9500.0, 9000.0]
+        drawdowns = build_drawdown_series(equity)
+        assert drawdowns[0] == 0.0
+
+    def test_correct_drawdown_values(self) -> None:
+        """Compute correct fractional drawdown from peak."""
+        equity = [10000.0, 9000.0]
+        drawdowns = build_drawdown_series(equity)
+        assert drawdowns[1] == pytest.approx(-0.1)
+
+    def test_monotonic_peak(self) -> None:
+        """Reset drawdown to zero when equity hits new high."""
+        equity = [10000.0, 10500.0]
+        drawdowns = build_drawdown_series(equity)
+        assert drawdowns[1] == 0.0
 
 
 class TestSaveCharts:

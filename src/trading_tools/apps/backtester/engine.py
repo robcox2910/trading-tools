@@ -86,15 +86,25 @@ class BacktestEngine:
         if not candles:
             return self._empty_result(symbol, interval)
 
-        portfolio = Portfolio(self._initial_capital, self._execution_config)
+        portfolio = Portfolio(
+            self._initial_capital,
+            self._execution_config,
+            self._risk_config,
+        )
         history: list[Candle] = []
 
         for candle in candles:
+            portfolio.update_equity(candle.close)
             risk_trade = self._check_risk_exit(candle, portfolio)
             if risk_trade is None:
                 signal = self._strategy.on_candle(candle, history)
                 if signal is not None:
-                    portfolio.process_signal(signal, candle.close, candle.timestamp)
+                    portfolio.process_signal(
+                        signal,
+                        candle.close,
+                        candle.timestamp,
+                        history,
+                    )
             history.append(candle)
 
         last = candles[-1]

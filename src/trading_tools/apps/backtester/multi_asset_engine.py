@@ -88,20 +88,33 @@ class MultiAssetEngine:
         if not all_candles:
             return self._empty_result(interval)
 
-        portfolio = MultiAssetPortfolio(self._initial_capital, self._execution_config)
+        portfolio = MultiAssetPortfolio(
+            self._initial_capital,
+            self._execution_config,
+            self._risk_config,
+        )
         history: dict[str, list[Candle]] = {s: [] for s in self._symbols}
+        latest_prices: dict[str, Decimal] = {}
 
         for candle in all_candles:
             symbol = candle.symbol
             if symbol not in history:
                 history[symbol] = []
 
+            latest_prices[symbol] = candle.close
+            portfolio.update_equity(latest_prices)
+
             risk_trade = self._check_risk_exit(candle, portfolio)
             if risk_trade is None:
                 symbol_history = history[symbol]
                 signal = self._strategy.on_candle(candle, symbol_history)
                 if signal is not None:
-                    portfolio.process_signal(signal, candle.close, candle.timestamp)
+                    portfolio.process_signal(
+                        signal,
+                        candle.close,
+                        candle.timestamp,
+                        symbol_history,
+                    )
             history[symbol].append(candle)
 
         last_prices: dict[str, Decimal] = {}

@@ -41,12 +41,19 @@ class ExecutionConfig:
     per trade. All percentages are expressed as decimals (e.g. 0.001
     for 0.1%). Default values preserve zero-cost, full-deployment
     behavior for backward compatibility.
+
+    When ``volatility_sizing`` is enabled, position size is computed
+    from ATR so that each trade risks approximately ``target_risk_pct``
+    of total capital. The result is capped at ``position_size_pct``.
     """
 
     maker_fee_pct: Decimal = ZERO
     taker_fee_pct: Decimal = ZERO
     slippage_pct: Decimal = ZERO
     position_size_pct: Decimal = ONE
+    volatility_sizing: bool = False
+    atr_period: int = 14
+    target_risk_pct: Decimal = Decimal("0.02")
 
 
 @dataclass(frozen=True)
@@ -58,10 +65,17 @@ class RiskConfig:
     position automatically if the candle's low breaches the stop-loss
     level or the candle's high breaches the take-profit level. ``None``
     disables the corresponding exit.
+
+    Optionally enable a drawdown circuit breaker that halts new trades
+    when portfolio equity drops by ``circuit_breaker_pct`` from peak.
+    Trading resumes after equity recovers by ``recovery_pct`` from
+    the halt point. Both must be set to enable the circuit breaker.
     """
 
     stop_loss_pct: Decimal | None = None
     take_profit_pct: Decimal | None = None
+    circuit_breaker_pct: Decimal | None = None
+    recovery_pct: Decimal | None = None
 
 
 @dataclass(frozen=True)
