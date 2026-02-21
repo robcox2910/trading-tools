@@ -279,7 +279,7 @@ async def _compare(  # noqa: PLR0913
         typer.echo(f"\nStrategy Comparison: {symbol} ({resolved_interval.value})")
         typer.echo(table)
 
-        if chart:
+        if chart or chart_output is not None:
             has_trades = any(r.trades for r in results)
             if has_trades:
                 fig = create_comparison_chart(results)
@@ -456,7 +456,7 @@ async def _run(  # noqa: PLR0913
         result = await engine.run(symbol, resolved_interval, start, end)
         _print_result(result)
 
-        if chart:
+        if chart or chart_output is not None:
             if result.trades:
                 fig = create_dashboard(result)
                 if chart_output is not None:
