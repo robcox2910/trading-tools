@@ -9,6 +9,7 @@ from here to avoid circular dependencies.
 import typer
 
 from trading_tools.apps.backtester.strategies.bollinger import BollingerStrategy
+from trading_tools.apps.backtester.strategies.buy_and_hold import BuyAndHoldStrategy
 from trading_tools.apps.backtester.strategies.donchian import DonchianStrategy
 from trading_tools.apps.backtester.strategies.ema_crossover import (
     EmaCrossoverStrategy,
@@ -35,6 +36,7 @@ STRATEGY_NAMES = (
     "vwap",
     "donchian",
     "mean_reversion",
+    "buy_and_hold",
 )
 
 
@@ -101,6 +103,7 @@ def build_strategy(  # noqa: PLR0913
         "vwap": VwapStrategy(period=period),
         "donchian": DonchianStrategy(period=period),
         "mean_reversion": MeanReversionStrategy(period=period, z_threshold=z_threshold),
+        "buy_and_hold": BuyAndHoldStrategy(),
     }
     if name not in builders:
         msg = f"Unknown strategy: {name}"

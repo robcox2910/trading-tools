@@ -13,13 +13,21 @@ import plotly.graph_objects as go
 import pytest
 
 from trading_tools.apps.backtester.charts import (
+    create_benchmark_chart,
     create_comparison_chart,
     create_dashboard,
     create_drawdown_chart,
     create_equity_curve,
+    create_monte_carlo_chart,
     create_pnl_distribution,
     create_price_chart,
+    create_walk_forward_chart,
     save_charts,
+)
+from trading_tools.apps.backtester.monte_carlo import run_monte_carlo
+from trading_tools.apps.backtester.walk_forward import (
+    WalkForwardFold,
+    WalkForwardResult,
 )
 from trading_tools.core.models import (
     BacktestResult,
@@ -297,6 +305,106 @@ class TestDashboard:
         result = _make_result(trades=())
         with pytest.raises(ValueError, match="no trades"):
             create_dashboard(result)
+
+
+_BENCHMARK_TRACE_COUNT = 2
+_MC_SEED = 42
+_MC_SHUFFLES = 50
+
+
+class TestBenchmarkChart:
+    """Test the benchmark comparison chart creation."""
+
+    def test_returns_figure(self) -> None:
+        """Return a Plotly Figure instance."""
+        fig = create_benchmark_chart(
+            _make_result(strategy_name="sma_crossover"),
+            _make_result(strategy_name="buy_and_hold"),
+        )
+        assert isinstance(fig, go.Figure)
+
+    def test_contains_two_scatter_traces(self) -> None:
+        """Contain two Scatter traces for strategy and benchmark lines."""
+        fig = create_benchmark_chart(
+            _make_result(strategy_name="sma_crossover"),
+            _make_result(strategy_name="buy_and_hold"),
+        )
+        scatter_traces = [t for t in fig.data if isinstance(t, go.Scatter)]
+        assert len(scatter_traces) == _BENCHMARK_TRACE_COUNT
+
+    def test_raises_on_no_strategy_trades(self) -> None:
+        """Raise ValueError when the strategy result has no trades."""
+        with pytest.raises(ValueError, match="strategy has no trades"):
+            create_benchmark_chart(
+                _make_result(strategy_name="sma_crossover", trades=()),
+                _make_result(strategy_name="buy_and_hold"),
+            )
+
+    def test_raises_on_no_benchmark_trades(self) -> None:
+        """Raise ValueError when the benchmark result has no trades."""
+        with pytest.raises(ValueError, match="benchmark has no trades"):
+            create_benchmark_chart(
+                _make_result(strategy_name="sma_crossover"),
+                _make_result(strategy_name="buy_and_hold", trades=()),
+            )
+
+    def test_trace_names_match_strategies(self) -> None:
+        """Use strategy names as trace labels."""
+        fig = create_benchmark_chart(
+            _make_result(strategy_name="my_strategy"),
+            _make_result(strategy_name="buy_and_hold"),
+        )
+        trace_names = {t.name for t in fig.data if isinstance(t, go.Scatter)}
+        assert "my_strategy" in trace_names
+        assert "buy_and_hold" in trace_names
+
+
+class TestMonteCarloChart:
+    """Test the Monte Carlo distribution chart creation."""
+
+    def test_returns_figure(self) -> None:
+        """Return a Plotly Figure instance."""
+        mc = run_monte_carlo(_make_result(), num_shuffles=_MC_SHUFFLES, seed=_MC_SEED)
+        fig = create_monte_carlo_chart(mc)
+        assert isinstance(fig, go.Figure)
+
+    def test_contains_bar_traces(self) -> None:
+        """Contain Bar traces for each metric distribution."""
+        mc = run_monte_carlo(_make_result(), num_shuffles=_MC_SHUFFLES, seed=_MC_SEED)
+        fig = create_monte_carlo_chart(mc)
+        bar_traces = [t for t in fig.data if isinstance(t, go.Bar)]
+        assert len(bar_traces) == len(mc.distributions)
+
+
+class TestWalkForwardChart:
+    """Test the walk-forward bar chart creation."""
+
+    def _make_wf_result(self) -> WalkForwardResult:
+        """Build a minimal WalkForwardResult for testing."""
+        fold_result = _make_result()
+        fold = WalkForwardFold(
+            fold_index=0,
+            best_strategy_name="sma_crossover",
+            train_result=fold_result,
+            test_result=fold_result,
+        )
+        return WalkForwardResult(
+            folds=(fold,),
+            aggregate_metrics=fold_result.metrics,
+            symbol="BTC-USD",
+            interval=Interval.H1,
+        )
+
+    def test_returns_figure(self) -> None:
+        """Return a Plotly Figure instance."""
+        fig = create_walk_forward_chart(self._make_wf_result())
+        assert isinstance(fig, go.Figure)
+
+    def test_contains_bar_trace(self) -> None:
+        """Contain a Bar trace for fold returns."""
+        fig = create_walk_forward_chart(self._make_wf_result())
+        bar_traces = [t for t in fig.data if isinstance(t, go.Bar)]
+        assert len(bar_traces) == 1
 
 
 class TestSaveCharts:
