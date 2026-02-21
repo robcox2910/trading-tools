@@ -218,3 +218,4 @@ class BacktestResult:
     final_capital: Decimal
     trades: tuple[Trade, ...]
     metrics: dict[str, Decimal] = field(default_factory=_empty_metrics)
+    candles: tuple[Candle, ...] = ()

@@ -13,6 +13,12 @@ from typing import Annotated
 
 import typer
 
+from trading_tools.apps.backtester.charts import (
+    create_comparison_chart,
+    create_dashboard,
+    save_charts,
+    show_charts,
+)
 from trading_tools.apps.backtester.compare import (
     format_comparison_table,
     run_comparison,
@@ -153,6 +159,10 @@ def compare(  # noqa: PLR0913
     start: Annotated[int, typer.Option(help="Start timestamp")] = 0,
     end: Annotated[int, typer.Option(help="End timestamp")] = 2**53,
     sort_by: Annotated[str, typer.Option(help="Metric to rank by")] = "total_return",
+    chart: Annotated[bool, typer.Option(help="Generate interactive charts")] = False,  # noqa: FBT002
+    chart_output: Annotated[
+        Path | None, typer.Option(help="Save charts to HTML file instead of browser")
+    ] = None,
 ) -> None:
     """Run all strategies on the same data and display a ranked comparison table."""
     asyncio.run(
@@ -183,6 +193,8 @@ def compare(  # noqa: PLR0913
             start=start,
             end=end,
             sort_by=sort_by,
+            chart=chart,
+            chart_output=chart_output,
         )
     )
 
@@ -215,11 +227,14 @@ async def _compare(  # noqa: PLR0913
     start: int,
     end: int,
     sort_by: str,
+    chart: bool,
+    chart_output: Path | None,
 ) -> None:
     """Orchestrate a multi-strategy comparison from resolved CLI parameters.
 
     Build the candle provider and configuration objects, run all strategies
     via ``run_comparison``, and print the ranked comparison table.
+    Optionally generate an interactive comparison chart.
     """
     provider, client = _build_provider(source, csv)
     try:
@@ -263,6 +278,18 @@ async def _compare(  # noqa: PLR0913
         table = format_comparison_table(results, sort_by=sort_by)
         typer.echo(f"\nStrategy Comparison: {symbol} ({resolved_interval.value})")
         typer.echo(table)
+
+        if chart or chart_output is not None:
+            has_trades = any(r.trades for r in results)
+            if has_trades:
+                fig = create_comparison_chart(results)
+                if chart_output is not None:
+                    save_charts([fig], chart_output)
+                    typer.echo(f"Charts saved to {chart_output}")
+                else:
+                    show_charts([fig])
+            else:
+                typer.echo("No trades — skipping charts.")
     finally:
         if client is not None:
             await client.close()
@@ -310,6 +337,10 @@ def run(  # noqa: PLR0913
     position_size: Annotated[float, typer.Option(help="Fraction of capital per trade (0-1)")] = 1.0,
     start: Annotated[int, typer.Option(help="Start timestamp")] = 0,
     end: Annotated[int, typer.Option(help="End timestamp")] = 2**53,
+    chart: Annotated[bool, typer.Option(help="Generate interactive charts")] = False,  # noqa: FBT002
+    chart_output: Annotated[
+        Path | None, typer.Option(help="Save charts to HTML file instead of browser")
+    ] = None,
 ) -> None:
     """Run a backtest against historical candle data."""
     asyncio.run(
@@ -340,6 +371,8 @@ def run(  # noqa: PLR0913
             position_size=position_size,
             start=start,
             end=end,
+            chart=chart,
+            chart_output=chart_output,
         )
     )
 
@@ -372,12 +405,14 @@ async def _run(  # noqa: PLR0913
     position_size: float,
     start: int,
     end: int,
+    chart: bool,
+    chart_output: Path | None,
 ) -> BacktestResult:
     """Orchestrate a single backtest run from resolved CLI parameters.
 
     Build the candle provider and strategy, construct execution and
     risk configurations, execute the backtest engine, print the result,
-    and close any HTTP client resources.
+    optionally generate charts, and close any HTTP client resources.
     """
     provider, client = _build_provider(source, csv)
     try:
@@ -420,6 +455,17 @@ async def _run(  # noqa: PLR0913
 
         result = await engine.run(symbol, resolved_interval, start, end)
         _print_result(result)
+
+        if chart or chart_output is not None:
+            if result.trades:
+                fig = create_dashboard(result)
+                if chart_output is not None:
+                    save_charts([fig], chart_output)
+                    typer.echo(f"Charts saved to {chart_output}")
+                else:
+                    show_charts([fig])
+            else:
+                typer.echo("No trades — skipping charts.")
     finally:
         if client is not None:
             await client.close()
