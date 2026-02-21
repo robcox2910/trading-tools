@@ -111,6 +111,7 @@ class BacktestEngine:
             final_capital=portfolio.capital,
             trades=tuple(trades),
             metrics=metrics,
+            candles=tuple(candles),
         )
 
     def _check_risk_exit(self, candle: Candle, portfolio: Portfolio) -> Trade | None:
