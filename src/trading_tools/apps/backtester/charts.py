@@ -24,6 +24,52 @@ if TYPE_CHECKING:
     from trading_tools.apps.backtester.walk_forward import WalkForwardResult
     from trading_tools.core.models import BacktestResult
 
+
+def build_equity_series(result: BacktestResult) -> tuple[list[int], list[float]]:
+    """Reconstruct the equity curve from initial capital and cumulative trade PnL.
+
+    Walk through trades in order, accumulating PnL onto the starting
+    capital. Return parallel lists of timestamps and equity values.
+
+    Args:
+        result: A completed backtest result containing trades.
+
+    Returns:
+        A tuple of (timestamps, equity_values) lists.
+
+    """
+    capital = float(result.initial_capital)
+    timestamps: list[int] = [result.trades[0].entry_time]
+    equity: list[float] = [capital]
+    for trade in result.trades:
+        capital += float(trade.pnl)
+        timestamps.append(trade.exit_time)
+        equity.append(capital)
+    return timestamps, equity
+
+
+def build_drawdown_series(equity: list[float]) -> list[float]:
+    """Compute drawdown fractions from an equity series.
+
+    At each point, calculate the fractional decline from the running
+    peak. All values are zero or negative.
+
+    Args:
+        equity: List of equity values over time.
+
+    Returns:
+        List of drawdown fractions (zero or negative).
+
+    """
+    peak = equity[0]
+    drawdowns: list[float] = []
+    for value in equity:
+        peak = max(peak, value)
+        dd = (value - peak) / peak if peak > 0 else 0.0
+        drawdowns.append(dd)
+    return drawdowns
+
+
 _BG_COLOR = "#1e1e2f"
 _PAPER_COLOR = "#1e1e2f"
 _GRID_COLOR = "#2e2e3e"
@@ -81,14 +127,7 @@ def create_equity_curve(result: BacktestResult) -> go.Figure:
         msg = "Cannot create equity curve: no trades in result"
         raise ValueError(msg)
 
-    capital = float(result.initial_capital)
-    timestamps: list[int] = [result.trades[0].entry_time]
-    equity: list[float] = [capital]
-
-    for trade in result.trades:
-        capital += float(trade.pnl)
-        timestamps.append(trade.exit_time)
-        equity.append(capital)
+    timestamps, equity = build_equity_series(result)
 
     overall_return = equity[-1] - equity[0]
     line_color = _GREEN if overall_return >= 0 else _RED
@@ -139,21 +178,8 @@ def create_drawdown_chart(result: BacktestResult) -> go.Figure:
         msg = "Cannot create drawdown chart: no trades in result"
         raise ValueError(msg)
 
-    capital = float(result.initial_capital)
-    timestamps: list[int] = [result.trades[0].entry_time]
-    equity: list[float] = [capital]
-
-    for trade in result.trades:
-        capital += float(trade.pnl)
-        timestamps.append(trade.exit_time)
-        equity.append(capital)
-
-    peak = equity[0]
-    drawdowns: list[float] = []
-    for value in equity:
-        peak = max(peak, value)
-        dd = (value - peak) / peak if peak > 0 else 0.0
-        drawdowns.append(dd)
+    timestamps, equity = build_equity_series(result)
+    drawdowns = build_drawdown_series(equity)
 
     min_dd = min(drawdowns)
     min_dd_idx = drawdowns.index(min_dd)
@@ -347,18 +373,8 @@ def create_benchmark_chart(
         msg = "Cannot create benchmark chart: benchmark has no trades"
         raise ValueError(msg)
 
-    def _equity_series(result: BacktestResult) -> tuple[list[int], list[float]]:
-        capital = float(result.initial_capital)
-        timestamps: list[int] = [result.trades[0].entry_time]
-        equity: list[float] = [capital]
-        for trade in result.trades:
-            capital += float(trade.pnl)
-            timestamps.append(trade.exit_time)
-            equity.append(capital)
-        return timestamps, equity
-
-    strat_ts, strat_eq = _equity_series(strategy_result)
-    bench_ts, bench_eq = _equity_series(benchmark_result)
+    strat_ts, strat_eq = build_equity_series(strategy_result)
+    bench_ts, bench_eq = build_equity_series(benchmark_result)
 
     overall_return = strat_eq[-1] - strat_eq[0]
     strat_color = _GREEN if overall_return >= 0 else _RED
@@ -570,13 +586,7 @@ def create_dashboard(result: BacktestResult) -> go.Figure:
     )
 
     # --- Equity curve (row 1, col 1) ---
-    capital = float(result.initial_capital)
-    eq_ts: list[int] = [result.trades[0].entry_time]
-    eq_vals: list[float] = [capital]
-    for trade in result.trades:
-        capital += float(trade.pnl)
-        eq_ts.append(trade.exit_time)
-        eq_vals.append(capital)
+    eq_ts, eq_vals = build_equity_series(result)
 
     overall_return = eq_vals[-1] - eq_vals[0]
     fig.add_trace(
@@ -593,12 +603,7 @@ def create_dashboard(result: BacktestResult) -> go.Figure:
     )
 
     # --- Drawdown (row 1, col 2) ---
-    peak = eq_vals[0]
-    drawdowns: list[float] = []
-    for value in eq_vals:
-        peak = max(peak, value)
-        dd = (value - peak) / peak if peak > 0 else 0.0
-        drawdowns.append(dd)
+    drawdowns = build_drawdown_series(eq_vals)
 
     fig.add_trace(
         go.Scatter(

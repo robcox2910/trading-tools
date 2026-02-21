@@ -112,13 +112,15 @@ class TestBacktesterCli:
 class TestBacktesterRevolutXSource:
     """Tests for backtester with --source revolut-x."""
 
-    @patch("trading_tools.apps.backtester.run.RevolutXClient")
+    @patch("trading_tools.apps.backtester.cli._helpers.RevolutXClient")
     def test_revolut_x_source(self, mock_client_cls: MagicMock) -> None:
         """Run backtest with --source revolut-x using mocked client."""
         client = AsyncMock()
         mock_client_cls.from_config.return_value = client
 
-        with patch("trading_tools.apps.backtester.run.RevolutXCandleProvider") as mock_prov_cls:
+        with patch(
+            "trading_tools.apps.backtester.cli._helpers.RevolutXCandleProvider"
+        ) as mock_prov_cls:
             mock_prov_cls.return_value.get_candles = AsyncMock(return_value=_SAMPLE_CANDLES)
 
             result = runner.invoke(app, ["run", "--source", "revolut-x"])

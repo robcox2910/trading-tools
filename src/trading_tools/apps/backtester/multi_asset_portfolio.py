@@ -8,10 +8,14 @@ capital available for others.
 
 from decimal import Decimal
 
+from trading_tools.apps.backtester.indicators import atr as compute_atr
+from trading_tools.apps.backtester.portfolio import check_circuit_breaker
 from trading_tools.core.models import (
     ZERO,
+    Candle,
     ExecutionConfig,
     Position,
+    RiskConfig,
     Side,
     Signal,
     Trade,
@@ -25,19 +29,22 @@ class MultiAssetPortfolio:
     position per symbol concurrently. Each position is sized as a
     fixed fraction (``position_size_pct``) of the initial capital,
     not the remaining capital. This prevents later positions from
-    being unfairly sized by earlier wins/losses.
+    being unfairly sized by earlier wins/losses. Optionally halt
+    trading when portfolio drawdown exceeds a circuit breaker threshold.
     """
 
     def __init__(
         self,
         initial_capital: Decimal,
         execution_config: ExecutionConfig | None = None,
+        risk_config: RiskConfig | None = None,
     ) -> None:
         """Initialize the multi-asset portfolio.
 
         Args:
             initial_capital: Starting capital in quote currency.
             execution_config: Optional execution cost configuration.
+            risk_config: Optional risk configuration for circuit breaker.
 
         """
         self._initial_capital = initial_capital
@@ -45,7 +52,11 @@ class MultiAssetPortfolio:
         self._positions: dict[str, Position] = {}
         self._trades: list[Trade] = []
         self._exec = execution_config or ExecutionConfig()
+        self._risk = risk_config or RiskConfig()
         self._entry_fees: dict[str, Decimal] = {}
+        self._halted = False
+        self._peak_equity = initial_capital
+        self._halt_equity = ZERO
 
     @property
     def capital(self) -> Decimal:
@@ -62,17 +73,53 @@ class MultiAssetPortfolio:
         """Return a copy of completed trades."""
         return list(self._trades)
 
-    def process_signal(self, signal: Signal, price: Decimal, timestamp: int) -> Trade | None:
+    @property
+    def halted(self) -> bool:
+        """Return whether the circuit breaker has halted trading."""
+        return self._halted
+
+    def update_equity(self, prices: dict[str, Decimal]) -> None:
+        """Update circuit breaker state based on current mark-to-market equity.
+
+        Compute total equity as available capital plus the mark-to-market
+        value of all open positions, then check the circuit breaker.
+
+        Args:
+            prices: Mapping of symbol to current market price.
+
+        """
+        equity = self._capital
+        for symbol, pos in self._positions.items():
+            if symbol in prices:
+                equity += pos.quantity * prices[symbol]
+        self._halted, self._peak_equity, self._halt_equity = check_circuit_breaker(
+            halted=self._halted,
+            equity=equity,
+            peak_equity=self._peak_equity,
+            halt_equity=self._halt_equity,
+            circuit_breaker_pct=self._risk.circuit_breaker_pct,
+            recovery_pct=self._risk.recovery_pct,
+        )
+
+    def process_signal(
+        self,
+        signal: Signal,
+        price: Decimal,
+        timestamp: int,
+        history: list[Candle] | None = None,
+    ) -> Trade | None:
         """Process a trading signal for a specific symbol.
 
         Open a position on BUY if the symbol has no open position and
         sufficient capital is available. Close on SELL if the symbol
         has an open position. Duplicate signals are silently ignored.
+        When the circuit breaker is active, BUY signals are skipped.
 
         Args:
             signal: The trading signal to act on.
             price: Current market price for the signal's symbol.
             timestamp: Unix timestamp of the candle.
+            history: Optional candle history for volatility-based sizing.
 
         Returns:
             A ``Trade`` if a position was closed, ``None`` otherwise.
@@ -80,7 +127,9 @@ class MultiAssetPortfolio:
         """
         symbol = signal.symbol
         if signal.side == Side.BUY and symbol not in self._positions:
-            return self._open_position(signal, price, timestamp)
+            if self._halted:
+                return None
+            return self._open_position(signal, price, timestamp, history)
         if signal.side == Side.SELL and symbol in self._positions:
             return self._close_position(symbol, price, timestamp)
         return None
@@ -103,13 +152,36 @@ class MultiAssetPortfolio:
                 trades.append(trade)
         return trades
 
-    def _open_position(self, signal: Signal, price: Decimal, timestamp: int) -> None:
-        """Open a position for the given symbol with fees and sizing."""
-        allocation = self._initial_capital * self._exec.position_size_pct
+    def _open_position(
+        self,
+        signal: Signal,
+        price: Decimal,
+        timestamp: int,
+        history: list[Candle] | None = None,
+    ) -> None:
+        """Open a position for the given symbol with fees and sizing.
+
+        When volatility sizing is enabled and sufficient history is
+        available, scale the allocation based on ATR so each trade
+        risks approximately ``target_risk_pct`` of capital.
+        """
+        max_allocation = self._initial_capital * self._exec.position_size_pct
+        effective_price = price * (Decimal(1) + self._exec.slippage_pct)
+
+        allocation = max_allocation
+        if self._exec.volatility_sizing and history is not None:
+            atr_needed = self._exec.atr_period + 1
+            if len(history) >= atr_needed:
+                atr_value = compute_atr(history, period=self._exec.atr_period)
+                if atr_value > ZERO:
+                    risk_budget = self._initial_capital * self._exec.target_risk_pct
+                    vol_quantity = risk_budget / atr_value
+                    vol_allocation = vol_quantity * effective_price
+                    allocation = min(vol_allocation, max_allocation)
+
         if allocation > self._capital:
             return
 
-        effective_price = price * (Decimal(1) + self._exec.slippage_pct)
         entry_fee = allocation * self._exec.taker_fee_pct
         investable = allocation - entry_fee
         quantity = investable / effective_price

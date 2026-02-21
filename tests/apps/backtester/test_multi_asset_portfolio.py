@@ -3,7 +3,7 @@
 from decimal import Decimal
 
 from trading_tools.apps.backtester.multi_asset_portfolio import MultiAssetPortfolio
-from trading_tools.core.models import ExecutionConfig, Side, Signal
+from trading_tools.core.models import ExecutionConfig, RiskConfig, Side, Signal
 
 _INITIAL_CAPITAL = Decimal(10_000)
 _HALF_POSITION = Decimal("0.5")
@@ -84,3 +84,41 @@ class TestMultiAssetPortfolio:
         portfolio.process_signal(_signal("BTC-USD", Side.SELL), Decimal(110), 2000)
         assert len(portfolio.trades) == 1
         assert portfolio.trades[0].pnl > Decimal(0)
+
+
+class TestMultiAssetCircuitBreaker:
+    """Tests for the drawdown circuit breaker in MultiAssetPortfolio."""
+
+    def test_halts_at_drawdown_threshold(self) -> None:
+        """Halt trading when equity drops past circuit_breaker_pct."""
+        risk = RiskConfig(circuit_breaker_pct=Decimal("0.10"))
+        portfolio = MultiAssetPortfolio(_INITIAL_CAPITAL, risk_config=risk)
+        portfolio.process_signal(_signal("BTC-USD", Side.BUY), Decimal(100), 1000)
+        portfolio.process_signal(_signal("BTC-USD", Side.SELL), Decimal(85), 2000)
+        portfolio.update_equity({"BTC-USD": Decimal(85)})
+        assert portfolio.halted is True
+
+    def test_buy_skipped_while_halted(self) -> None:
+        """Skip BUY signals when circuit breaker is active."""
+        risk = RiskConfig(circuit_breaker_pct=Decimal("0.10"))
+        portfolio = MultiAssetPortfolio(_INITIAL_CAPITAL, risk_config=risk)
+        portfolio.process_signal(_signal("BTC-USD", Side.BUY), Decimal(100), 1000)
+        portfolio.process_signal(_signal("BTC-USD", Side.SELL), Decimal(85), 2000)
+        portfolio.update_equity({"BTC-USD": Decimal(85)})
+        result = portfolio.process_signal(_signal("ETH-USD", Side.BUY), Decimal(50), 3000)
+        assert result is None
+        assert "ETH-USD" not in portfolio.positions
+
+    def test_sell_works_while_halted(self) -> None:
+        """Allow SELL even when halted to close existing positions."""
+        risk = RiskConfig(circuit_breaker_pct=Decimal("0.05"))
+        exec_cfg = ExecutionConfig(position_size_pct=_HALF_POSITION)
+        portfolio = MultiAssetPortfolio(_INITIAL_CAPITAL, exec_cfg, risk)
+        portfolio.process_signal(_signal("BTC-USD", Side.BUY), Decimal(100), 1000)
+        portfolio.process_signal(_signal("ETH-USD", Side.BUY), Decimal(50), 1001)
+        # Trigger halt via price drop
+        portfolio.update_equity({"BTC-USD": Decimal(50), "ETH-USD": Decimal(25)})
+        assert portfolio.halted is True
+        # SELL should still work
+        trade = portfolio.process_signal(_signal("BTC-USD", Side.SELL), Decimal(50), 2000)
+        assert trade is not None

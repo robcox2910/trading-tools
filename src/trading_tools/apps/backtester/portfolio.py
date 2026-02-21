@@ -9,14 +9,64 @@ SELL closes it. Fees and slippage are applied when configured.
 
 from decimal import Decimal
 
+from trading_tools.apps.backtester.indicators import atr as compute_atr
 from trading_tools.core.models import (
+    ONE,
     ZERO,
+    Candle,
     ExecutionConfig,
     Position,
+    RiskConfig,
     Side,
     Signal,
     Trade,
 )
+
+
+def check_circuit_breaker(
+    *,
+    halted: bool,
+    equity: Decimal,
+    peak_equity: Decimal,
+    halt_equity: Decimal,
+    circuit_breaker_pct: Decimal | None,
+    recovery_pct: Decimal | None,
+) -> tuple[bool, Decimal, Decimal]:
+    """Evaluate the drawdown circuit breaker and return updated state.
+
+    Check whether current equity triggers a trading halt (drawdown from
+    peak exceeds threshold) or resumes from a halt (equity recovers
+    sufficiently from the halt point).
+
+    Args:
+        halted: Whether trading is currently halted.
+        equity: Current total portfolio equity.
+        peak_equity: Highest equity observed so far.
+        halt_equity: Equity level when the halt was triggered.
+        circuit_breaker_pct: Drawdown fraction that triggers a halt.
+        recovery_pct: Recovery fraction from halt equity to resume.
+
+    Returns:
+        Tuple of (halted, peak_equity, halt_equity) with updated values.
+
+    """
+    if circuit_breaker_pct is None:
+        return False, peak_equity, halt_equity
+
+    peak_equity = max(peak_equity, equity)
+
+    if not halted:
+        drawdown = (peak_equity - equity) / peak_equity if peak_equity > ZERO else ZERO
+        if drawdown >= circuit_breaker_pct:
+            return True, peak_equity, equity
+        return False, peak_equity, halt_equity
+
+    if recovery_pct is not None and halt_equity > ZERO:
+        recovery_target = halt_equity * (ONE + recovery_pct * circuit_breaker_pct)
+        if equity >= recovery_target:
+            return False, equity, ZERO
+
+    return True, peak_equity, halt_equity
 
 
 class Portfolio:
@@ -25,13 +75,15 @@ class Portfolio:
     Hold at most one open position at a time. BUY signals open a
     position using available capital (scaled by ``position_size_pct``);
     SELL signals close it, converting the position back into capital
-    at the current price minus any fees and slippage.
+    at the current price minus any fees and slippage. Optionally halt
+    trading when portfolio drawdown exceeds a circuit breaker threshold.
     """
 
     def __init__(
         self,
         initial_capital: Decimal,
         execution_config: ExecutionConfig | None = None,
+        risk_config: RiskConfig | None = None,
     ) -> None:
         """Initialize the portfolio with the given starting capital.
 
@@ -39,13 +91,18 @@ class Portfolio:
             initial_capital: Starting amount in quote currency.
             execution_config: Optional execution cost configuration.
                 Defaults to zero-cost, full-deployment behavior.
+            risk_config: Optional risk configuration for circuit breaker.
 
         """
         self._capital = initial_capital
         self._position: Position | None = None
         self._trades: list[Trade] = []
         self._exec = execution_config or ExecutionConfig()
+        self._risk = risk_config or RiskConfig()
         self._entry_fee = ZERO
+        self._halted = False
+        self._peak_equity = initial_capital
+        self._halt_equity = ZERO
 
     @property
     def capital(self) -> Decimal:
@@ -62,24 +119,61 @@ class Portfolio:
         """Return a copy of completed trades."""
         return list(self._trades)
 
-    def process_signal(self, signal: Signal, price: Decimal, timestamp: int) -> Trade | None:
+    @property
+    def halted(self) -> bool:
+        """Return whether the circuit breaker has halted trading."""
+        return self._halted
+
+    def update_equity(self, mark_price: Decimal) -> None:
+        """Update circuit breaker state based on current mark-to-market equity.
+
+        Compute total equity as available capital plus the mark-to-market
+        value of any open position, then check the circuit breaker.
+
+        Args:
+            mark_price: Current market price for marking the open position.
+
+        """
+        equity = self._capital
+        if self._position is not None:
+            equity += self._position.quantity * mark_price
+        self._halted, self._peak_equity, self._halt_equity = check_circuit_breaker(
+            halted=self._halted,
+            equity=equity,
+            peak_equity=self._peak_equity,
+            halt_equity=self._halt_equity,
+            circuit_breaker_pct=self._risk.circuit_breaker_pct,
+            recovery_pct=self._risk.recovery_pct,
+        )
+
+    def process_signal(
+        self,
+        signal: Signal,
+        price: Decimal,
+        timestamp: int,
+        history: list[Candle] | None = None,
+    ) -> Trade | None:
         """Process a trading signal at the given price and time.
 
         Open a new position on BUY (if none is open) or close the
         existing position on SELL. Duplicate BUY or SELL signals are
-        silently ignored.
+        silently ignored. When the circuit breaker is active, BUY
+        signals are skipped.
 
         Args:
             signal: The trading signal to act on.
             price: Current market price.
             timestamp: Unix timestamp of the candle.
+            history: Optional candle history for volatility-based sizing.
 
         Returns:
             A ``Trade`` if a position was closed, ``None`` otherwise.
 
         """
         if signal.side == Side.BUY and self._position is None:
-            self._open_position(signal, price, timestamp)
+            if self._halted:
+                return None
+            self._open_position(signal, price, timestamp, history)
             return None
         if signal.side == Side.SELL and self._position is not None:
             return self._close_position(price, timestamp)
@@ -100,10 +194,34 @@ class Portfolio:
             return None
         return self._close_position(price, timestamp)
 
-    def _open_position(self, signal: Signal, price: Decimal, timestamp: int) -> None:
-        """Open a new position with slippage, fees, and position sizing applied."""
+    def _open_position(
+        self,
+        signal: Signal,
+        price: Decimal,
+        timestamp: int,
+        history: list[Candle] | None = None,
+    ) -> None:
+        """Open a new position with slippage, fees, and position sizing applied.
+
+        When volatility sizing is enabled and sufficient history is
+        available, compute the ATR-based position size so each trade
+        risks approximately ``target_risk_pct`` of capital. Cap the
+        allocation at ``position_size_pct`` of capital.
+        """
         effective_price = price * (Decimal(1) + self._exec.slippage_pct)
-        available = self._capital * self._exec.position_size_pct
+        max_available = self._capital * self._exec.position_size_pct
+
+        available = max_available
+        if self._exec.volatility_sizing and history is not None:
+            atr_needed = self._exec.atr_period + 1
+            if len(history) >= atr_needed:
+                atr_value = compute_atr(history, period=self._exec.atr_period)
+                if atr_value > ZERO:
+                    risk_budget = self._capital * self._exec.target_risk_pct
+                    vol_quantity = risk_budget / atr_value
+                    vol_allocation = vol_quantity * effective_price
+                    available = min(vol_allocation, max_available)
+
         entry_fee = available * self._exec.taker_fee_pct
         investable = available - entry_fee
         quantity = investable / effective_price
