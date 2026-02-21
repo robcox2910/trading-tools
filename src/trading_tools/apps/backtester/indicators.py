@@ -10,12 +10,7 @@ and portfolio modules that need volatility or correlation measurements.
 from collections.abc import Sequence
 from decimal import Decimal
 
-from trading_tools.core.models import Candle
-
-ZERO = Decimal(0)
-ONE = Decimal(1)
-TWO = Decimal(2)
-HUNDRED = Decimal(100)
+from trading_tools.core.models import HUNDRED, ONE, TWO, ZERO, Candle
 
 
 def sma(candles: Sequence[Candle], period: int) -> Decimal:

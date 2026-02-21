@@ -34,12 +34,15 @@ Params:
     period: Number of candles to look back for the channel (default 20).
 """
 
+from __future__ import annotations
+
 from collections import deque
-from decimal import Decimal
+from typing import TYPE_CHECKING
 
-from trading_tools.core.models import Candle, Side, Signal
+from trading_tools.core.models import ONE, Candle, Side, Signal
 
-ONE = Decimal(1)
+if TYPE_CHECKING:
+    from decimal import Decimal
 
 
 class DonchianStrategy:

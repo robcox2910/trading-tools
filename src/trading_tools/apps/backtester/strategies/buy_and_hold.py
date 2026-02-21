@@ -14,9 +14,7 @@ Params:
     None — no configuration is needed.
 """
 
-from decimal import Decimal
-
-from trading_tools.core.models import Candle, Side, Signal
+from trading_tools.core.models import ONE, Candle, Side, Signal
 
 
 class BuyAndHoldStrategy:
@@ -38,7 +36,7 @@ class BuyAndHoldStrategy:
             return Signal(
                 side=Side.BUY,
                 symbol=candle.symbol,
-                strength=Decimal(1),
+                strength=ONE,
                 reason="Buy and hold — initial entry",
             )
         return None

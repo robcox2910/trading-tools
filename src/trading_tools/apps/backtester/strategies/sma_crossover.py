@@ -27,7 +27,7 @@ Params:
 
 from decimal import Decimal
 
-from trading_tools.core.models import Candle, Side, Signal
+from trading_tools.core.models import ONE, Candle, Side, Signal
 
 
 class SmaCrossoverStrategy:
@@ -66,14 +66,14 @@ class SmaCrossoverStrategy:
             return Signal(
                 side=Side.BUY,
                 symbol=candle.symbol,
-                strength=Decimal(1),
+                strength=ONE,
                 reason=f"SMA{self._short_period} crossed above SMA{self._long_period}",
             )
         if prev_short >= prev_long and current_short < current_long:
             return Signal(
                 side=Side.SELL,
                 symbol=candle.symbol,
-                strength=Decimal(1),
+                strength=ONE,
                 reason=f"SMA{self._short_period} crossed below SMA{self._long_period}",
             )
         return None

@@ -79,11 +79,15 @@ select = [
     "PT",     # flake8-pytest-style
     "D",      # pydocstyle (docstring conventions)
     "RUF",    # Ruff-specific rules
+    "TRY",    # tryceratops (try/except best practices)
+    "RSE",    # raise statement hygiene
+    "LOG",    # logging conventions
 ]
 ignore = [
     "E501",   # Line too long (handled by formatter)
     "D203",   # Incompatible with D211 (no-blank-line-before-class)
     "D213",   # Incompatible with D212 (multi-line-summary-first-line)
+    "TRY003", # Long exception messages in raise (intentional descriptive msg pattern)
 ]
 
 [tool.ruff.lint.pylint]

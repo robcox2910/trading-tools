@@ -9,7 +9,11 @@ SELL closes it. Fees and slippage are applied when configured.
 
 from decimal import Decimal
 
-from trading_tools.apps.backtester.indicators import atr as compute_atr
+from trading_tools.apps.backtester.execution import (
+    apply_entry_slippage,
+    apply_exit_slippage,
+    compute_allocation,
+)
 from trading_tools.core.models import (
     ONE,
     ZERO,
@@ -203,28 +207,16 @@ class Portfolio:
     ) -> None:
         """Open a new position with slippage, fees, and position sizing applied.
 
-        When volatility sizing is enabled and sufficient history is
-        available, compute the ATR-based position size so each trade
-        risks approximately ``target_risk_pct`` of capital. Cap the
-        allocation at ``position_size_pct`` of capital.
+        Delegate slippage and allocation calculations to shared execution
+        helpers. Cap the allocation at ``position_size_pct`` of capital.
         """
-        effective_price = price * (Decimal(1) + self._exec.slippage_pct)
-        max_available = self._capital * self._exec.position_size_pct
-
-        available = max_available
-        if self._exec.volatility_sizing and history is not None:
-            atr_needed = self._exec.atr_period + 1
-            if len(history) >= atr_needed:
-                atr_value = compute_atr(history, period=self._exec.atr_period)
-                if atr_value > ZERO:
-                    risk_budget = self._capital * self._exec.target_risk_pct
-                    vol_quantity = risk_budget / atr_value
-                    vol_allocation = vol_quantity * effective_price
-                    available = min(vol_allocation, max_available)
-
-        entry_fee = available * self._exec.taker_fee_pct
-        investable = available - entry_fee
-        quantity = investable / effective_price
+        effective_price = apply_entry_slippage(price, self._exec.slippage_pct)
+        allocation, entry_fee, quantity = compute_allocation(
+            capital=self._capital,
+            price=effective_price,
+            exec_config=self._exec,
+            history=history,
+        )
 
         self._position = Position(
             symbol=signal.symbol,
@@ -234,7 +226,7 @@ class Portfolio:
             entry_time=timestamp,
         )
         self._entry_fee = entry_fee
-        self._capital -= available
+        self._capital -= allocation
 
     def _close_position(self, price: Decimal, timestamp: int) -> Trade:
         """Close the current position with slippage and fees applied."""
@@ -242,7 +234,7 @@ class Portfolio:
             msg = "Cannot close position: no open position exists"
             raise RuntimeError(msg)
 
-        effective_price = price * (Decimal(1) - self._exec.slippage_pct)
+        effective_price = apply_exit_slippage(price, self._exec.slippage_pct)
         exit_value = self._position.quantity * effective_price
         exit_fee = exit_value * self._exec.maker_fee_pct
 

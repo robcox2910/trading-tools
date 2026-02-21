@@ -81,6 +81,6 @@ class Ed25519Signer:
         )
 
         if not isinstance(private_key, Ed25519PrivateKey):
-            raise ValueError("The provided key is not an Ed25519 private key")
+            raise TypeError("The provided key is not an Ed25519 private key")
 
         return private_key
