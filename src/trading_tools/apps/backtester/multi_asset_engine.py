@@ -7,9 +7,11 @@ can hold one position per symbol simultaneously.
 
 from decimal import Decimal
 
+from trading_tools.apps.backtester.execution import check_risk_triggers
 from trading_tools.apps.backtester.metrics import calculate_metrics
 from trading_tools.apps.backtester.multi_asset_portfolio import MultiAssetPortfolio
 from trading_tools.core.models import (
+    ONE,
     BacktestResult,
     Candle,
     ExecutionConfig,
@@ -141,6 +143,10 @@ class MultiAssetEngine:
     def _check_risk_exit(self, candle: Candle, portfolio: MultiAssetPortfolio) -> None:
         """Check and execute risk-management exits for the candle's symbol.
 
+        Delegate trigger evaluation to the shared ``check_risk_triggers``
+        helper. If triggered, send a SELL signal to close the position
+        at the computed exit price.
+
         Args:
             candle: The current candle being processed.
             portfolio: The multi-asset portfolio to check.
@@ -154,36 +160,18 @@ class MultiAssetEngine:
         if symbol not in positions:
             return
 
-        pos = positions[symbol]
-        entry = pos.entry_price
-        stop_loss_pct = self._risk_config.stop_loss_pct
-        take_profit_pct = self._risk_config.take_profit_pct
-
-        stop_triggered = stop_loss_pct is not None and candle.low <= entry * (
-            Decimal(1) - stop_loss_pct
-        )
-        tp_triggered = take_profit_pct is not None and candle.high >= entry * (
-            Decimal(1) + take_profit_pct
-        )
-
-        if stop_triggered and stop_loss_pct is not None:
-            exit_price = entry * (Decimal(1) - stop_loss_pct)
-            sell_signal = Signal(
-                side=Side.SELL,
-                symbol=symbol,
-                strength=Decimal(1),
-                reason="Stop-loss triggered",
+        exit_price = check_risk_triggers(candle, positions[symbol].entry_price, self._risk_config)
+        if exit_price is not None:
+            reason = (
+                "Stop-loss triggered"
+                if exit_price < positions[symbol].entry_price
+                else "Take-profit triggered"
             )
-            portfolio.process_signal(sell_signal, exit_price, candle.timestamp)
-            return
-
-        if tp_triggered and take_profit_pct is not None:
-            exit_price = entry * (Decimal(1) + take_profit_pct)
             sell_signal = Signal(
                 side=Side.SELL,
                 symbol=symbol,
-                strength=Decimal(1),
-                reason="Take-profit triggered",
+                strength=ONE,
+                reason=reason,
             )
             portfolio.process_signal(sell_signal, exit_price, candle.timestamp)
 

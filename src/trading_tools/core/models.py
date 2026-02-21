@@ -11,6 +11,8 @@ from enum import Enum
 
 ZERO = Decimal(0)
 ONE = Decimal(1)
+TWO = Decimal(2)
+HUNDRED = Decimal(100)
 
 
 class Side(Enum):

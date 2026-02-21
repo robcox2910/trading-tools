@@ -41,10 +41,7 @@ Params:
 
 from decimal import Decimal
 
-from trading_tools.core.models import Candle, Side, Signal
-
-ONE = Decimal(1)
-TWO = Decimal(2)
+from trading_tools.core.models import ONE, TWO, Candle, Side, Signal
 
 
 class MacdStrategy:

@@ -43,9 +43,7 @@ Params:
 from collections import deque
 from decimal import Decimal
 
-from trading_tools.core.models import Candle, Side, Signal
-
-ONE = Decimal(1)
+from trading_tools.core.models import ONE, Candle, Side, Signal
 
 
 class MeanReversionStrategy:

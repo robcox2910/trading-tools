@@ -10,6 +10,7 @@ performance metrics.
 
 from decimal import Decimal
 
+from trading_tools.apps.backtester.execution import check_risk_triggers
 from trading_tools.apps.backtester.metrics import calculate_metrics
 from trading_tools.apps.backtester.portfolio import Portfolio
 from trading_tools.core.models import (
@@ -127,10 +128,9 @@ class BacktestEngine:
     def _check_risk_exit(self, candle: Candle, portfolio: Portfolio) -> Trade | None:
         """Check whether a risk-management exit is triggered on this candle.
 
-        For BUY positions, check whether the candle's low breaches
-        the stop-loss level or the candle's high breaches the
-        take-profit level. If both trigger on the same candle,
-        stop-loss takes priority (conservative assumption).
+        Delegate trigger evaluation to the shared ``check_risk_triggers``
+        helper. If triggered, force-close the portfolio position at the
+        computed exit price.
 
         Args:
             candle: The current candle being processed.
@@ -143,24 +143,8 @@ class BacktestEngine:
         if self._risk_config is None or portfolio.position is None:
             return None
 
-        pos = portfolio.position
-        entry = pos.entry_price
-        stop_loss_pct = self._risk_config.stop_loss_pct
-        take_profit_pct = self._risk_config.take_profit_pct
-
-        stop_triggered = stop_loss_pct is not None and candle.low <= entry * (
-            Decimal(1) - stop_loss_pct
-        )
-        tp_triggered = take_profit_pct is not None and candle.high >= entry * (
-            Decimal(1) + take_profit_pct
-        )
-
-        if stop_triggered and stop_loss_pct is not None:
-            exit_price = entry * (Decimal(1) - stop_loss_pct)
-            return portfolio.force_close(exit_price, candle.timestamp)
-
-        if tp_triggered and take_profit_pct is not None:
-            exit_price = entry * (Decimal(1) + take_profit_pct)
+        exit_price = check_risk_triggers(candle, portfolio.position.entry_price, self._risk_config)
+        if exit_price is not None:
             return portfolio.force_close(exit_price, candle.timestamp)
 
         return None

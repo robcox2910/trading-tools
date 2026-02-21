@@ -40,11 +40,7 @@ Params:
 
 from decimal import Decimal
 
-from trading_tools.core.models import Candle, Side, Signal
-
-ZERO = Decimal(0)
-ONE = Decimal(1)
-HUNDRED = Decimal(100)
+from trading_tools.core.models import HUNDRED, ONE, ZERO, Candle, Side, Signal
 
 
 class RsiStrategy:

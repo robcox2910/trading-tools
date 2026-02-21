@@ -8,7 +8,11 @@ capital available for others.
 
 from decimal import Decimal
 
-from trading_tools.apps.backtester.indicators import atr as compute_atr
+from trading_tools.apps.backtester.execution import (
+    apply_entry_slippage,
+    apply_exit_slippage,
+    compute_allocation,
+)
 from trading_tools.apps.backtester.portfolio import check_circuit_breaker
 from trading_tools.core.models import (
     ZERO,
@@ -161,30 +165,20 @@ class MultiAssetPortfolio:
     ) -> None:
         """Open a position for the given symbol with fees and sizing.
 
-        When volatility sizing is enabled and sufficient history is
-        available, scale the allocation based on ATR so each trade
-        risks approximately ``target_risk_pct`` of capital.
+        Delegate slippage and allocation calculations to shared execution
+        helpers. Size against initial capital so later positions are not
+        unfairly affected by earlier wins/losses.
         """
-        max_allocation = self._initial_capital * self._exec.position_size_pct
-        effective_price = price * (Decimal(1) + self._exec.slippage_pct)
-
-        allocation = max_allocation
-        if self._exec.volatility_sizing and history is not None:
-            atr_needed = self._exec.atr_period + 1
-            if len(history) >= atr_needed:
-                atr_value = compute_atr(history, period=self._exec.atr_period)
-                if atr_value > ZERO:
-                    risk_budget = self._initial_capital * self._exec.target_risk_pct
-                    vol_quantity = risk_budget / atr_value
-                    vol_allocation = vol_quantity * effective_price
-                    allocation = min(vol_allocation, max_allocation)
+        effective_price = apply_entry_slippage(price, self._exec.slippage_pct)
+        allocation, entry_fee, quantity = compute_allocation(
+            capital=self._initial_capital,
+            price=effective_price,
+            exec_config=self._exec,
+            history=history,
+        )
 
         if allocation > self._capital:
             return
-
-        entry_fee = allocation * self._exec.taker_fee_pct
-        investable = allocation - entry_fee
-        quantity = investable / effective_price
 
         self._positions[signal.symbol] = Position(
             symbol=signal.symbol,
@@ -199,7 +193,7 @@ class MultiAssetPortfolio:
     def _close_position(self, symbol: str, price: Decimal, timestamp: int) -> Trade:
         """Close the position for the given symbol with fees applied."""
         position = self._positions[symbol]
-        effective_price = price * (Decimal(1) - self._exec.slippage_pct)
+        effective_price = apply_exit_slippage(price, self._exec.slippage_pct)
         exit_value = position.quantity * effective_price
         exit_fee = exit_value * self._exec.maker_fee_pct
 
