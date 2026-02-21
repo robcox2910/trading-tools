@@ -18,7 +18,7 @@ from trading_tools.core.models import (
     RiskConfig,
 )
 
-EXPECTED_STRATEGY_COUNT = 9
+EXPECTED_STRATEGY_COUNT = 10
 
 
 def _candle(ts: int, close: str, volume: str = "100") -> Candle:

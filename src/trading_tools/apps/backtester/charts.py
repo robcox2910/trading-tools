@@ -7,15 +7,22 @@ bar charts, and combined dashboards. All charts use a consistent dark
 theme and can be displayed in the browser or saved to HTML files.
 """
 
+from __future__ import annotations
+
 import tempfile
 import webbrowser
 from decimal import Decimal
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from trading_tools.core.models import BacktestResult
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from trading_tools.apps.backtester.monte_carlo import MonteCarloResult
+    from trading_tools.apps.backtester.walk_forward import WalkForwardResult
+    from trading_tools.core.models import BacktestResult
 
 _BG_COLOR = "#1e1e2f"
 _PAPER_COLOR = "#1e1e2f"
@@ -309,6 +316,87 @@ def create_pnl_distribution(result: BacktestResult) -> go.Figure:
     return _apply_dark_theme(fig)
 
 
+_BLUE = "#2196f3"
+
+
+def create_benchmark_chart(
+    strategy_result: BacktestResult,
+    benchmark_result: BacktestResult,
+) -> go.Figure:
+    """Create an equity curve overlay comparing a strategy against a benchmark.
+
+    Plot the strategy equity curve in green (if profitable) or red,
+    and the benchmark equity curve as a dashed blue line. Both curves
+    start at the same initial capital to allow direct comparison.
+
+    Args:
+        strategy_result: The active strategy backtest result.
+        benchmark_result: The buy-and-hold benchmark result.
+
+    Returns:
+        A Plotly ``Figure`` with both equity curves overlaid.
+
+    Raises:
+        ValueError: If either result contains no trades.
+
+    """
+    if not strategy_result.trades:
+        msg = "Cannot create benchmark chart: strategy has no trades"
+        raise ValueError(msg)
+    if not benchmark_result.trades:
+        msg = "Cannot create benchmark chart: benchmark has no trades"
+        raise ValueError(msg)
+
+    def _equity_series(result: BacktestResult) -> tuple[list[int], list[float]]:
+        capital = float(result.initial_capital)
+        timestamps: list[int] = [result.trades[0].entry_time]
+        equity: list[float] = [capital]
+        for trade in result.trades:
+            capital += float(trade.pnl)
+            timestamps.append(trade.exit_time)
+            equity.append(capital)
+        return timestamps, equity
+
+    strat_ts, strat_eq = _equity_series(strategy_result)
+    bench_ts, bench_eq = _equity_series(benchmark_result)
+
+    overall_return = strat_eq[-1] - strat_eq[0]
+    strat_color = _GREEN if overall_return >= 0 else _RED
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=strat_ts,
+            y=strat_eq,
+            mode="lines",
+            name=strategy_result.strategy_name,
+            line={"color": strat_color, "width": 2},
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=bench_ts,
+            y=bench_eq,
+            mode="lines",
+            name=benchmark_result.strategy_name,
+            line={"color": _BLUE, "width": 2, "dash": "dash"},
+        )
+    )
+    fig.add_hline(
+        y=float(strategy_result.initial_capital),
+        line_dash=_REFERENCE_DASH,
+        line_color=_TEXT_COLOR,
+        opacity=0.5,
+        annotation_text="Initial Capital",
+    )
+    fig.update_layout(
+        title=f"Strategy vs Benchmark — {strategy_result.symbol}",
+        xaxis_title="Time",
+        yaxis_title="Portfolio Value",
+    )
+    return _apply_dark_theme(fig)
+
+
 _DEFAULT_COMPARISON_METRICS = ("total_return", "win_rate", "sharpe_ratio", "profit_factor")
 
 
@@ -350,6 +438,105 @@ def create_comparison_chart(
         xaxis_title="Strategy",
         yaxis_title="Value",
         barmode="group",
+    )
+    return _apply_dark_theme(fig)
+
+
+def create_monte_carlo_chart(mc_result: MonteCarloResult) -> go.Figure:
+    """Create histograms of Monte Carlo metric distributions.
+
+    For each metric (total return, max drawdown, Sharpe ratio), draw a
+    histogram of the reshuffled values with a vertical line marking the
+    original backtest value.
+
+    Args:
+        mc_result: The completed Monte Carlo simulation result.
+
+    Returns:
+        A Plotly ``Figure`` with one subplot per metric.
+
+    """
+    dists = mc_result.distributions
+    num_metrics = len(dists)
+
+    fig = make_subplots(
+        rows=1,
+        cols=num_metrics,
+        subplot_titles=tuple(d.metric_name.replace("_", " ").title() for d in dists),
+    )
+
+    original_metrics = mc_result.original.metrics
+
+    for i, dist in enumerate(dists, start=1):
+        values = [
+            dist.percentile_5,
+            dist.percentile_25,
+            dist.percentile_50,
+            dist.percentile_75,
+            dist.percentile_95,
+        ]
+        fig.add_trace(
+            go.Bar(
+                x=[f"P{p}" for p in (5, 25, 50, 75, 95)],
+                y=values,
+                name=dist.metric_name.replace("_", " ").title(),
+                marker_color=_GREEN,
+                opacity=0.8,
+                showlegend=False,
+            ),
+            row=1,
+            col=i,
+        )
+        original_val = float(original_metrics.get(dist.metric_name, Decimal(0)))
+        fig.add_hline(
+            y=original_val,
+            line_dash=_REFERENCE_DASH,
+            line_color=_RED,
+            annotation_text=f"Original: {original_val:.4f}",
+        )
+
+    fig.update_layout(
+        title_text=f"Monte Carlo — {mc_result.original.strategy_name} ({mc_result.num_shuffles} shuffles)",
+        height=400,
+    )
+    return _apply_dark_theme(fig)
+
+
+def create_walk_forward_chart(wf_result: WalkForwardResult) -> go.Figure:
+    """Create a bar chart of per-fold test returns colour-coded by strategy.
+
+    Each bar represents one walk-forward fold's test-window total return,
+    labelled with the strategy that was selected during training.
+
+    Args:
+        wf_result: The completed walk-forward optimisation result.
+
+    Returns:
+        A Plotly ``Figure`` with one bar per fold.
+
+    """
+    fold_labels = [f"Fold {f.fold_index}" for f in wf_result.folds]
+    returns = [
+        float(f.test_result.metrics.get("total_return", Decimal(0))) * 100 for f in wf_result.folds
+    ]
+    colors = [_GREEN if r >= 0 else _RED for r in returns]
+    hover_text = [f.best_strategy_name for f in wf_result.folds]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=fold_labels,
+            y=returns,
+            marker_color=colors,
+            text=hover_text,
+            textposition="outside",
+            name="Test Return %",
+        )
+    )
+    fig.update_layout(
+        title_text=f"Walk-Forward — {wf_result.symbol} ({wf_result.interval.value})",
+        xaxis_title="Fold",
+        yaxis_title="Test Return %",
     )
     return _apply_dark_theme(fig)
 
