@@ -13,42 +13,20 @@ from typing import Annotated
 
 import typer
 
+from trading_tools.apps.backtester.compare import (
+    format_comparison_table,
+    run_comparison,
+)
 from trading_tools.apps.backtester.engine import BacktestEngine
-from trading_tools.apps.backtester.strategies.bollinger import BollingerStrategy
-from trading_tools.apps.backtester.strategies.donchian import DonchianStrategy
-from trading_tools.apps.backtester.strategies.ema_crossover import (
-    EmaCrossoverStrategy,
-)
-from trading_tools.apps.backtester.strategies.macd import MacdStrategy
-from trading_tools.apps.backtester.strategies.mean_reversion import (
-    MeanReversionStrategy,
-)
-from trading_tools.apps.backtester.strategies.rsi import RsiStrategy
-from trading_tools.apps.backtester.strategies.sma_crossover import (
-    SmaCrossoverStrategy,
-)
-from trading_tools.apps.backtester.strategies.stochastic import StochasticStrategy
-from trading_tools.apps.backtester.strategies.vwap import VwapStrategy
+from trading_tools.apps.backtester.strategy_factory import STRATEGY_NAMES, build_strategy
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.clients.revolut_x.client import RevolutXClient
 from trading_tools.core.config import config
 from trading_tools.core.models import BacktestResult, ExecutionConfig, Interval, RiskConfig
-from trading_tools.core.protocols import CandleProvider, TradingStrategy
+from trading_tools.core.protocols import CandleProvider
 from trading_tools.data.providers.binance import BinanceCandleProvider
 from trading_tools.data.providers.csv_provider import CsvCandleProvider
 from trading_tools.data.providers.revolut_x import RevolutXCandleProvider
-
-_STRATEGY_NAMES = (
-    "sma_crossover",
-    "ema_crossover",
-    "rsi",
-    "bollinger",
-    "macd",
-    "stochastic",
-    "vwap",
-    "donchian",
-    "mean_reversion",
-)
 
 _VALID_SOURCES = ("csv", "revolut-x", "binance")
 
@@ -60,8 +38,8 @@ def _validate_strategy(value: str) -> str:
 
     Raise ``typer.BadParameter`` if the name is not recognised.
     """
-    if value not in _STRATEGY_NAMES:
-        raise typer.BadParameter(f"Must be one of: {', '.join(_STRATEGY_NAMES)}")
+    if value not in STRATEGY_NAMES:
+        raise typer.BadParameter(f"Must be one of: {', '.join(STRATEGY_NAMES)}")
     return value
 
 
@@ -119,56 +97,6 @@ def _build_provider(
     return CsvCandleProvider(csv_path), None
 
 
-def _build_strategy(  # noqa: PLR0913
-    name: str,
-    *,
-    short_period: int,
-    long_period: int,
-    period: int,
-    overbought: int,
-    oversold: int,
-    num_std: float,
-    fast_period: int,
-    slow_period: int,
-    signal_period: int,
-    k_period: int,
-    d_period: int,
-    z_threshold: float,
-) -> TradingStrategy:
-    """Build a strategy instance from CLI parameters.
-
-    Use a dictionary dispatch to map the strategy name to a concrete
-    ``TradingStrategy`` implementation, passing through the relevant
-    subset of CLI parameters for each strategy type.
-
-    Raise ``typer.BadParameter`` if the strategy name is not recognised.
-    """
-    builders: dict[str, TradingStrategy] = {
-        "sma_crossover": SmaCrossoverStrategy(short_period, long_period),
-        "ema_crossover": EmaCrossoverStrategy(short_period, long_period),
-        "rsi": RsiStrategy(period=period, overbought=overbought, oversold=oversold),
-        "bollinger": BollingerStrategy(period=period, num_std=num_std),
-        "macd": MacdStrategy(
-            fast_period=fast_period,
-            slow_period=slow_period,
-            signal_period=signal_period,
-        ),
-        "stochastic": StochasticStrategy(
-            k_period=k_period,
-            d_period=d_period,
-            overbought=overbought,
-            oversold=oversold,
-        ),
-        "vwap": VwapStrategy(period=period),
-        "donchian": DonchianStrategy(period=period),
-        "mean_reversion": MeanReversionStrategy(period=period, z_threshold=z_threshold),
-    }
-    if name not in builders:
-        msg = f"Unknown strategy: {name}"
-        raise typer.BadParameter(msg)
-    return builders[name]
-
-
 def _print_result(result: BacktestResult) -> None:
     """Print a formatted summary of the backtest result to the terminal."""
     typer.echo(f"\n{'=' * 50}")
@@ -183,6 +111,161 @@ def _print_result(result: BacktestResult) -> None:
         for key, value in result.metrics.items():
             typer.echo(f"  {key:20s}: {value:.6f}")
     typer.echo(f"{'=' * 50}\n")
+
+
+@app.command()
+def compare(  # noqa: PLR0913
+    source: Annotated[
+        str,
+        typer.Option(
+            help="Data source: csv, revolut-x, or binance",
+            callback=_validate_source,
+        ),
+    ] = "csv",
+    csv: Annotated[Path | None, typer.Option(help="Path to CSV candle data file")] = None,
+    symbol: Annotated[str, typer.Option(help="Trading pair symbol")] = "BTC-USD",
+    interval: Annotated[
+        str | None, typer.Option(help="Candle interval (1m,5m,15m,1h,4h,1d,1w)")
+    ] = None,
+    capital: Annotated[float | None, typer.Option(help="Initial capital")] = None,
+    short_period: Annotated[int, typer.Option(help="Short EMA/SMA period")] = 10,
+    long_period: Annotated[int, typer.Option(help="Long EMA/SMA period")] = 20,
+    period: Annotated[
+        int, typer.Option(help="Period for RSI, Bollinger, VWAP, Donchian, or Mean Reversion")
+    ] = 14,
+    overbought: Annotated[int, typer.Option(help="RSI/Stochastic overbought threshold")] = 70,
+    oversold: Annotated[int, typer.Option(help="RSI/Stochastic oversold threshold")] = 30,
+    num_std: Annotated[float, typer.Option(help="Bollinger Band std deviations")] = 2.0,
+    fast_period: Annotated[int, typer.Option(help="MACD fast EMA period")] = 12,
+    slow_period: Annotated[int, typer.Option(help="MACD slow EMA period")] = 26,
+    signal_period: Annotated[int, typer.Option(help="MACD signal EMA period")] = 9,
+    k_period: Annotated[int, typer.Option(help="Stochastic %K period")] = 14,
+    d_period: Annotated[int, typer.Option(help="Stochastic %D period")] = 3,
+    z_threshold: Annotated[float, typer.Option(help="Mean reversion z-score threshold")] = 2.0,
+    maker_fee: Annotated[float, typer.Option(help="Maker fee as decimal (e.g. 0.001)")] = 0.0,
+    taker_fee: Annotated[float, typer.Option(help="Taker fee as decimal (e.g. 0.001)")] = 0.0,
+    slippage: Annotated[float, typer.Option(help="Slippage as decimal (e.g. 0.0005)")] = 0.0,
+    stop_loss: Annotated[float | None, typer.Option(help="Stop-loss threshold as decimal")] = None,
+    take_profit: Annotated[
+        float | None, typer.Option(help="Take-profit threshold as decimal")
+    ] = None,
+    position_size: Annotated[float, typer.Option(help="Fraction of capital per trade (0-1)")] = 1.0,
+    start: Annotated[int, typer.Option(help="Start timestamp")] = 0,
+    end: Annotated[int, typer.Option(help="End timestamp")] = 2**53,
+    sort_by: Annotated[str, typer.Option(help="Metric to rank by")] = "total_return",
+) -> None:
+    """Run all strategies on the same data and display a ranked comparison table."""
+    asyncio.run(
+        _compare(
+            source=source,
+            csv=csv,
+            symbol=symbol,
+            interval=interval,
+            capital=capital,
+            short_period=short_period,
+            long_period=long_period,
+            period=period,
+            overbought=overbought,
+            oversold=oversold,
+            num_std=num_std,
+            fast_period=fast_period,
+            slow_period=slow_period,
+            signal_period=signal_period,
+            k_period=k_period,
+            d_period=d_period,
+            z_threshold=z_threshold,
+            maker_fee=maker_fee,
+            taker_fee=taker_fee,
+            slippage=slippage,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            position_size=position_size,
+            start=start,
+            end=end,
+            sort_by=sort_by,
+        )
+    )
+
+
+async def _compare(  # noqa: PLR0913
+    *,
+    source: str,
+    csv: Path | None,
+    symbol: str,
+    interval: str | None,
+    capital: float | None,
+    short_period: int,
+    long_period: int,
+    period: int,
+    overbought: int,
+    oversold: int,
+    num_std: float,
+    fast_period: int,
+    slow_period: int,
+    signal_period: int,
+    k_period: int,
+    d_period: int,
+    z_threshold: float,
+    maker_fee: float,
+    taker_fee: float,
+    slippage: float,
+    stop_loss: float | None,
+    take_profit: float | None,
+    position_size: float,
+    start: int,
+    end: int,
+    sort_by: str,
+) -> None:
+    """Orchestrate a multi-strategy comparison from resolved CLI parameters.
+
+    Build the candle provider and configuration objects, run all strategies
+    via ``run_comparison``, and print the ranked comparison table.
+    """
+    provider, client = _build_provider(source, csv)
+    try:
+        resolved_interval = _resolve_interval(interval)
+        resolved_capital = _resolve_capital(capital)
+
+        exec_config = ExecutionConfig(
+            maker_fee_pct=Decimal(str(maker_fee)),
+            taker_fee_pct=Decimal(str(taker_fee)),
+            slippage_pct=Decimal(str(slippage)),
+            position_size_pct=Decimal(str(position_size)),
+        )
+        risk_config = RiskConfig(
+            stop_loss_pct=Decimal(str(stop_loss)) if stop_loss is not None else None,
+            take_profit_pct=Decimal(str(take_profit)) if take_profit is not None else None,
+        )
+
+        results = await run_comparison(
+            provider=provider,
+            symbol=symbol,
+            interval=resolved_interval,
+            capital=resolved_capital,
+            execution_config=exec_config,
+            risk_config=risk_config,
+            start=start,
+            end=end,
+            short_period=short_period,
+            long_period=long_period,
+            period=period,
+            overbought=overbought,
+            oversold=oversold,
+            num_std=num_std,
+            fast_period=fast_period,
+            slow_period=slow_period,
+            signal_period=signal_period,
+            k_period=k_period,
+            d_period=d_period,
+            z_threshold=z_threshold,
+        )
+
+        table = format_comparison_table(results, sort_by=sort_by)
+        typer.echo(f"\nStrategy Comparison: {symbol} ({resolved_interval.value})")
+        typer.echo(table)
+    finally:
+        if client is not None:
+            await client.close()
 
 
 @app.command()
@@ -298,7 +381,7 @@ async def _run(  # noqa: PLR0913
     """
     provider, client = _build_provider(source, csv)
     try:
-        strat = _build_strategy(
+        strat = build_strategy(
             strategy,
             short_period=short_period,
             long_period=long_period,

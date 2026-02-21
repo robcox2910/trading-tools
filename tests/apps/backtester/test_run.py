@@ -56,14 +56,14 @@ class TestBacktesterCli:
 
     def test_default_flags(self, csv_file: Path) -> None:
         """Test CLI runs successfully with default flags."""
-        result = runner.invoke(app, ["--csv", str(csv_file)])
+        result = runner.invoke(app, ["run", "--csv", str(csv_file)])
         assert result.exit_code == 0
         assert "BTC-USD" in result.output
         assert "sma_crossover" in result.output
 
     def test_explicit_csv_source(self, csv_file: Path) -> None:
         """Test CLI runs with explicit --source csv."""
-        result = runner.invoke(app, ["--source", "csv", "--csv", str(csv_file)])
+        result = runner.invoke(app, ["run", "--source", "csv", "--csv", str(csv_file)])
         assert result.exit_code == 0
         assert "BTC-USD" in result.output
 
@@ -72,6 +72,7 @@ class TestBacktesterCli:
         result = runner.invoke(
             app,
             [
+                "run",
                 "--csv",
                 str(csv_file),
                 "--symbol",
@@ -92,18 +93,18 @@ class TestBacktesterCli:
 
     def test_missing_csv_for_csv_source(self) -> None:
         """Test CLI exits with error when --source csv but no --csv."""
-        result = runner.invoke(app, ["--source", "csv"])
+        result = runner.invoke(app, ["run", "--source", "csv"])
         assert result.exit_code != 0
 
     def test_invalid_strategy(self, csv_file: Path) -> None:
         """Test CLI exits with error for invalid strategy name."""
-        result = runner.invoke(app, ["--csv", str(csv_file), "--strategy", "bogus"])
+        result = runner.invoke(app, ["run", "--csv", str(csv_file), "--strategy", "bogus"])
         assert result.exit_code != 0
         assert "Must be one of" in result.output
 
     def test_invalid_source(self, csv_file: Path) -> None:
         """Test CLI exits with error for invalid source."""
-        result = runner.invoke(app, ["--source", "bogus", "--csv", str(csv_file)])
+        result = runner.invoke(app, ["run", "--source", "bogus", "--csv", str(csv_file)])
         assert result.exit_code != 0
         assert "Must be one of" in result.output
 
@@ -120,7 +121,7 @@ class TestBacktesterRevolutXSource:
         with patch("trading_tools.apps.backtester.run.RevolutXCandleProvider") as mock_prov_cls:
             mock_prov_cls.return_value.get_candles = AsyncMock(return_value=_SAMPLE_CANDLES)
 
-            result = runner.invoke(app, ["--source", "revolut-x"])
+            result = runner.invoke(app, ["run", "--source", "revolut-x"])
 
             assert result.exit_code == 0, result.output
             assert "BTC-USD" in result.output
