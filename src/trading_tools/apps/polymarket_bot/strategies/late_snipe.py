@@ -11,7 +11,7 @@ from decimal import Decimal
 from trading_tools.apps.polymarket_bot.models import MarketSnapshot
 from trading_tools.core.models import ONE, Side, Signal
 
-_DEFAULT_THRESHOLD = Decimal("0.90")
+_DEFAULT_THRESHOLD = Decimal("0.80")
 _DEFAULT_WINDOW_SECONDS = 60
 
 

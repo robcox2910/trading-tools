@@ -309,7 +309,7 @@ class PaperTradingEngine:
             signal: Strategy signal that triggered the trade.
 
         """
-        estimated_prob = buy_price + signal.strength * (Decimal(1) - buy_price) * Decimal("0.1")
+        estimated_prob = buy_price + signal.strength * (Decimal(1) - buy_price)
         estimated_prob = min(estimated_prob, Decimal("0.99"))
 
         fraction = kelly_fraction(
