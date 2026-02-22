@@ -7,6 +7,7 @@ a single async interface.  Synchronous CLOB calls are wrapped in
 
 import asyncio
 import json
+import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -173,6 +174,11 @@ class PolymarketClient:
         the condition IDs and precise end dates of all active markets within
         those events.
 
+        For rotating short-duration markets (e.g. ``btc-updown-5m``), the
+        Gamma API slug includes an epoch timestamp suffix. This method
+        automatically computes the current 5-minute window epoch and appends
+        it when the base slug matches the ``*-5m`` pattern.
+
         Args:
             series_slugs: Event slugs to search (e.g. ``["btc-updown-5m"]``).
 
@@ -182,7 +188,8 @@ class PolymarketClient:
 
         """
         results: list[tuple[str, str]] = []
-        for slug in series_slugs:
+        resolved_slugs = _resolve_timestamped_slugs(series_slugs)
+        for slug in resolved_slugs:
             events = await self._gamma.get_events(slug=slug, active=True, limit=5)
             for event in events:
                 for market_raw in event.get("markets", []):
@@ -386,3 +393,32 @@ def _safe_decimal(value: Any) -> Decimal:
     except (InvalidOperation, ValueError, TypeError) as exc:
         msg = f"Cannot convert {value!r} to Decimal"
         raise PolymarketAPIError(msg=msg, status_code=0) from exc
+
+
+_FIVE_MINUTES = 300
+
+
+def _resolve_timestamped_slugs(series_slugs: list[str]) -> list[str]:
+    """Expand series slugs into timestamped slugs for rotating markets.
+
+    Polymarket 5-minute markets use slugs like ``btc-updown-5m-1771758600``
+    where the suffix is the Unix epoch of the current 5-minute window start.
+    For slugs ending in ``-5m``, compute the current window epoch and append
+    it. Other slugs are passed through unchanged.
+
+    Args:
+        series_slugs: Base series slugs (e.g. ``["btc-updown-5m"]``).
+
+    Returns:
+        Resolved slugs with epoch suffixes where applicable.
+
+    """
+    now = int(time.time())
+    current_window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
+    resolved: list[str] = []
+    for slug in series_slugs:
+        if slug.endswith("-5m"):
+            resolved.append(f"{slug}-{current_window}")
+        else:
+            resolved.append(slug)
+    return resolved
