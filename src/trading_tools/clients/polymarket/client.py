@@ -163,6 +163,37 @@ class PolymarketClient:
             return OrderBook(token_id=token_id, bids=(), asks=(), spread=_ZERO, midpoint=_ZERO)
         return self._parse_order_book(token_id, raw)
 
+    async def discover_series_markets(
+        self,
+        series_slugs: list[str],
+    ) -> list[tuple[str, str]]:
+        """Discover active markets from event series slugs.
+
+        Query the Gamma API events endpoint for each series slug and collect
+        the condition IDs and precise end dates of all active markets within
+        those events.
+
+        Args:
+            series_slugs: Event slugs to search (e.g. ``["btc-updown-5m"]``).
+
+        Returns:
+            List of ``(condition_id, end_date_iso)`` tuples for active markets
+            found in the specified series.
+
+        """
+        results: list[tuple[str, str]] = []
+        for slug in series_slugs:
+            events = await self._gamma.get_events(slug=slug, active=True, limit=5)
+            for event in events:
+                for market_raw in event.get("markets", []):
+                    if not market_raw.get("active", False):
+                        continue
+                    cid = market_raw.get("conditionId", market_raw.get("condition_id", ""))
+                    end_date = market_raw.get("endDate", market_raw.get("end_date", ""))
+                    if cid:
+                        results.append((cid, end_date))
+        return results
+
     async def close(self) -> None:
         """Close underlying HTTP clients."""
         await self._gamma.close()

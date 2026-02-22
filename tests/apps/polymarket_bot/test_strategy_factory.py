@@ -48,7 +48,13 @@ class TestBuildPmStrategy:
         strategy = build_pm_strategy("pm_cross_market_arb", min_edge=0.05)
         assert "0.05" in strategy.name
 
-    def test_strategy_names_tuple_has_four_entries(self) -> None:
-        """Test that PM_STRATEGY_NAMES contains exactly four strategies."""
-        expected_count = 4
+    def test_late_snipe_custom_params(self) -> None:
+        """Test building late snipe with custom parameters."""
+        strategy = build_pm_strategy("pm_late_snipe", snipe_threshold=0.85, snipe_window=45)
+        assert "0.85" in strategy.name
+        assert "45s" in strategy.name
+
+    def test_strategy_names_tuple_has_five_entries(self) -> None:
+        """Test that PM_STRATEGY_NAMES contains exactly five strategies."""
+        expected_count = 5
         assert len(PM_STRATEGY_NAMES) == expected_count

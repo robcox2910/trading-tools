@@ -344,6 +344,57 @@ class TestPolymarketClient:
         assert book.asks == ()
         assert book.spread == Decimal(0)
 
+    @pytest.mark.asyncio
+    async def test_discover_series_markets(self, client: PolymarketClient) -> None:
+        """Test discovering active markets from series slugs via Gamma events."""
+        events = [
+            {
+                "slug": "btc-updown-5m",
+                "markets": [
+                    {
+                        "conditionId": "cond_btc_1",
+                        "active": True,
+                        "endDate": "2026-02-22T12:05:00Z",
+                    },
+                    {
+                        "conditionId": "cond_btc_2",
+                        "active": False,
+                        "endDate": "2026-02-22T12:00:00Z",
+                    },
+                ],
+            },
+        ]
+
+        with patch.object(client._gamma, "get_events", new=AsyncMock(return_value=events)):
+            results = await client.discover_series_markets(["btc-updown-5m"])
+
+        assert len(results) == 1
+        assert results[0] == ("cond_btc_1", "2026-02-22T12:05:00Z")
+
+    @pytest.mark.asyncio
+    async def test_discover_series_markets_multiple_slugs(self, client: PolymarketClient) -> None:
+        """Test discovering markets from multiple series slugs."""
+
+        async def mock_events(
+            *,
+            slug: str = "",
+            active: bool = True,  # noqa: ARG001
+            limit: int = 5,  # noqa: ARG001
+        ) -> list[dict[str, Any]]:
+            if slug == "btc-updown-5m":
+                return [{"markets": [{"conditionId": "btc1", "active": True, "endDate": "end1"}]}]
+            if slug == "eth-updown-5m":
+                return [{"markets": [{"conditionId": "eth1", "active": True, "endDate": "end2"}]}]
+            return []
+
+        with patch.object(client._gamma, "get_events", side_effect=mock_events):
+            results = await client.discover_series_markets(["btc-updown-5m", "eth-updown-5m"])
+
+        assert len(results) == _EXPECTED_TOKEN_COUNT
+        cids = [cid for cid, _ in results]
+        assert "btc1" in cids
+        assert "eth1" in cids
+
 
 class TestSafeDecimal:
     """Tests for _safe_decimal conversion."""
