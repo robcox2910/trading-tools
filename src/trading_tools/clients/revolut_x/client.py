@@ -188,13 +188,14 @@ class RevolutXClient:
             **auth_headers,
         }
 
-        # Make request
+        # Make request — send body as pre-serialized content so the
+        # bytes on the wire match what was signed (minified JSON).
         response = await self._http_client.request(
             method=method,
             url=url,
             headers=headers,
             params=params,
-            json=data,
+            content=body_str.encode() if body_str else None,
         )
 
         # Handle errors

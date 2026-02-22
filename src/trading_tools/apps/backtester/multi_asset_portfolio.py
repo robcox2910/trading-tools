@@ -15,6 +15,7 @@ from trading_tools.apps.backtester.execution import (
 )
 from trading_tools.apps.backtester.portfolio import check_circuit_breaker
 from trading_tools.core.models import (
+    TWO,
     ZERO,
     Candle,
     ExecutionConfig,
@@ -95,7 +96,10 @@ class MultiAssetPortfolio:
         equity = self._capital
         for symbol, pos in self._positions.items():
             if symbol in prices:
-                equity += pos.quantity * prices[symbol]
+                if pos.side == Side.SELL:
+                    equity += pos.quantity * (TWO * pos.entry_price - prices[symbol])
+                else:
+                    equity += pos.quantity * prices[symbol]
         self._halted, self._peak_equity, self._halt_equity = check_circuit_breaker(
             halted=self._halted,
             equity=equity,

@@ -143,7 +143,12 @@ class BacktestEngine:
         if self._risk_config is None or portfolio.position is None:
             return None
 
-        exit_price = check_risk_triggers(candle, portfolio.position.entry_price, self._risk_config)
+        exit_price = check_risk_triggers(
+            candle,
+            portfolio.position.entry_price,
+            self._risk_config,
+            side=portfolio.position.side,
+        )
         if exit_price is not None:
             return portfolio.force_close(exit_price, candle.timestamp)
 

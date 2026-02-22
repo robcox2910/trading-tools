@@ -1,6 +1,7 @@
 """Configuration management for trading tools."""
 
 import os
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -9,6 +10,10 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+
+class ConfigError(Exception):
+    """Raise when configuration loading or validation fails."""
 
 
 class ConfigLoader:
@@ -94,6 +99,10 @@ class ConfigLoader:
             if value is None:
                 return config  # Return original if no env var and no default
             return value
+
+        if isinstance(config, str) and re.search(r"\$\{[^}]+\}", config):
+            msg = f"Unresolved environment variable reference in: {config}"
+            raise ConfigError(msg)
 
         return config
 

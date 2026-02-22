@@ -104,3 +104,13 @@ class TestVwapStrategy:
             candle = _candle(i, "100")
             assert s.on_candle(candle, history) is None
             history.append(candle)
+
+    def test_no_signal_zero_volume(self) -> None:
+        """Return None when all candles have zero volume (no VWAP possible)."""
+        s = VwapStrategy(period=3)
+        history: list[Candle] = []
+        for i in range(10):
+            candle = _candle(i, str(100 + i), volume="0")
+            result = s.on_candle(candle, history)
+            assert result is None
+            history.append(candle)

@@ -15,6 +15,8 @@ _MIN_TRADES_FOR_SHARPE = 2
 
 def total_return(initial_capital: Decimal, final_capital: Decimal) -> Decimal:
     """Return the total portfolio return as a decimal fraction (e.g. 0.25 = +25%)."""
+    if initial_capital == ZERO:
+        return ZERO
     return (final_capital - initial_capital) / initial_capital
 
 
@@ -69,7 +71,7 @@ def sharpe_ratio(trades: list[Trade]) -> Decimal:
         return ZERO
     returns = [t.pnl_pct for t in trades]
     mean = sum(returns) / Decimal(len(returns))
-    variance = sum((r - mean) ** 2 for r in returns) / Decimal(len(returns))
+    variance = sum((r - mean) ** 2 for r in returns) / Decimal(len(returns) - 1)
     if variance == ZERO:
         return ZERO
     std_dev = variance.sqrt()

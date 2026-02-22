@@ -87,6 +87,12 @@ class Candle:
     Each candle captures the open, high, low, and close prices plus
     the trading volume for a single interval (e.g. one hour) of a
     specific symbol.
+
+    Validate OHLCV invariants on construction:
+    - high >= low
+    - high >= max(open, close)
+    - low <= min(open, close)
+    - volume >= 0
     """
 
     symbol: str
@@ -97,6 +103,26 @@ class Candle:
     close: Decimal
     volume: Decimal
     interval: Interval
+
+    def __post_init__(self) -> None:
+        """Validate OHLCV invariants.
+
+        Raises:
+            ValueError: If any OHLCV invariant is violated.
+
+        """
+        if self.high < self.low:
+            msg = f"high ({self.high}) must be >= low ({self.low})"
+            raise ValueError(msg)
+        if self.high < max(self.open, self.close):
+            msg = f"high ({self.high}) must be >= max(open, close) ({max(self.open, self.close)})"
+            raise ValueError(msg)
+        if self.low > min(self.open, self.close):
+            msg = f"low ({self.low}) must be <= min(open, close) ({min(self.open, self.close)})"
+            raise ValueError(msg)
+        if self.volume < ZERO:
+            msg = f"volume ({self.volume}) must be >= 0"
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True)
@@ -158,6 +184,8 @@ class Trade:
         """
         entry_value = self.entry_price * self.quantity
         cost_basis = entry_value + self.entry_fee
+        if cost_basis == ZERO:
+            return ZERO
         if self.side == Side.SELL:
             raw = (self.entry_price - self.exit_price) * self.quantity
         else:

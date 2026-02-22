@@ -2,6 +2,10 @@
 
 from decimal import Decimal
 
+import pytest
+import typer
+
+from trading_tools.apps.backtester.cli._helpers import build_execution_config
 from trading_tools.apps.backtester.execution import (
     apply_entry_slippage,
     apply_exit_slippage,
@@ -14,6 +18,7 @@ from trading_tools.core.models import (
     ExecutionConfig,
     Interval,
     RiskConfig,
+    Side,
 )
 
 _ATR_PERIOD = 2
@@ -169,6 +174,30 @@ class TestComputeAllocation:
         assert allocation == Decimal(10000)
         assert quantity == Decimal(100)
 
+    def test_zero_price_returns_zeros(self) -> None:
+        """Return zeros when price is zero to avoid ZeroDivisionError."""
+        cfg = ExecutionConfig()
+        allocation, entry_fee, quantity = compute_allocation(
+            capital=Decimal(10000),
+            price=ZERO,
+            exec_config=cfg,
+        )
+        assert allocation == ZERO
+        assert entry_fee == ZERO
+        assert quantity == ZERO
+
+    def test_negative_price_returns_zeros(self) -> None:
+        """Return zeros when price is negative."""
+        cfg = ExecutionConfig()
+        allocation, entry_fee, quantity = compute_allocation(
+            capital=Decimal(10000),
+            price=Decimal(-100),
+            exec_config=cfg,
+        )
+        assert allocation == ZERO
+        assert entry_fee == ZERO
+        assert quantity == ZERO
+
 
 class TestCheckRiskTriggers:
     """Tests for stop-loss and take-profit trigger detection."""
@@ -218,3 +247,95 @@ class TestCheckRiskTriggers:
         entry_price = Decimal(100)
         result = check_risk_triggers(candle, entry_price, risk)
         assert result is None
+
+    def test_short_stop_loss_triggers_on_high(self) -> None:
+        """Verify SHORT stop-loss triggers when candle high breaches threshold."""
+        risk = RiskConfig(stop_loss_pct=Decimal("0.05"))
+        candle = _candle("103", high="106")
+        entry_price = Decimal(100)
+        result = check_risk_triggers(candle, entry_price, risk, side=Side.SELL)
+        assert result == Decimal(105)  # 100 * (1 + 0.05)
+
+    def test_short_take_profit_triggers_on_low(self) -> None:
+        """Verify SHORT take-profit triggers when candle low breaches threshold."""
+        risk = RiskConfig(take_profit_pct=Decimal("0.10"))
+        candle = _candle("92", low="88")
+        entry_price = Decimal(100)
+        result = check_risk_triggers(candle, entry_price, risk, side=Side.SELL)
+        assert result == Decimal(90)  # 100 * (1 - 0.10)
+
+    def test_short_no_trigger_returns_none(self) -> None:
+        """Verify None for SHORT when neither threshold is breached."""
+        risk = RiskConfig(
+            stop_loss_pct=Decimal("0.05"),
+            take_profit_pct=Decimal("0.10"),
+        )
+        candle = _candle("98", high="102", low="96")
+        entry_price = Decimal(100)
+        result = check_risk_triggers(candle, entry_price, risk, side=Side.SELL)
+        assert result is None
+
+
+class TestBuildExecutionConfigValidation:
+    """Tests for CLI execution config bounds validation."""
+
+    def test_negative_maker_fee_raises(self) -> None:
+        """Reject negative maker fee."""
+        with pytest.raises(typer.BadParameter, match="maker-fee"):
+            build_execution_config(
+                maker_fee=-0.01,
+                taker_fee=0.0,
+                slippage=0.0,
+                position_size=1.0,
+            )
+
+    def test_negative_taker_fee_raises(self) -> None:
+        """Reject negative taker fee."""
+        with pytest.raises(typer.BadParameter, match="taker-fee"):
+            build_execution_config(
+                maker_fee=0.0,
+                taker_fee=-0.01,
+                slippage=0.0,
+                position_size=1.0,
+            )
+
+    def test_slippage_above_one_raises(self) -> None:
+        """Reject slippage > 1."""
+        with pytest.raises(typer.BadParameter, match="slippage"):
+            build_execution_config(
+                maker_fee=0.0,
+                taker_fee=0.0,
+                slippage=1.5,
+                position_size=1.0,
+            )
+
+    def test_position_size_zero_raises(self) -> None:
+        """Reject position size of 0."""
+        with pytest.raises(typer.BadParameter, match="position-size"):
+            build_execution_config(
+                maker_fee=0.0,
+                taker_fee=0.0,
+                slippage=0.0,
+                position_size=0.0,
+            )
+
+    def test_position_size_above_one_raises(self) -> None:
+        """Reject position size > 1."""
+        with pytest.raises(typer.BadParameter, match="position-size"):
+            build_execution_config(
+                maker_fee=0.0,
+                taker_fee=0.0,
+                slippage=0.0,
+                position_size=1.5,
+            )
+
+    def test_valid_params_succeed(self) -> None:
+        """Accept valid parameters without raising."""
+        config = build_execution_config(
+            maker_fee=0.001,
+            taker_fee=0.002,
+            slippage=0.01,
+            position_size=0.5,
+        )
+        assert config.maker_fee_pct == Decimal("0.001")
+        assert config.position_size_pct == Decimal("0.5")

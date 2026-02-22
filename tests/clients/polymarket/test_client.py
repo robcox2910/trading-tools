@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from trading_tools.clients.polymarket.client import PolymarketClient
+from trading_tools.clients.polymarket.client import PolymarketClient, _safe_decimal
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import OrderBook
 
@@ -227,3 +227,73 @@ class TestPolymarketClient:
         assert market.tokens[0].price == Decimal(_PRICE_YES)
         assert market.tokens[1].outcome == "No"
         assert market.tokens[1].price == Decimal(_PRICE_NO)
+
+    @pytest.mark.asyncio
+    async def test_get_order_book_unsorted_bids_asks(self, client: PolymarketClient) -> None:
+        """Test order book sorts bids descending and asks ascending."""
+        raw_book = {
+            "bids": [
+                {"price": "0.69", "size": "200"},
+                {"price": "0.70", "size": "100"},
+            ],
+            "asks": [
+                {"price": "0.74", "size": "50"},
+                {"price": "0.73", "size": "150"},
+            ],
+        }
+
+        with patch(
+            "trading_tools.clients.polymarket.client._clob_adapter.fetch_order_book",
+            return_value=raw_book,
+        ):
+            book = await client.get_order_book(_BOOK_TOKEN)
+
+        # Bids sorted descending by price
+        assert book.bids[0].price == Decimal("0.70")
+        assert book.bids[1].price == Decimal("0.69")
+        # Asks sorted ascending by price
+        assert book.asks[0].price == Decimal("0.73")
+        assert book.asks[1].price == Decimal("0.74")
+        assert book.spread == Decimal("0.03")
+
+    @pytest.mark.asyncio
+    async def test_get_market_zero_price_not_replaced(self, client: PolymarketClient) -> None:
+        """Test that Decimal('0.00') from CLOB is used, not replaced by Gamma price."""
+        raw_market = _make_gamma_market()
+
+        with (
+            patch.object(client._gamma, "get_market", new=AsyncMock(return_value=raw_market)),
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.fetch_midpoint",
+                return_value="0.00",
+            ),
+        ):
+            market = await client.get_market("cond1")
+
+        yes_token = next(t for t in market.tokens if t.outcome == "Yes")
+        assert yes_token.price == Decimal("0.00")
+
+
+class TestSafeDecimal:
+    """Tests for _safe_decimal conversion."""
+
+    def test_none_returns_zero(self) -> None:
+        """Return zero for None input."""
+        assert _safe_decimal(None) == Decimal(0)
+
+    def test_empty_string_returns_zero(self) -> None:
+        """Return zero for empty string input."""
+        assert _safe_decimal("") == Decimal(0)
+
+    def test_whitespace_string_returns_zero(self) -> None:
+        """Return zero for whitespace-only string input."""
+        assert _safe_decimal("  ") == Decimal(0)
+
+    def test_valid_string_converts(self) -> None:
+        """Convert a valid numeric string to Decimal."""
+        assert _safe_decimal("1.23") == Decimal("1.23")
+
+    def test_malformed_string_raises(self) -> None:
+        """Raise PolymarketAPIError for malformed non-empty strings."""
+        with pytest.raises(PolymarketAPIError, match="Cannot convert"):
+            _safe_decimal("not_a_number")

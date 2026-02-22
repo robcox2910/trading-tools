@@ -135,6 +135,18 @@ def build_execution_config(
         A fully configured ``ExecutionConfig`` instance.
 
     """
+    if maker_fee < 0:
+        raise typer.BadParameter("maker-fee must be >= 0", param_hint="'--maker-fee'")
+    if taker_fee < 0:
+        raise typer.BadParameter("taker-fee must be >= 0", param_hint="'--taker-fee'")
+    if not 0 <= slippage <= 1:
+        raise typer.BadParameter("slippage must be between 0 and 1", param_hint="'--slippage'")
+    if not 0 < position_size <= 1:
+        raise typer.BadParameter(
+            "position-size must be between 0 (exclusive) and 1 (inclusive)",
+            param_hint="'--position-size'",
+        )
+
     return ExecutionConfig(
         maker_fee_pct=Decimal(str(maker_fee)),
         taker_fee_pct=Decimal(str(taker_fee)),

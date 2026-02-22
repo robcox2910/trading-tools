@@ -70,6 +70,80 @@ class TestCandle:
             candle.close = Decimal(200)  # type: ignore[misc]
 
 
+class TestCandleValidation:
+    """Tests for Candle OHLCV validation."""
+
+    def test_high_less_than_low_raises(self) -> None:
+        """Reject candle where high < low."""
+        with pytest.raises(ValueError, match=r"high.*must be >= low"):
+            Candle(
+                symbol="BTC-USD",
+                timestamp=1000,
+                open=Decimal(100),
+                high=Decimal(90),
+                low=Decimal(110),
+                close=Decimal(100),
+                volume=Decimal(10),
+                interval=Interval.H1,
+            )
+
+    def test_high_less_than_open_raises(self) -> None:
+        """Reject candle where high < open."""
+        with pytest.raises(ValueError, match=r"high.*must be >= max"):
+            Candle(
+                symbol="BTC-USD",
+                timestamp=1000,
+                open=Decimal(105),
+                high=Decimal(104),
+                low=Decimal(95),
+                close=Decimal(100),
+                volume=Decimal(10),
+                interval=Interval.H1,
+            )
+
+    def test_low_greater_than_close_raises(self) -> None:
+        """Reject candle where low > close."""
+        with pytest.raises(ValueError, match=r"low.*must be <= min"):
+            Candle(
+                symbol="BTC-USD",
+                timestamp=1000,
+                open=Decimal(100),
+                high=Decimal(110),
+                low=Decimal(96),
+                close=Decimal(95),
+                volume=Decimal(10),
+                interval=Interval.H1,
+            )
+
+    def test_negative_volume_raises(self) -> None:
+        """Reject candle with negative volume."""
+        with pytest.raises(ValueError, match=r"volume.*must be >= 0"):
+            Candle(
+                symbol="BTC-USD",
+                timestamp=1000,
+                open=Decimal(100),
+                high=Decimal(110),
+                low=Decimal(90),
+                close=Decimal(105),
+                volume=Decimal(-1),
+                interval=Interval.H1,
+            )
+
+    def test_zero_volume_allowed(self) -> None:
+        """Accept candle with zero volume."""
+        candle = Candle(
+            symbol="BTC-USD",
+            timestamp=1000,
+            open=Decimal(100),
+            high=Decimal(100),
+            low=Decimal(100),
+            close=Decimal(100),
+            volume=Decimal(0),
+            interval=Interval.H1,
+        )
+        assert candle.volume == Decimal(0)
+
+
 class TestSignal:
     """Tests for Signal model."""
 
@@ -162,6 +236,19 @@ class TestTrade:
             exit_time=2000,
         )
         assert trade.pnl_pct == Decimal(10) / Decimal(110)
+
+    def test_pnl_pct_zero_cost_basis(self) -> None:
+        """Return ZERO when cost basis is zero to avoid ZeroDivisionError."""
+        trade = Trade(
+            symbol="BTC-USD",
+            side=Side.BUY,
+            quantity=Decimal(0),
+            entry_price=Decimal(0),
+            entry_time=1000,
+            exit_price=Decimal(100),
+            exit_time=2000,
+        )
+        assert trade.pnl_pct == Decimal(0)
 
 
 class TestTradeWithFees:

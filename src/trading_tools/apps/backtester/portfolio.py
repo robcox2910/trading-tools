@@ -16,6 +16,7 @@ from trading_tools.apps.backtester.execution import (
 )
 from trading_tools.core.models import (
     ONE,
+    TWO,
     ZERO,
     Candle,
     ExecutionConfig,
@@ -66,7 +67,7 @@ def check_circuit_breaker(
         return False, peak_equity, halt_equity
 
     if recovery_pct is not None and halt_equity > ZERO:
-        recovery_target = halt_equity * (ONE + recovery_pct * circuit_breaker_pct)
+        recovery_target = halt_equity * (ONE + recovery_pct)
         if equity >= recovery_target:
             return False, equity, ZERO
 
@@ -140,7 +141,10 @@ class Portfolio:
         """
         equity = self._capital
         if self._position is not None:
-            equity += self._position.quantity * mark_price
+            if self._position.side == Side.SELL:
+                equity += self._position.quantity * (TWO * self._position.entry_price - mark_price)
+            else:
+                equity += self._position.quantity * mark_price
         self._halted, self._peak_equity, self._halt_equity = check_circuit_breaker(
             halted=self._halted,
             equity=equity,

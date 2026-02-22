@@ -44,6 +44,10 @@ class TestTotalReturn:
         """Test zero return when capital is unchanged."""
         assert total_return(Decimal(10000), Decimal(10000)) == ZERO
 
+    def test_zero_initial_capital(self) -> None:
+        """Return ZERO when initial capital is zero to avoid ZeroDivisionError."""
+        assert total_return(ZERO, Decimal(100)) == ZERO
+
 
 class TestWinRate:
     """Tests for win_rate calculation."""
