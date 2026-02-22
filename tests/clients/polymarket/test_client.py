@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from trading_tools.clients.polymarket.client import PolymarketClient, _safe_decimal
+from trading_tools.clients.polymarket.client import (
+    PolymarketClient,
+    _resolve_timestamped_slugs,
+    _safe_decimal,
+)
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import OrderBook
 
@@ -381,9 +385,10 @@ class TestPolymarketClient:
             active: bool = True,  # noqa: ARG001
             limit: int = 5,  # noqa: ARG001
         ) -> list[dict[str, Any]]:
-            if slug == "btc-updown-5m":
+            # Slugs will have epoch suffix due to -5m pattern
+            if slug.startswith("btc-updown-5m-"):
                 return [{"markets": [{"conditionId": "btc1", "active": True, "endDate": "end1"}]}]
-            if slug == "eth-updown-5m":
+            if slug.startswith("eth-updown-5m-"):
                 return [{"markets": [{"conditionId": "eth1", "active": True, "endDate": "end2"}]}]
             return []
 
@@ -419,3 +424,30 @@ class TestSafeDecimal:
         """Raise PolymarketAPIError for malformed non-empty strings."""
         with pytest.raises(PolymarketAPIError, match="Cannot convert"):
             _safe_decimal("not_a_number")
+
+
+class TestResolveTimestampedSlugs:
+    """Tests for _resolve_timestamped_slugs helper."""
+
+    def test_5m_slug_gets_epoch_suffix(self) -> None:
+        """Test that slugs ending in -5m get a timestamp appended."""
+        result = _resolve_timestamped_slugs(["btc-updown-5m"])
+        assert len(result) == 1
+        assert result[0].startswith("btc-updown-5m-")
+        # Suffix should be a valid epoch
+        epoch_str = result[0].split("-")[-1]
+        epoch = int(epoch_str)
+        five_minutes = 300
+        assert epoch % five_minutes == 0
+
+    def test_non_5m_slug_passes_through(self) -> None:
+        """Test that slugs not ending in -5m pass through unchanged."""
+        result = _resolve_timestamped_slugs(["some-other-event"])
+        assert result == ["some-other-event"]
+
+    def test_mixed_slugs(self) -> None:
+        """Test a mix of 5m and non-5m slugs."""
+        result = _resolve_timestamped_slugs(["btc-updown-5m", "custom-slug"])
+        assert len(result) == _EXPECTED_TOKEN_COUNT
+        assert result[0].startswith("btc-updown-5m-")
+        assert result[1] == "custom-slug"
