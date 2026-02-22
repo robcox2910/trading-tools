@@ -80,6 +80,9 @@ class BotConfig:
         markets: Tuple of condition IDs to track.
         market_end_times: Pairs of (condition_id, ISO end time) for precise
             resolution time overrides (CLOB API only provides the date).
+        series_slugs: Series slugs for periodic market re-discovery
+            (e.g. ``("btc-updown-5m",)``). When set, the engine rotates
+            markets each time the 5-minute window changes.
 
     """
 
@@ -90,6 +93,7 @@ class BotConfig:
     max_history: int = _DEFAULT_MAX_HISTORY
     markets: tuple[str, ...] = ()
     market_end_times: tuple[tuple[str, str], ...] = ()
+    series_slugs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
