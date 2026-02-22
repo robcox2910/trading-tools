@@ -97,8 +97,7 @@ class ConfigLoader:
 
             value = os.getenv(var_name, default)
             if value is None:
-                msg = f"Unresolved environment variable: {var_name}"
-                raise ConfigError(msg)
+                return config  # Return original if no env var and no default
             return value
 
         if isinstance(config, str) and re.search(r"\$\{[^}]+\}", config):

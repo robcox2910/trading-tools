@@ -135,15 +135,26 @@ revolut_x:
         key_data = loader.get_private_key()
         assert key_data == test_key_data
 
-    def test_unresolved_env_var_raises_config_error(self, tmp_path: Path) -> None:
-        """Raise ConfigError when an env var has no value and no default."""
+    def test_full_string_unresolved_env_var_kept_as_literal(self, tmp_path: Path) -> None:
+        """Keep the literal ${VAR} string when env var is unset and has no default."""
         config_file = tmp_path / "settings.yaml"
         config_file.write_text("""
 revolut_x:
   api_key: ${NONEXISTENT_TRADING_TOOLS_VAR}
 """)
 
-        with pytest.raises(ConfigError, match="Unresolved environment variable"):
+        loader = ConfigLoader(config_dir=tmp_path)
+        assert loader.get("revolut_x.api_key") == "${NONEXISTENT_TRADING_TOOLS_VAR}"
+
+    def test_embedded_env_var_reference_raises_config_error(self, tmp_path: Path) -> None:
+        """Raise ConfigError when an env var reference is embedded in a larger string."""
+        config_file = tmp_path / "settings.yaml"
+        config_file.write_text("""
+revolut_x:
+  base_url: https://api.example.com/${NONEXISTENT_PATH_VAR}/v1
+""")
+
+        with pytest.raises(ConfigError, match="Unresolved environment variable reference"):
             ConfigLoader(config_dir=tmp_path)
 
     def test_env_var_with_default_does_not_raise(self, tmp_path: Path) -> None:
