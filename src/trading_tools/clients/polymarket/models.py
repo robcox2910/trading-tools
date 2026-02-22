@@ -90,3 +90,72 @@ class Market:
     volume: Decimal
     liquidity: Decimal
     active: bool
+
+
+@dataclass(frozen=True)
+class OrderRequest:
+    """Typed input for placing an order on Polymarket.
+
+    Encapsulate all parameters needed to submit a limit or market order
+    to the CLOB API.
+
+    Args:
+        token_id: CLOB token identifier for the outcome to trade.
+        side: Order side -- ``"BUY"`` or ``"SELL"``.
+        price: Limit price between 0 and 1 (ignored for market orders).
+        size: Number of shares to trade.
+        order_type: ``"limit"`` for GTC limit orders, ``"market"`` for FOK.
+
+    """
+
+    token_id: str
+    side: str
+    price: Decimal
+    size: Decimal
+    order_type: str
+
+
+@dataclass(frozen=True)
+class OrderResponse:
+    """Typed result from submitting an order to the CLOB API.
+
+    Carry the essential fields from the API response so callers can
+    display confirmation and track fill status.
+
+    Args:
+        order_id: Unique identifier assigned by the CLOB.
+        status: Order status (e.g. ``"live"``, ``"matched"``, ``"cancelled"``).
+        token_id: CLOB token identifier that was traded.
+        side: Order side -- ``"BUY"`` or ``"SELL"``.
+        price: Submitted price.
+        size: Submitted size in shares.
+        filled: Number of shares already filled.
+
+    """
+
+    order_id: str
+    status: str
+    token_id: str
+    side: str
+    price: Decimal
+    size: Decimal
+    filled: Decimal
+
+
+@dataclass(frozen=True)
+class Balance:
+    """Typed balance and allowance information for a Polymarket asset.
+
+    Represent the on-chain balance and contract allowance for either
+    USDC collateral or a conditional outcome token.
+
+    Args:
+        asset_type: ``"COLLATERAL"`` for USDC or ``"CONDITIONAL"`` for tokens.
+        balance: Current balance in the asset's native units.
+        allowance: Approved spending allowance for the exchange contract.
+
+    """
+
+    asset_type: str
+    balance: Decimal
+    allowance: Decimal

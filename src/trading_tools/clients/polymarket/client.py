@@ -15,10 +15,13 @@ from trading_tools.clients.polymarket import _clob_adapter
 from trading_tools.clients.polymarket._gamma_client import GammaClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import (
+    Balance,
     Market,
     MarketToken,
     OrderBook,
     OrderLevel,
+    OrderRequest,
+    OrderResponse,
 )
 
 _ZERO = Decimal(0)
@@ -45,15 +48,39 @@ class PolymarketClient:
         self,
         host: str = CLOB_HOST,
         gamma_base_url: str = GAMMA_URL,
+        private_key: str | None = None,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        api_passphrase: str | None = None,
     ) -> None:
         """Initialize the Polymarket client.
+
+        When ``private_key`` is provided, create an authenticated client
+        capable of placing trades.  If API credentials are also provided,
+        skip the key derivation step and connect at Level 2 immediately.
+        Without a private key the client operates in read-only mode.
 
         Args:
             host: Base URL for the Polymarket CLOB API.
             gamma_base_url: Base URL for the Gamma metadata API.
+            private_key: Polygon wallet private key (hex ``0x…`` string).
+            api_key: Pre-existing CLOB API key.
+            api_secret: Pre-existing CLOB API secret.
+            api_passphrase: Pre-existing CLOB API passphrase.
 
         """
-        self._clob_client: Any = _clob_adapter.create_clob_client(host)
+        self._authenticated = private_key is not None
+        if private_key is not None:
+            creds = (
+                (api_key, api_secret, api_passphrase)
+                if api_key and api_secret and api_passphrase
+                else None
+            )
+            self._clob_client: Any = _clob_adapter.create_authenticated_clob_client(
+                host, private_key, creds=creds
+            )
+        else:
+            self._clob_client = _clob_adapter.create_clob_client(host)
         self._gamma = GammaClient(base_url=gamma_base_url)
         self._clob_lock = asyncio.Lock()
 
@@ -200,6 +227,128 @@ class PolymarketClient:
                     if cid:
                         results.append((cid, end_date))
         return results
+
+    def _require_auth(self) -> None:
+        """Raise an error if the client is not authenticated.
+
+        Raises:
+            PolymarketAPIError: When no private key was provided at init.
+
+        """
+        if not self._authenticated:
+            raise PolymarketAPIError(
+                msg="Authentication required. Provide a private key to enable trading.",
+                status_code=401,
+            )
+
+    async def derive_api_creds(self) -> tuple[str, str, str]:
+        """Derive API credentials from the wallet's private key.
+
+        Perform a one-time derivation to obtain HMAC credentials for
+        Level 2 authentication.  Store the returned values for reuse.
+
+        Returns:
+            Tuple of ``(api_key, api_secret, api_passphrase)``.
+
+        Raises:
+            PolymarketAPIError: When not authenticated or derivation fails.
+
+        """
+        self._require_auth()
+        async with self._clob_lock:
+            return await asyncio.to_thread(_clob_adapter.derive_api_creds, self._clob_client)
+
+    async def place_order(self, request: OrderRequest) -> OrderResponse:
+        """Place a limit or market order on Polymarket.
+
+        Dispatch to the appropriate adapter function based on the
+        ``order_type`` field of the request.
+
+        Args:
+            request: Typed order request with token, side, price, and size.
+
+        Returns:
+            Typed order response with ID, status, and fill information.
+
+        Raises:
+            PolymarketAPIError: When not authenticated or the order fails.
+
+        """
+        self._require_auth()
+        if request.order_type == "market":
+            async with self._clob_lock:
+                raw = await asyncio.to_thread(
+                    _clob_adapter.place_market_order,
+                    self._clob_client,
+                    request.token_id,
+                    request.side,
+                    float(request.size),
+                )
+        else:
+            async with self._clob_lock:
+                raw = await asyncio.to_thread(
+                    _clob_adapter.place_limit_order,
+                    self._clob_client,
+                    request.token_id,
+                    request.side,
+                    float(request.price),
+                    float(request.size),
+                )
+        return _parse_order_response(raw, request)
+
+    async def get_balance(self, asset_type: str = "COLLATERAL") -> Balance:
+        """Fetch the balance and allowance for an asset.
+
+        Args:
+            asset_type: ``"COLLATERAL"`` for USDC or ``"CONDITIONAL"`` for tokens.
+
+        Returns:
+            Typed balance with balance and allowance amounts.
+
+        Raises:
+            PolymarketAPIError: When not authenticated or the query fails.
+
+        """
+        self._require_auth()
+        async with self._clob_lock:
+            raw = await asyncio.to_thread(_clob_adapter.get_balance, self._clob_client, asset_type)
+        return Balance(
+            asset_type=asset_type,
+            balance=_safe_decimal(raw.get("balance")),
+            allowance=_safe_decimal(raw.get("allowance")),
+        )
+
+    async def cancel_order(self, order_id: str) -> dict[str, Any]:
+        """Cancel an open order.
+
+        Args:
+            order_id: Identifier of the order to cancel.
+
+        Returns:
+            Raw API response confirming the cancellation.
+
+        Raises:
+            PolymarketAPIError: When not authenticated or cancellation fails.
+
+        """
+        self._require_auth()
+        async with self._clob_lock:
+            return await asyncio.to_thread(_clob_adapter.cancel_order, self._clob_client, order_id)
+
+    async def get_open_orders(self) -> list[OrderResponse]:
+        """Fetch all open orders for the authenticated user.
+
+        Returns:
+            List of typed order responses.
+
+        Raises:
+            PolymarketAPIError: When not authenticated or the query fails.
+
+        """
+        self._require_auth()
+        async with self._clob_lock:
+            raw_list = await asyncio.to_thread(_clob_adapter.get_open_orders, self._clob_client)
+        return [_parse_raw_order(raw) for raw in raw_list]
 
     async def close(self) -> None:
         """Close underlying HTTP clients."""
@@ -422,3 +571,49 @@ def _resolve_timestamped_slugs(series_slugs: list[str]) -> list[str]:
         else:
             resolved.append(slug)
     return resolved
+
+
+def _parse_order_response(raw: dict[str, Any], request: OrderRequest) -> OrderResponse:
+    """Convert a raw CLOB API order response into a typed OrderResponse.
+
+    The API may return different key formats depending on the endpoint.
+    Fall back to the request values for fields not present in the response.
+
+    Args:
+        raw: Raw dictionary from the CLOB ``post_order`` call.
+        request: Original order request used for fallback values.
+
+    Returns:
+        Typed OrderResponse dataclass.
+
+    """
+    return OrderResponse(
+        order_id=str(raw.get("orderID", raw.get("id", ""))),
+        status=str(raw.get("status", "unknown")),
+        token_id=request.token_id,
+        side=request.side,
+        price=request.price,
+        size=request.size,
+        filled=_safe_decimal(raw.get("filled", "0")),
+    )
+
+
+def _parse_raw_order(raw: dict[str, Any]) -> OrderResponse:
+    """Convert a raw open order dictionary into a typed OrderResponse.
+
+    Args:
+        raw: Order dictionary from the CLOB ``get_orders`` endpoint.
+
+    Returns:
+        Typed OrderResponse dataclass.
+
+    """
+    return OrderResponse(
+        order_id=str(raw.get("id", raw.get("orderID", ""))),
+        status=str(raw.get("status", "unknown")),
+        token_id=str(raw.get("asset_id", raw.get("token_id", ""))),
+        side=str(raw.get("side", "")),
+        price=_safe_decimal(raw.get("price", "0")),
+        size=_safe_decimal(raw.get("original_size", raw.get("size", "0"))),
+        filled=_safe_decimal(raw.get("size_matched", raw.get("filled", "0"))),
+    )

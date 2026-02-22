@@ -13,7 +13,12 @@ from trading_tools.clients.polymarket.client import (
     _safe_decimal,
 )
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
-from trading_tools.clients.polymarket.models import OrderBook
+from trading_tools.clients.polymarket.models import (
+    Balance,
+    OrderBook,
+    OrderRequest,
+    OrderResponse,
+)
 
 _PRICE_YES = "0.72"
 _PRICE_NO = "0.28"
@@ -451,3 +456,178 @@ class TestResolveTimestampedSlugs:
         assert len(result) == _EXPECTED_TOKEN_COUNT
         assert result[0].startswith("btc-updown-5m-")
         assert result[1] == "custom-slug"
+
+
+_PRIVATE_KEY = "0xdeadbeef"
+_ORDER_TOKEN_ID = "token_yes"
+_ORDER_SIZE = Decimal(50)
+_ORDER_PRICE = Decimal("0.65")
+_ZERO = Decimal(0)
+
+
+class TestAuthenticatedPolymarketClient:
+    """Test suite for authenticated PolymarketClient methods."""
+
+    @pytest.fixture
+    def auth_client(self) -> PolymarketClient:
+        """Create an authenticated PolymarketClient with mocked adapter."""
+        with patch(
+            "trading_tools.clients.polymarket.client._clob_adapter.create_authenticated_clob_client"
+        ):
+            return PolymarketClient(private_key=_PRIVATE_KEY)
+
+    @pytest.fixture
+    def readonly_client(self) -> PolymarketClient:
+        """Create a read-only PolymarketClient."""
+        with patch("trading_tools.clients.polymarket.client._clob_adapter.create_clob_client"):
+            return PolymarketClient()
+
+    @pytest.mark.asyncio
+    async def test_place_order_limit(self, auth_client: PolymarketClient) -> None:
+        """Place a limit order and return a typed OrderResponse."""
+        request = OrderRequest(
+            token_id=_ORDER_TOKEN_ID,
+            side="BUY",
+            price=_ORDER_PRICE,
+            size=_ORDER_SIZE,
+            order_type="limit",
+        )
+        with patch(
+            "trading_tools.clients.polymarket.client._clob_adapter.place_limit_order",
+            return_value={"orderID": "abc", "status": "live", "filled": "0"},
+        ):
+            result = await auth_client.place_order(request)
+
+        assert isinstance(result, OrderResponse)
+        assert result.order_id == "abc"
+        assert result.status == "live"
+        assert result.token_id == _ORDER_TOKEN_ID
+
+    @pytest.mark.asyncio
+    async def test_place_order_market(self, auth_client: PolymarketClient) -> None:
+        """Place a market order via the market order adapter path."""
+        request = OrderRequest(
+            token_id=_ORDER_TOKEN_ID,
+            side="BUY",
+            price=_ZERO,
+            size=_ORDER_SIZE,
+            order_type="market",
+        )
+        with patch(
+            "trading_tools.clients.polymarket.client._clob_adapter.place_market_order",
+            return_value={"orderID": "xyz", "status": "matched", "filled": "50"},
+        ):
+            result = await auth_client.place_order(request)
+
+        assert result.order_id == "xyz"
+        assert result.status == "matched"
+        assert result.filled == _ORDER_SIZE
+
+    @pytest.mark.asyncio
+    async def test_place_order_requires_auth(self, readonly_client: PolymarketClient) -> None:
+        """Raise PolymarketAPIError when placing order without auth."""
+        request = OrderRequest(
+            token_id=_ORDER_TOKEN_ID,
+            side="BUY",
+            price=_ORDER_PRICE,
+            size=_ORDER_SIZE,
+            order_type="limit",
+        )
+        with pytest.raises(PolymarketAPIError, match="Authentication required"):
+            await readonly_client.place_order(request)
+
+    @pytest.mark.asyncio
+    async def test_get_balance(self, auth_client: PolymarketClient) -> None:
+        """Fetch USDC balance and return typed Balance."""
+        with patch(
+            "trading_tools.clients.polymarket.client._clob_adapter.get_balance",
+            return_value={"balance": "1000.00", "allowance": "500.00"},
+        ):
+            result = await auth_client.get_balance("COLLATERAL")
+
+        assert isinstance(result, Balance)
+        assert result.balance == Decimal("1000.00")
+        assert result.allowance == Decimal("500.00")
+        assert result.asset_type == "COLLATERAL"
+
+    @pytest.mark.asyncio
+    async def test_get_balance_requires_auth(self, readonly_client: PolymarketClient) -> None:
+        """Raise PolymarketAPIError when checking balance without auth."""
+        with pytest.raises(PolymarketAPIError, match="Authentication required"):
+            await readonly_client.get_balance()
+
+    @pytest.mark.asyncio
+    async def test_cancel_order(self, auth_client: PolymarketClient) -> None:
+        """Cancel an order and return the raw result."""
+        with patch(
+            "trading_tools.clients.polymarket.client._clob_adapter.cancel_order",
+            return_value={"status": "cancelled"},
+        ):
+            result = await auth_client.cancel_order("order_123")
+
+        assert result["status"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_cancel_order_requires_auth(self, readonly_client: PolymarketClient) -> None:
+        """Raise PolymarketAPIError when cancelling without auth."""
+        with pytest.raises(PolymarketAPIError, match="Authentication required"):
+            await readonly_client.cancel_order("order_123")
+
+    @pytest.mark.asyncio
+    async def test_get_open_orders(self, auth_client: PolymarketClient) -> None:
+        """Fetch open orders and return typed OrderResponse list."""
+        raw_orders = [
+            {
+                "id": "o1",
+                "side": "BUY",
+                "price": "0.65",
+                "original_size": "50",
+                "size_matched": "10",
+                "status": "live",
+                "asset_id": "tok1",
+            },
+            {
+                "id": "o2",
+                "side": "SELL",
+                "price": "0.80",
+                "original_size": "30",
+                "size_matched": "0",
+                "status": "live",
+                "asset_id": "tok2",
+            },
+        ]
+        expected_count = 2
+
+        with patch(
+            "trading_tools.clients.polymarket.client._clob_adapter.get_open_orders",
+            return_value=raw_orders,
+        ):
+            result = await auth_client.get_open_orders()
+
+        assert len(result) == expected_count
+        assert all(isinstance(o, OrderResponse) for o in result)
+        assert result[0].order_id == "o1"
+        assert result[0].filled == Decimal(10)
+
+    @pytest.mark.asyncio
+    async def test_get_open_orders_requires_auth(self, readonly_client: PolymarketClient) -> None:
+        """Raise PolymarketAPIError when fetching orders without auth."""
+        with pytest.raises(PolymarketAPIError, match="Authentication required"):
+            await readonly_client.get_open_orders()
+
+    @pytest.mark.asyncio
+    async def test_derive_api_creds(self, auth_client: PolymarketClient) -> None:
+        """Derive API creds and return a tuple."""
+        with patch(
+            "trading_tools.clients.polymarket.client._clob_adapter.derive_api_creds",
+            return_value=("key", "secret", "pass"),
+        ):
+            result = await auth_client.derive_api_creds()
+
+        assert result == ("key", "secret", "pass")
+
+    @pytest.mark.asyncio
+    async def test_derive_api_creds_requires_auth(self, readonly_client: PolymarketClient) -> None:
+        """Raise PolymarketAPIError when deriving creds without auth."""
+        with pytest.raises(PolymarketAPIError, match="Authentication required"):
+            await readonly_client.derive_api_creds()
