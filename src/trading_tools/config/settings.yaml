@@ -26,6 +26,15 @@ backtester:
     - XRP-USD
     - SOL-USD
 
+# Polymarket CLOB API Settings
+polymarket:
+  clob_host: ${POLYMARKET_CLOB_HOST:https://clob.polymarket.com}
+  gamma_url: ${POLYMARKET_GAMMA_URL:https://gamma-api.polymarket.com}
+  private_key: ${POLYMARKET_PRIVATE_KEY:}
+  api_key: ${POLYMARKET_API_KEY:}
+  api_secret: ${POLYMARKET_API_SECRET:}
+  api_passphrase: ${POLYMARKET_API_PASSPHRASE:}
+
 # Database Settings (future use)
 database:
   host: ${DB_HOST:localhost}
