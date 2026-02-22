@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TIMESTAMP_PLACEHOLDER = 0
+_MIN_TOKENS = 2
 
 
 class PaperTradingEngine:
@@ -105,20 +106,21 @@ class PaperTradingEngine:
         try:
             market: Market = await self._client.get_market(condition_id)
         except Exception:
-            logger.warning("Failed to fetch market %s", condition_id)
+            logger.warning("Failed to fetch market %s", condition_id, exc_info=True)
             return None
 
-        yes_token = next((t for t in market.tokens if t.outcome.lower() == "yes"), None)
-        no_token = next((t for t in market.tokens if t.outcome.lower() == "no"), None)
-
-        if yes_token is None or no_token is None:
-            logger.warning("Market %s missing YES/NO tokens", condition_id)
+        # Polymarket markets use "Yes"/"No" or "Up"/"Down" outcome names.
+        # The first token is the primary outcome (YES/Up), second is the complement.
+        if len(market.tokens) < _MIN_TOKENS:
+            logger.warning("Market %s has fewer than 2 tokens", condition_id)
             return None
+        yes_token = market.tokens[0]
+        no_token = market.tokens[1]
 
         try:
             order_book = await self._client.get_order_book(yes_token.token_id)
         except Exception:
-            logger.warning("Failed to fetch order book for %s", condition_id)
+            logger.warning("Failed to fetch order book for %s", condition_id, exc_info=True)
             return None
 
         return MarketSnapshot(
@@ -144,9 +146,31 @@ class PaperTradingEngine:
             history = list(self._history[condition_id])
             self._history[condition_id].append(snapshot)
 
+            logger.info(
+                "[tick %d] %s YES=%.4f NO=%.4f vol=%s liq=%s bids=%d asks=%d",
+                self._snapshots_processed,
+                snapshot.question[:50],
+                snapshot.yes_price,
+                snapshot.no_price,
+                snapshot.volume,
+                snapshot.liquidity,
+                len(snapshot.order_book.bids),
+                len(snapshot.order_book.asks),
+            )
+
             signal = self._strategy.on_snapshot(snapshot, history)
             if signal is not None:
+                logger.info(
+                    "[tick %d] SIGNAL: %s %s strength=%.4f reason=%s",
+                    self._snapshots_processed,
+                    signal.side.name,
+                    signal.symbol[:20],
+                    signal.strength,
+                    signal.reason,
+                )
                 self._apply_signal(signal, snapshot)
+            else:
+                logger.info("[tick %d] No signal", self._snapshots_processed)
 
             self._portfolio.mark_to_market(condition_id, snapshot.yes_price)
 

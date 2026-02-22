@@ -90,6 +90,9 @@ class PolymarketClient:
     async def get_market(self, condition_id: str) -> Market:
         """Fetch a single market with live CLOB pricing.
 
+        Use the CLOB ``/markets/{condition_id}`` endpoint for reliable
+        lookup, then enrich token prices with live midpoint data.
+
         Args:
             condition_id: Unique identifier for the market condition.
 
@@ -100,10 +103,18 @@ class PolymarketClient:
             PolymarketAPIError: When the market is not found or API fails.
 
         """
-        raw = await self._gamma.get_market(condition_id)
-        market = self._parse_market(raw)
+        async with self._clob_lock:
+            raw = await asyncio.to_thread(
+                _clob_adapter.fetch_market, self._clob_client, condition_id
+            )
+        if raw is None:
+            raise PolymarketAPIError(
+                msg=f"Market not found: {condition_id}",
+                status_code=404,
+            )
+        market = self._parse_clob_market(raw)
 
-        # Enrich tokens with live CLOB prices
+        # Enrich tokens with live CLOB midpoint prices
         enriched_tokens: list[MarketToken] = []
         for token in market.tokens:
             async with self._clob_lock:
@@ -163,6 +174,39 @@ class PolymarketClient:
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Exit async context manager."""
         await self.close()
+
+    @staticmethod
+    def _parse_clob_market(raw: dict[str, Any]) -> Market:
+        """Convert a raw CLOB API market dict into a typed Market.
+
+        The CLOB API uses snake_case keys and embeds tokens as a list of
+        dicts with ``token_id``, ``outcome``, and ``price`` fields.
+
+        Args:
+            raw: Market dictionary from the CLOB ``/markets/`` endpoint.
+
+        Returns:
+            Typed Market dataclass.
+
+        """
+        tokens = [
+            MarketToken(
+                token_id=str(t.get("token_id", "")),
+                outcome=str(t.get("outcome", "")),
+                price=_safe_decimal(t.get("price", "0")),
+            )
+            for t in raw.get("tokens", [])
+        ]
+        return Market(
+            condition_id=raw.get("condition_id", ""),
+            question=raw.get("question", ""),
+            description=raw.get("description", ""),
+            tokens=tuple(tokens),
+            end_date=raw.get("end_date_iso", ""),
+            volume=_ZERO,  # CLOB endpoint doesn't include volume
+            liquidity=_ZERO,  # CLOB endpoint doesn't include liquidity
+            active=bool(raw.get("active", False)),
+        )
 
     @staticmethod
     def _parse_market(raw: dict[str, Any]) -> Market:
