@@ -248,7 +248,7 @@ class TestCircuitBreaker:
         """
         risk = RiskConfig(
             circuit_breaker_pct=Decimal("0.10"),
-            recovery_pct=Decimal("0.5"),
+            recovery_pct=Decimal("0.05"),
         )
         cfg = ExecutionConfig(position_size_pct=Decimal("0.5"))
         p = Portfolio(Decimal(10000), execution_config=cfg, risk_config=risk)
@@ -257,7 +257,7 @@ class TestCircuitBreaker:
         # Mark price drops to 60: equity=5000 + 50*60=8000, peak=10000, 20%>10%
         p.update_equity(Decimal(60))
         assert p.halted is True
-        # halt_equity=8000, recovery target=8000*(1+0.5*0.10)=8000*1.05=8400
+        # halt_equity=8000, recovery target=8000*(1+0.05)=8400
         # Mark price recovers to 70: equity=5000 + 50*70=8500 >= 8400
         p.update_equity(Decimal(70))
         assert p.halted is False

@@ -189,3 +189,21 @@ class TestBinanceCandleProvider:
         provider = BinanceCandleProvider(client)
         candles = await provider.get_candles("BTC-USD", Interval.H1, 0, 5)
         assert candles[0].symbol == "BTC-USD"
+
+    @pytest.mark.asyncio
+    async def test_pagination_breaks_on_no_advancement(self) -> None:
+        """Break pagination loop when API returns same timestamps repeatedly."""
+        page_size = _MAX_CANDLES_PER_REQUEST
+        stuck_page = [_raw_kline(open_time_ms=i * MS_PER_SECOND) for i in range(page_size)]
+
+        client = AsyncMock()
+        client.get = AsyncMock(return_value=stuck_page)
+        provider = BinanceCandleProvider(client)
+
+        candles = await provider.get_candles("BTC-USD", Interval.H1, 0, 10_000_000)
+
+        # First call advances; second call returns same last timestamp
+        # so the guard breaks the loop after 2 iterations
+        expected_pages = 2
+        assert len(candles) == page_size * expected_pages
+        assert client.get.call_count == expected_pages

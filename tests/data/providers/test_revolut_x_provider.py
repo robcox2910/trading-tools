@@ -160,3 +160,22 @@ class TestRevolutXCandleProvider:
         provider = RevolutXCandleProvider(client)
         candles = await provider.get_candles("BTC-USD", Interval.H1, 0, 2_000_000)
         assert candles[0].timestamp == expected_ts
+
+    @pytest.mark.asyncio
+    async def test_pagination_breaks_on_no_advancement(self) -> None:
+        """Break pagination loop when API returns same timestamps repeatedly."""
+        page_size = _MAX_CANDLES_PER_REQUEST
+        # Return the same timestamps every time — should break out
+        stuck_page = [_raw_candle(start_ms=i * MS_PER_SECOND) for i in range(page_size)]
+
+        client = AsyncMock()
+        client.get = AsyncMock(return_value={"data": stuck_page})
+        provider = RevolutXCandleProvider(client)
+
+        candles = await provider.get_candles("BTC-USD", Interval.H1, 0, 1_000_000)
+
+        # First call advances; second call returns same last timestamp
+        # so the guard breaks the loop after 2 iterations
+        expected_pages = 2
+        assert len(candles) == page_size * expected_pages
+        assert client.get.call_count == expected_pages

@@ -19,6 +19,7 @@ from trading_tools.core.models import (
     RiskConfig,
     Side,
     Signal,
+    Trade,
 )
 from trading_tools.core.protocols import CandleProvider, TradingStrategy
 
@@ -140,7 +141,7 @@ class MultiAssetEngine:
             candles=tuple(all_candles),
         )
 
-    def _check_risk_exit(self, candle: Candle, portfolio: MultiAssetPortfolio) -> None:
+    def _check_risk_exit(self, candle: Candle, portfolio: MultiAssetPortfolio) -> Trade | None:
         """Check and execute risk-management exits for the candle's symbol.
 
         Delegate trigger evaluation to the shared ``check_risk_triggers``
@@ -151,20 +152,32 @@ class MultiAssetEngine:
             candle: The current candle being processed.
             portfolio: The multi-asset portfolio to check.
 
+        Returns:
+            A ``Trade`` if a risk exit was triggered, ``None`` otherwise.
+
         """
         if self._risk_config is None:
-            return
+            return None
 
         positions = portfolio.positions
         symbol = candle.symbol
         if symbol not in positions:
-            return
+            return None
 
-        exit_price = check_risk_triggers(candle, positions[symbol].entry_price, self._risk_config)
+        position = positions[symbol]
+        exit_price = check_risk_triggers(
+            candle,
+            position.entry_price,
+            self._risk_config,
+            side=position.side,
+        )
         if exit_price is not None:
             reason = (
                 "Stop-loss triggered"
-                if exit_price < positions[symbol].entry_price
+                if (
+                    (position.side == Side.BUY and exit_price < position.entry_price)
+                    or (position.side == Side.SELL and exit_price > position.entry_price)
+                )
                 else "Take-profit triggered"
             )
             sell_signal = Signal(
@@ -173,7 +186,9 @@ class MultiAssetEngine:
                 strength=ONE,
                 reason=reason,
             )
-            portfolio.process_signal(sell_signal, exit_price, candle.timestamp)
+            return portfolio.process_signal(sell_signal, exit_price, candle.timestamp)
+
+        return None
 
     def _empty_result(self, interval: Interval) -> BacktestResult:
         """Return a zero-trade result when no candle data is available."""

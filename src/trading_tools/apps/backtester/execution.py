@@ -15,6 +15,7 @@ from trading_tools.core.models import (
     Candle,
     ExecutionConfig,
     RiskConfig,
+    Side,
 )
 
 
@@ -85,6 +86,9 @@ def compute_allocation(
                 vol_allocation = vol_quantity * price
                 available = min(vol_allocation, max_available)
 
+    if price <= ZERO:
+        return ZERO, ZERO, ZERO
+
     entry_fee = available * exec_config.taker_fee_pct
     investable = available - entry_fee
     quantity = investable / price
@@ -96,18 +100,21 @@ def check_risk_triggers(
     candle: Candle,
     entry_price: Decimal,
     risk_config: RiskConfig,
+    side: Side = Side.BUY,
 ) -> Decimal | None:
     """Check stop-loss and take-profit triggers against a candle.
 
-    Evaluate whether the candle's low breaches the stop-loss level or
-    the candle's high breaches the take-profit level relative to the
-    entry price. Stop-loss takes priority when both trigger on the
-    same candle (conservative assumption).
+    Evaluate whether the candle breaches the stop-loss or take-profit
+    level relative to the entry price. For LONG (BUY) positions,
+    stop-loss triggers on the low, take-profit on the high. For SHORT
+    (SELL) positions, the logic is inverted. Stop-loss takes priority
+    when both trigger on the same candle (conservative assumption).
 
     Args:
         candle: The current candle to check against.
         entry_price: The entry price of the open position.
         risk_config: Risk configuration with stop-loss/take-profit thresholds.
+        side: The position side (BUY for long, SELL for short).
 
     Returns:
         The exit price if a risk exit is triggered, ``None`` otherwise.
@@ -116,15 +123,29 @@ def check_risk_triggers(
     stop_loss_pct = risk_config.stop_loss_pct
     take_profit_pct = risk_config.take_profit_pct
 
-    stop_triggered = stop_loss_pct is not None and candle.low <= entry_price * (ONE - stop_loss_pct)
-    tp_triggered = take_profit_pct is not None and candle.high >= entry_price * (
-        ONE + take_profit_pct
-    )
+    if side == Side.SELL:
+        stop_triggered = stop_loss_pct is not None and candle.high >= entry_price * (
+            ONE + stop_loss_pct
+        )
+        tp_triggered = take_profit_pct is not None and candle.low <= entry_price * (
+            ONE - take_profit_pct
+        )
 
-    if stop_triggered and stop_loss_pct is not None:
-        return entry_price * (ONE - stop_loss_pct)
+        if stop_triggered and stop_loss_pct is not None:
+            return entry_price * (ONE + stop_loss_pct)
+        if tp_triggered and take_profit_pct is not None:
+            return entry_price * (ONE - take_profit_pct)
+    else:
+        stop_triggered = stop_loss_pct is not None and candle.low <= entry_price * (
+            ONE - stop_loss_pct
+        )
+        tp_triggered = take_profit_pct is not None and candle.high >= entry_price * (
+            ONE + take_profit_pct
+        )
 
-    if tp_triggered and take_profit_pct is not None:
-        return entry_price * (ONE + take_profit_pct)
+        if stop_triggered and stop_loss_pct is not None:
+            return entry_price * (ONE - stop_loss_pct)
+        if tp_triggered and take_profit_pct is not None:
+            return entry_price * (ONE + take_profit_pct)
 
     return None

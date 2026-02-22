@@ -71,10 +71,16 @@ class VwapStrategy:
         if self._candle_count < self._period + 1:
             self._prev_close = candle.close
             if self._candle_count >= self._period:
-                self._prev_vwap = self._compute_vwap()
+                vwap = self._compute_vwap()
+                if vwap is not None:
+                    self._prev_vwap = vwap
             return None
 
         curr_vwap = self._compute_vwap()
+        if curr_vwap is None:
+            self._prev_close = candle.close
+            return None
+
         prev_close = self._prev_close
         prev_vwap = self._prev_vwap
 
@@ -97,9 +103,13 @@ class VwapStrategy:
             )
         return None
 
-    def _compute_vwap(self) -> Decimal:
-        """Compute VWAP from the current window."""
+    def _compute_vwap(self) -> Decimal | None:
+        """Compute VWAP from the current window.
+
+        Return ``None`` when total volume is zero, indicating no
+        meaningful VWAP can be calculated.
+        """
         total_volume = sum(self._volumes)
         if total_volume == 0:
-            return Decimal(0)
+            return None
         return sum(self._close_volume) / total_volume

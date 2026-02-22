@@ -101,8 +101,12 @@ class BinanceCandleProvider:
         end_ms = end_ts * _MS_PER_SECOND
 
         all_candles: list[Candle] = []
+        max_iterations = 10_000
 
-        while start_ms < end_ms:
+        for _ in range(max_iterations):
+            if start_ms >= end_ms:
+                break
+
             params: dict[str, Any] = {
                 "symbol": binance_symbol,
                 "interval": binance_interval,
@@ -122,7 +126,10 @@ class BinanceCandleProvider:
                 break
 
             # Advance past the last candle's open time
-            start_ms = int(raw_list[-1][_IDX_OPEN_TIME]) + 1
+            next_start = int(raw_list[-1][_IDX_OPEN_TIME]) + 1
+            if next_start <= start_ms:
+                break
+            start_ms = next_start
 
         return all_candles
 

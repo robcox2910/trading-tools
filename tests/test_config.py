@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from trading_tools.core.config import ConfigLoader
+from trading_tools.core.config import ConfigError, ConfigLoader
 
 EXPECTED_TIMEOUT = 30
 EXPECTED_MAX_ATTEMPTS = 5
@@ -134,6 +134,28 @@ revolut_x:
         loader = ConfigLoader(config_dir=tmp_path)
         key_data = loader.get_private_key()
         assert key_data == test_key_data
+
+    def test_unresolved_env_var_raises_config_error(self, tmp_path: Path) -> None:
+        """Raise ConfigError when an env var has no value and no default."""
+        config_file = tmp_path / "settings.yaml"
+        config_file.write_text("""
+revolut_x:
+  api_key: ${NONEXISTENT_TRADING_TOOLS_VAR}
+""")
+
+        with pytest.raises(ConfigError, match="Unresolved environment variable"):
+            ConfigLoader(config_dir=tmp_path)
+
+    def test_env_var_with_default_does_not_raise(self, tmp_path: Path) -> None:
+        """Accept env var references that include a default value."""
+        config_file = tmp_path / "settings.yaml"
+        config_file.write_text("""
+revolut_x:
+  api_key: ${NONEXISTENT_VAR_WITH_DEFAULT:fallback_value}
+""")
+
+        loader = ConfigLoader(config_dir=tmp_path)
+        assert loader.get("revolut_x.api_key") == "fallback_value"
 
     def test_deep_merge(self, tmp_path: Path) -> None:
         """Test deep merging of nested configurations."""

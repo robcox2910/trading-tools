@@ -80,8 +80,12 @@ class RevolutXCandleProvider:
         until_ms = end_ts * _MS_PER_SECOND
 
         all_candles: list[Candle] = []
+        max_iterations = 10_000
 
-        while since_ms < until_ms:
+        for _ in range(max_iterations):
+            if since_ms >= until_ms:
+                break
+
             params = {
                 "interval": minutes,
                 "since": since_ms,
@@ -99,7 +103,10 @@ class RevolutXCandleProvider:
                 break
 
             # Advance past the last candle's timestamp
-            since_ms = int(response["data"][-1]["start"]) + 1
+            next_since = int(response["data"][-1]["start"]) + 1
+            if next_since <= since_ms:
+                break
+            since_ms = next_since
 
         return all_candles
 

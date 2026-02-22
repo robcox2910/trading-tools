@@ -12,6 +12,7 @@ from typing import Any
 
 from trading_tools.clients.polymarket import _clob_adapter
 from trading_tools.clients.polymarket._gamma_client import GammaClient
+from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import (
     Market,
     MarketToken,
@@ -53,6 +54,7 @@ class PolymarketClient:
         """
         self._clob_client: Any = _clob_adapter.create_clob_client(host)
         self._gamma = GammaClient(base_url=gamma_base_url)
+        self._clob_lock = asyncio.Lock()
 
     async def search_markets(
         self,
@@ -104,10 +106,11 @@ class PolymarketClient:
         # Enrich tokens with live CLOB prices
         enriched_tokens: list[MarketToken] = []
         for token in market.tokens:
-            price = await asyncio.to_thread(
-                _clob_adapter.fetch_midpoint, self._clob_client, token.token_id
-            )
-            live_price = _safe_decimal(price) if price else token.price
+            async with self._clob_lock:
+                price = await asyncio.to_thread(
+                    _clob_adapter.fetch_midpoint, self._clob_client, token.token_id
+                )
+            live_price = _safe_decimal(price) if price is not None else token.price
             enriched_tokens.append(
                 MarketToken(
                     token_id=token.token_id,
@@ -139,7 +142,12 @@ class PolymarketClient:
             PolymarketAPIError: When the CLOB API call fails.
 
         """
-        raw = await asyncio.to_thread(_clob_adapter.fetch_order_book, self._clob_client, token_id)
+        async with self._clob_lock:
+            raw = await asyncio.to_thread(
+                _clob_adapter.fetch_order_book,
+                self._clob_client,
+                token_id,
+            )
         return self._parse_order_book(token_id, raw)
 
     async def close(self) -> None:
@@ -190,18 +198,29 @@ class PolymarketClient:
 
         """
         bids = tuple(
-            OrderLevel(
-                price=_safe_decimal(level.get("price", "0")),
-                size=_safe_decimal(level.get("size", "0")),
+            sorted(
+                (
+                    OrderLevel(
+                        price=_safe_decimal(level.get("price", "0")),
+                        size=_safe_decimal(level.get("size", "0")),
+                    )
+                    for level in raw.get("bids", [])
+                ),
+                key=lambda lvl: lvl.price,
+                reverse=True,
             )
-            for level in raw.get("bids", [])
         )
         asks = tuple(
-            OrderLevel(
-                price=_safe_decimal(level.get("price", "0")),
-                size=_safe_decimal(level.get("size", "0")),
+            sorted(
+                (
+                    OrderLevel(
+                        price=_safe_decimal(level.get("price", "0")),
+                        size=_safe_decimal(level.get("size", "0")),
+                    )
+                    for level in raw.get("asks", [])
+                ),
+                key=lambda lvl: lvl.price,
             )
-            for level in raw.get("asks", [])
         )
 
         best_bid = bids[0].price if bids else _ZERO
@@ -267,18 +286,26 @@ def _parse_tokens(raw: dict[str, Any]) -> list[MarketToken]:
 
 
 def _safe_decimal(value: Any) -> Decimal:
-    """Convert a value to Decimal, returning zero on failure.
+    """Convert a value to Decimal, returning zero for None/empty strings.
+
+    Raise ``PolymarketAPIError`` for values that are present but
+    cannot be parsed into a valid Decimal — this avoids silently
+    substituting zero for genuinely corrupt data.
 
     Args:
         value: Value to convert (string, float, int, or None).
 
     Returns:
-        Decimal representation, or ``Decimal("0")`` if conversion fails.
+        Decimal representation, or ``Decimal("0")`` for None/empty.
+
+    Raises:
+        PolymarketAPIError: If the value is non-empty but malformed.
 
     """
-    if value is None:
+    if value is None or (isinstance(value, str) and value.strip() == ""):
         return _ZERO
     try:
         return Decimal(str(value))
-    except (InvalidOperation, ValueError, TypeError):
-        return _ZERO
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        msg = f"Cannot convert {value!r} to Decimal"
+        raise PolymarketAPIError(msg=msg, status_code=0) from exc
