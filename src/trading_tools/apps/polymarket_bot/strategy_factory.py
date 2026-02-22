@@ -14,6 +14,9 @@ from trading_tools.apps.polymarket_bot.protocols import PredictionMarketStrategy
 from trading_tools.apps.polymarket_bot.strategies.cross_market_arb import (
     PMCrossMarketArbStrategy,
 )
+from trading_tools.apps.polymarket_bot.strategies.late_snipe import (
+    PMLateSnipeStrategy,
+)
 from trading_tools.apps.polymarket_bot.strategies.liquidity_imbalance import (
     PMLiquidityImbalanceStrategy,
 )
@@ -29,6 +32,7 @@ PM_STRATEGY_NAMES = (
     "pm_market_making",
     "pm_liquidity_imbalance",
     "pm_cross_market_arb",
+    "pm_late_snipe",
 )
 
 
@@ -71,6 +75,10 @@ def build_pm_strategy(name: str, **kwargs: Any) -> PredictionMarketStrategy:
         ),
         "pm_cross_market_arb": PMCrossMarketArbStrategy(
             min_edge=Decimal(str(kwargs.get("min_edge", "0.02"))),
+        ),
+        "pm_late_snipe": PMLateSnipeStrategy(
+            threshold=Decimal(str(kwargs.get("snipe_threshold", "0.90"))),
+            window_seconds=kwargs.get("snipe_window", 60),
         ),
     }
     if name not in builders:

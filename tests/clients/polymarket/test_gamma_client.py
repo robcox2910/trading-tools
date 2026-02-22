@@ -116,6 +116,28 @@ class TestGammaClient:
             assert client is not None
 
     @pytest.mark.asyncio
+    async def test_get_events(self, client: GammaClient) -> None:
+        """Test fetching events by slug."""
+        mock_response = MagicMock()
+        mock_response.status_code = _STATUS_OK
+        mock_response.json.return_value = [
+            {
+                "slug": "btc-updown-5m",
+                "markets": [
+                    {"conditionId": "c1", "active": True, "endDate": "2026-02-22T12:05:00Z"},
+                ],
+            },
+        ]
+
+        with patch.object(
+            client._http_client, "request", new=AsyncMock(return_value=mock_response)
+        ):
+            result = await client.get_events(slug="btc-updown-5m", active=True)
+
+        assert len(result) == 1
+        assert result[0]["slug"] == "btc-updown-5m"
+
+    @pytest.mark.asyncio
     async def test_close(self, client: GammaClient) -> None:
         """Test closing the client."""
         with patch.object(client._http_client, "aclose", new=AsyncMock()) as mock_close:

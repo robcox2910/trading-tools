@@ -78,6 +78,8 @@ class BotConfig:
         kelly_fraction: Fractional Kelly multiplier (e.g. 0.25 = quarter-Kelly).
         max_history: Maximum number of snapshots to retain per market.
         markets: Tuple of condition IDs to track.
+        market_end_times: Pairs of (condition_id, ISO end time) for precise
+            resolution time overrides (CLOB API only provides the date).
 
     """
 
@@ -87,6 +89,7 @@ class BotConfig:
     kelly_fraction: Decimal = _DEFAULT_KELLY_FRACTION
     max_history: int = _DEFAULT_MAX_HISTORY
     markets: tuple[str, ...] = ()
+    market_end_times: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

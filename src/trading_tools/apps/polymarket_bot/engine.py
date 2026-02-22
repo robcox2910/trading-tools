@@ -69,6 +69,8 @@ class PaperTradingEngine:
             cid: deque(maxlen=config.max_history) for cid in config.markets
         }
         self._snapshots_processed = 0
+        self._position_outcomes: dict[str, str] = {}
+        self._end_time_overrides: dict[str, str] = dict(config.market_end_times)
 
     async def run(self, *, max_ticks: int | None = None) -> PaperTradingResult:
         """Execute the polling loop until stopped or max_ticks reached.
@@ -123,6 +125,8 @@ class PaperTradingEngine:
             logger.warning("Failed to fetch order book for %s", condition_id, exc_info=True)
             return None
 
+        end_date = self._end_time_overrides.get(condition_id, market.end_date)
+
         return MarketSnapshot(
             condition_id=condition_id,
             question=market.question,
@@ -132,7 +136,7 @@ class PaperTradingEngine:
             order_book=order_book,
             volume=market.volume,
             liquidity=market.liquidity,
-            end_date=market.end_date,
+            end_date=end_date,
         )
 
     async def _tick(self) -> None:
@@ -172,13 +176,16 @@ class PaperTradingEngine:
             else:
                 logger.info("[tick %d] No signal", self._snapshots_processed)
 
-            self._portfolio.mark_to_market(condition_id, snapshot.yes_price)
+            outcome = self._position_outcomes.get(condition_id, "Yes")
+            mtm_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
+            self._portfolio.mark_to_market(condition_id, mtm_price)
 
     def _apply_signal(self, signal: Signal, snapshot: MarketSnapshot) -> None:
         """Convert a strategy signal into a portfolio action.
 
         Size the position using the Kelly criterion and execute via the
-        paper portfolio.
+        paper portfolio. A SELL signal on a market with no open position
+        is interpreted as "buy the NO/Down token" (the complement outcome).
 
         Args:
             signal: Trading signal from the strategy.
@@ -187,39 +194,75 @@ class PaperTradingEngine:
         """
         condition_id = snapshot.condition_id
 
+        # Close existing position
         if signal.side == Side.SELL and condition_id in self._portfolio.positions:
-            self._portfolio.close_position(condition_id, snapshot.yes_price, snapshot.timestamp)
+            outcome = self._position_outcomes.get(condition_id, "Yes")
+            close_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
+            self._portfolio.close_position(condition_id, close_price, snapshot.timestamp)
+            self._position_outcomes.pop(condition_id, None)
             return
 
-        if signal.side == Side.BUY and condition_id not in self._portfolio.positions:
-            estimated_prob = snapshot.yes_price + signal.strength * (
-                Decimal(1) - snapshot.yes_price
-            ) * Decimal("0.1")
-            estimated_prob = min(estimated_prob, Decimal("0.99"))
-
-            fraction = kelly_fraction(
-                estimated_prob,
-                snapshot.yes_price,
-                fractional=self._config.kelly_fraction,
-            )
-
-            if fraction <= ZERO:
+        # Open new position (BUY → first token, SELL without position → second token)
+        if condition_id not in self._portfolio.positions:
+            if signal.side == Side.BUY:
+                buy_price = snapshot.yes_price
+                outcome = "Yes"
+            elif signal.side == Side.SELL:
+                buy_price = snapshot.no_price
+                outcome = "No"
+            else:
                 return
 
-            max_qty = self._portfolio.max_quantity_for(snapshot.yes_price)
-            quantity = max(Decimal(1), (max_qty * fraction).quantize(Decimal(1)))
+            self._open_position(condition_id, outcome, buy_price, snapshot, signal)
 
-            edge = estimated_prob - snapshot.yes_price
-            self._portfolio.open_position(
-                condition_id=condition_id,
-                outcome="Yes",
-                side=Side.BUY,
-                price=snapshot.yes_price,
-                quantity=quantity,
-                timestamp=snapshot.timestamp,
-                reason=signal.reason,
-                edge=edge,
-            )
+    def _open_position(
+        self,
+        condition_id: str,
+        outcome: str,
+        buy_price: Decimal,
+        snapshot: MarketSnapshot,
+        signal: Signal,
+    ) -> None:
+        """Open a new paper position on the given outcome token.
+
+        Size the position with Kelly criterion and record which outcome
+        token was purchased for correct mark-to-market accounting.
+
+        Args:
+            condition_id: Market condition identifier.
+            outcome: Token outcome ("Yes" or "No").
+            buy_price: Price at which to buy the token.
+            snapshot: Current market snapshot.
+            signal: Strategy signal that triggered the trade.
+
+        """
+        estimated_prob = buy_price + signal.strength * (Decimal(1) - buy_price) * Decimal("0.1")
+        estimated_prob = min(estimated_prob, Decimal("0.99"))
+
+        fraction = kelly_fraction(
+            estimated_prob,
+            buy_price,
+            fractional=self._config.kelly_fraction,
+        )
+
+        if fraction <= ZERO:
+            return
+
+        max_qty = self._portfolio.max_quantity_for(buy_price)
+        quantity = max(Decimal(1), (max_qty * fraction).quantize(Decimal(1)))
+
+        edge = estimated_prob - buy_price
+        self._portfolio.open_position(
+            condition_id=condition_id,
+            outcome=outcome,
+            side=Side.BUY,
+            price=buy_price,
+            quantity=quantity,
+            timestamp=snapshot.timestamp,
+            reason=signal.reason,
+            edge=edge,
+        )
+        self._position_outcomes[condition_id] = outcome
 
     def _build_result(self) -> PaperTradingResult:
         """Build the final result from the portfolio state.

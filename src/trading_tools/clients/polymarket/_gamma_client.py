@@ -105,6 +105,39 @@ class GammaClient:
             )
         return markets[0]
 
+    async def get_events(
+        self,
+        *,
+        slug: str = "",
+        active: bool = True,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Fetch events from the Gamma API, optionally filtered by slug.
+
+        Events group related markets (e.g. a 5-minute crypto Up/Down series).
+        Each event contains one or more markets with their condition IDs and
+        end dates.
+
+        Args:
+            slug: Event slug to filter by (e.g. ``btc-updown-5m``).
+            active: Include only active events.
+            limit: Maximum number of events to return.
+
+        Returns:
+            List of event dictionaries from the Gamma API.
+
+        Raises:
+            PolymarketAPIError: When the API returns an error response.
+
+        """
+        params: dict[str, str | int | bool] = {
+            "limit": limit,
+            "active": active,
+        }
+        if slug:
+            params["slug"] = slug
+        return await self._get("/events", params=params)
+
     async def _get(
         self,
         path: str,
