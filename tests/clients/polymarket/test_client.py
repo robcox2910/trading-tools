@@ -54,6 +54,36 @@ def _make_gamma_market(
     }
 
 
+def _make_clob_market(
+    condition_id: str = "cond1",
+    question: str = "Will Bitcoin reach $100K?",
+    *,
+    active: bool = True,
+) -> dict[str, Any]:
+    """Create a mock CLOB API market dictionary.
+
+    Args:
+        condition_id: Market condition identifier.
+        question: Market question text.
+        active: Whether the market is active.
+
+    Returns:
+        Dictionary matching CLOB ``/markets/`` endpoint response format.
+
+    """
+    return {
+        "condition_id": condition_id,
+        "question": question,
+        "description": "Test market description",
+        "tokens": [
+            {"token_id": _TOKEN_YES, "outcome": "Yes", "price": float(_PRICE_YES)},
+            {"token_id": _TOKEN_NO, "outcome": "No", "price": float(_PRICE_NO)},
+        ],
+        "end_date_iso": "2026-03-31",
+        "active": active,
+    }
+
+
 class TestPolymarketClient:
     """Test suite for the PolymarketClient facade."""
 
@@ -118,10 +148,13 @@ class TestPolymarketClient:
     @pytest.mark.asyncio
     async def test_get_market_enriches_prices(self, client: PolymarketClient) -> None:
         """Test get_market enriches tokens with live CLOB prices."""
-        raw_market = _make_gamma_market()
+        raw_market = _make_clob_market()
 
         with (
-            patch.object(client._gamma, "get_market", new=AsyncMock(return_value=raw_market)),
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.fetch_market",
+                return_value=raw_market,
+            ),
             patch(
                 "trading_tools.clients.polymarket.client._clob_adapter.fetch_midpoint",
                 return_value=_MIDPOINT,
@@ -131,17 +164,20 @@ class TestPolymarketClient:
 
         assert market.condition_id == "cond1"
         assert len(market.tokens) == _EXPECTED_TOKEN_COUNT
-        # Live price should override Gamma price
+        # Live price should override CLOB market price
         yes_token = next(t for t in market.tokens if t.outcome == "Yes")
         assert yes_token.price == Decimal(_MIDPOINT)
 
     @pytest.mark.asyncio
-    async def test_get_market_falls_back_to_gamma_price(self, client: PolymarketClient) -> None:
-        """Test get_market uses Gamma price when CLOB returns None."""
-        raw_market = _make_gamma_market()
+    async def test_get_market_falls_back_to_clob_price(self, client: PolymarketClient) -> None:
+        """Test get_market uses CLOB market price when midpoint returns None."""
+        raw_market = _make_clob_market()
 
         with (
-            patch.object(client._gamma, "get_market", new=AsyncMock(return_value=raw_market)),
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.fetch_market",
+                return_value=raw_market,
+            ),
             patch(
                 "trading_tools.clients.polymarket.client._clob_adapter.fetch_midpoint",
                 return_value=None,
@@ -203,16 +239,13 @@ class TestPolymarketClient:
 
     @pytest.mark.asyncio
     async def test_get_market_propagates_error(self, client: PolymarketClient) -> None:
-        """Test get_market propagates PolymarketAPIError from gamma client."""
+        """Test get_market raises PolymarketAPIError when CLOB returns None."""
         with (
-            patch.object(
-                client._gamma,
-                "get_market",
-                new=AsyncMock(
-                    side_effect=PolymarketAPIError(msg="Not found", status_code=_STATUS_NOT_FOUND)
-                ),
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.fetch_market",
+                return_value=None,
             ),
-            pytest.raises(PolymarketAPIError, match="Not found"),
+            pytest.raises(PolymarketAPIError, match="Market not found"),
         ):
             await client.get_market("bad_id")
 
@@ -258,11 +291,14 @@ class TestPolymarketClient:
 
     @pytest.mark.asyncio
     async def test_get_market_zero_price_not_replaced(self, client: PolymarketClient) -> None:
-        """Test that Decimal('0.00') from CLOB is used, not replaced by Gamma price."""
-        raw_market = _make_gamma_market()
+        """Test that Decimal('0.00') from CLOB midpoint is used, not replaced."""
+        raw_market = _make_clob_market()
 
         with (
-            patch.object(client._gamma, "get_market", new=AsyncMock(return_value=raw_market)),
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.fetch_market",
+                return_value=raw_market,
+            ),
             patch(
                 "trading_tools.clients.polymarket.client._clob_adapter.fetch_midpoint",
                 return_value="0.00",
@@ -275,11 +311,14 @@ class TestPolymarketClient:
 
     @pytest.mark.asyncio
     async def test_get_market_falls_back_on_404(self, client: PolymarketClient) -> None:
-        """Fall back to Gamma price when CLOB returns 404 (no order book)."""
-        raw_market = _make_gamma_market()
+        """Fall back to CLOB market price when midpoint returns 404 (None)."""
+        raw_market = _make_clob_market()
 
         with (
-            patch.object(client._gamma, "get_market", new=AsyncMock(return_value=raw_market)),
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.fetch_market",
+                return_value=raw_market,
+            ),
             patch(
                 "trading_tools.clients.polymarket.client._clob_adapter.fetch_midpoint",
                 return_value=None,

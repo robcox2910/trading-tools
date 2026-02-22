@@ -5,6 +5,7 @@ and market selection. Display a summary of results when the bot stops.
 """
 
 import asyncio
+import logging
 from decimal import Decimal
 from typing import Annotated
 
@@ -18,6 +19,11 @@ from trading_tools.apps.polymarket_bot.strategy_factory import (
 )
 from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
+
+
+def _configure_verbose_logging() -> None:
+    """Enable INFO-level logging for tick-by-tick engine output."""
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 def bot(  # noqa: PLR0913
@@ -41,12 +47,18 @@ def bot(  # noqa: PLR0913
         float, typer.Option(help="Imbalance threshold (liquidity)")
     ] = 0.65,
     min_edge: Annotated[float, typer.Option(help="Minimum edge (cross-market arb)")] = 0.02,
+    verbose: Annotated[  # noqa: FBT002
+        bool, typer.Option("--verbose", "-v", help="Enable tick-by-tick logging")
+    ] = False,
 ) -> None:
     """Run the Polymarket paper trading bot.
 
     Poll prediction markets at a configurable interval, feed snapshots to
     a strategy, size positions with Kelly criterion, and track virtual P&L.
     """
+    if verbose:
+        _configure_verbose_logging()
+
     asyncio.run(
         _bot(
             strategy=strategy,
