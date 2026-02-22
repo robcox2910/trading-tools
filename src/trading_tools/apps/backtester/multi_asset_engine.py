@@ -5,6 +5,7 @@ candles. Maintain per-symbol history and a shared portfolio that
 can hold one position per symbol simultaneously.
 """
 
+import asyncio
 from decimal import Decimal
 
 from trading_tools.apps.backtester.execution import check_risk_triggers
@@ -81,9 +82,14 @@ class MultiAssetEngine:
             A ``BacktestResult`` with aggregate trades and metrics.
 
         """
+        candle_lists = await asyncio.gather(
+            *(
+                self._provider.get_candles(symbol, interval, start_ts, end_ts)
+                for symbol in self._symbols
+            )
+        )
         all_candles: list[Candle] = []
-        for symbol in self._symbols:
-            candles = await self._provider.get_candles(symbol, interval, start_ts, end_ts)
+        for candles in candle_lists:
             all_candles.extend(candles)
 
         all_candles.sort(key=lambda c: c.timestamp)

@@ -56,8 +56,9 @@ def max_drawdown(trades: list[Trade], initial_capital: Decimal) -> Decimal:
     for trade in trades:
         equity += trade.pnl
         peak = max(peak, equity)
-        dd = (peak - equity) / peak
-        max_dd = max(max_dd, dd)
+        if peak != ZERO:
+            dd = (peak - equity) / peak
+            max_dd = max(max_dd, dd)
     return max_dd
 
 

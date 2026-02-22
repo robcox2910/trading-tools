@@ -41,6 +41,7 @@ Params:
 
 from decimal import Decimal
 
+from trading_tools.apps.backtester.indicators import ema_from_values
 from trading_tools.core.models import ONE, TWO, Candle, Side, Signal
 
 
@@ -139,15 +140,15 @@ class MacdStrategy:
 
     def _seed_state(self, closes: list[Decimal]) -> None:
         """Seed internal EMA state from the full close series."""
-        self._fast_ema = self._ema(closes, self._fast_period)
-        self._slow_ema = self._ema(closes, self._slow_period)
+        self._fast_ema = ema_from_values(closes, self._fast_period)
+        self._slow_ema = ema_from_values(closes, self._slow_period)
         macd_series = self._macd_series(closes)
-        self._signal_ema = self._ema_from_values(macd_series, self._signal_period)
+        self._signal_ema = ema_from_values(macd_series, self._signal_period)
 
     def _full_macd_signal(self, closes: list[Decimal]) -> tuple[Decimal, Decimal]:
         """Return (MACD line, signal line) for the given price series."""
         macd_values = self._macd_series(closes)
-        signal_line = self._ema_from_values(macd_values, self._signal_period)
+        signal_line = ema_from_values(macd_values, self._signal_period)
         return macd_values[-1], signal_line
 
     def _macd_series(self, closes: list[Decimal]) -> list[Decimal]:
@@ -155,27 +156,7 @@ class MacdStrategy:
         result: list[Decimal] = []
         for i in range(self._slow_period, len(closes) + 1):
             sub = closes[:i]
-            fast = self._ema(sub, self._fast_period)
-            slow = self._ema(sub, self._slow_period)
+            fast = ema_from_values(sub, self._fast_period)
+            slow = ema_from_values(sub, self._slow_period)
             result.append(fast - slow)
         return result
-
-    @staticmethod
-    def _ema(closes: list[Decimal], period: int) -> Decimal:
-        """Calculate EMA seeded with SMA of the first `period` values."""
-        sma = sum(closes[:period]) / Decimal(period)
-        multiplier = TWO / (Decimal(period) + ONE)
-        ema = sma
-        for close in closes[period:]:
-            ema = (close - ema) * multiplier + ema
-        return ema
-
-    @staticmethod
-    def _ema_from_values(values: list[Decimal], period: int) -> Decimal:
-        """Calculate EMA over an arbitrary list of Decimal values."""
-        sma = sum(values[:period]) / Decimal(period)
-        multiplier = TWO / (Decimal(period) + ONE)
-        ema = sma
-        for val in values[period:]:
-            ema = (val - ema) * multiplier + ema
-        return ema

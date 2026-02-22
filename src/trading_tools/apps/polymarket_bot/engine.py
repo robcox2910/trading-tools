@@ -161,6 +161,10 @@ class PaperTradingEngine:
                 close_price = latest.yes_price if outcome == "Yes" else latest.no_price
             else:
                 close_price = Decimal("0.50")
+                logger.warning(
+                    "No price history for %s, using fallback price 0.50",
+                    cid[:20],
+                )
             trade = self._portfolio.close_position(cid, close_price, int(time.time()))
             if trade is not None:
                 logger.info(

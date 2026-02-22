@@ -30,6 +30,54 @@ _HTTP_NOT_FOUND = 404
 
 _logger = logging.getLogger(__name__)
 
+_R = Any  # Generic return alias for _safe_clob_call
+
+
+def _safe_clob_call(
+    action: str,
+    fn: Any,
+    *args: Any,
+    allow_404: bool = False,
+) -> Any:
+    """Execute a CLOB API call with standardised error handling.
+
+    Wrap a synchronous ``py-clob-client`` call in a try/except that
+    converts ``PolyApiException`` and unexpected errors into
+    ``PolymarketAPIError``.  Optionally return ``None`` for HTTP 404.
+
+    Args:
+        action: Human-readable description for error messages (e.g.
+            ``"fetch midpoint for <token>"``).
+        fn: The callable to invoke.
+        *args: Positional arguments forwarded to *fn*.
+        allow_404: When ``True``, return ``None`` instead of raising
+            on HTTP 404.
+
+    Returns:
+        The raw result from *fn*, or ``None`` when *allow_404* is set
+        and the API returns 404.
+
+    Raises:
+        PolymarketAPIError: When the call fails and the error is not
+            a suppressed 404.
+
+    """
+    try:
+        return fn(*args)
+    except PolyApiException as exc:
+        if allow_404 and getattr(exc, "status_code", None) == _HTTP_NOT_FOUND:
+            _logger.debug("404 for %s, returning None", action)
+            return None
+        raise PolymarketAPIError(
+            msg=f"Failed to {action}: {exc}",
+            status_code=_HTTP_INTERNAL_ERROR,
+        ) from exc
+    except Exception as exc:
+        raise PolymarketAPIError(
+            msg=f"Failed to {action}: {exc}",
+            status_code=_HTTP_INTERNAL_ERROR,
+        ) from exc
+
 
 def create_clob_client(host: str) -> ClobClient:  # type: ignore[no-any-unimported]
     """Create and return a CLOB client instance.
@@ -62,23 +110,13 @@ def fetch_order_book(client: Any, token_id: str) -> dict[str, Any] | None:
         PolymarketAPIError: When the CLOB API call fails with a non-404 error.
 
     """
-    try:
-        raw: Any = client.get_order_book(token_id)
-    except PolyApiException as exc:
-        if getattr(exc, "status_code", None) == _HTTP_NOT_FOUND:
-            _logger.debug("No order book for token %s, returning None", token_id)
-            return None
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch order book for {token_id}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    except Exception as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch order book for {token_id}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    else:
-        return _normalize_order_book(raw)
+    raw = _safe_clob_call(
+        f"fetch order book for {token_id}",
+        client.get_order_book,
+        token_id,
+        allow_404=True,
+    )
+    return _normalize_order_book(raw) if raw is not None else None
 
 
 def _normalize_order_book(raw: Any) -> dict[str, Any]:
@@ -120,23 +158,14 @@ def fetch_price(client: Any, token_id: str, side: str) -> str | None:
         PolymarketAPIError: When the CLOB API call fails with a non-404 error.
 
     """
-    try:
-        result: str | None = client.get_price(token_id, side)
-    except PolyApiException as exc:
-        if getattr(exc, "status_code", None) == _HTTP_NOT_FOUND:
-            _logger.debug("No order book for token %s, returning None", token_id)
-            return None
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch price for {token_id}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    except Exception as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch price for {token_id}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    else:
-        return result
+    result: str | None = _safe_clob_call(
+        f"fetch price for {token_id}",
+        client.get_price,
+        token_id,
+        side,
+        allow_404=True,
+    )
+    return result
 
 
 def fetch_midpoint(client: Any, token_id: str) -> str | None:
@@ -157,23 +186,13 @@ def fetch_midpoint(client: Any, token_id: str) -> str | None:
         PolymarketAPIError: When the CLOB API call fails with a non-404 error.
 
     """
-    try:
-        raw: Any = client.get_midpoint(token_id)
-    except PolyApiException as exc:
-        if getattr(exc, "status_code", None) == _HTTP_NOT_FOUND:
-            _logger.debug("No order book for token %s, returning None", token_id)
-            return None
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch midpoint for {token_id}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    except Exception as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch midpoint for {token_id}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    else:
-        return _extract_midpoint(raw)
+    raw = _safe_clob_call(
+        f"fetch midpoint for {token_id}",
+        client.get_midpoint,
+        token_id,
+        allow_404=True,
+    )
+    return _extract_midpoint(raw) if raw is not None else None
 
 
 def _extract_midpoint(raw: Any) -> str | None:
@@ -209,23 +228,12 @@ def fetch_market(client: Any, condition_id: str) -> dict[str, Any] | None:
         PolymarketAPIError: When the CLOB API call fails with a non-404 error.
 
     """
-    try:
-        result: dict[str, Any] = client.get_market(condition_id)  # type: ignore[no-any-return]
-    except PolyApiException as exc:
-        if getattr(exc, "status_code", None) == _HTTP_NOT_FOUND:
-            _logger.debug("Market %s not found on CLOB", condition_id)
-            return None
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch market {condition_id}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    except Exception as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch market {condition_id}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    else:
-        return result
+    return _safe_clob_call(
+        f"fetch market {condition_id}",
+        client.get_market,
+        condition_id,
+        allow_404=True,
+    )
 
 
 def fetch_last_trade_price(client: Any, token_id: str) -> str | None:
@@ -245,23 +253,13 @@ def fetch_last_trade_price(client: Any, token_id: str) -> str | None:
         PolymarketAPIError: When the CLOB API call fails with a non-404 error.
 
     """
-    try:
-        result: str | None = client.get_last_trade_price(token_id)
-    except PolyApiException as exc:
-        if getattr(exc, "status_code", None) == _HTTP_NOT_FOUND:
-            _logger.debug("No order book for token %s, returning None", token_id)
-            return None
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch last trade price for {token_id}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    except Exception as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch last trade price for {token_id}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    else:
-        return result
+    result: str | None = _safe_clob_call(
+        f"fetch last trade price for {token_id}",
+        client.get_last_trade_price,
+        token_id,
+        allow_404=True,
+    )
+    return result
 
 
 _POLYGON_CHAIN_ID = 137
@@ -321,18 +319,7 @@ def derive_api_creds(client: Any) -> tuple[str, str, str]:
         PolymarketAPIError: When credential derivation fails.
 
     """
-    try:
-        raw: Any = client.derive_api_key()
-    except PolyApiException as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to derive API credentials: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    except Exception as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to derive API credentials: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
+    raw = _safe_clob_call("derive API credentials", client.derive_api_key)
     return (str(raw.api_key), str(raw.api_secret), str(raw.api_passphrase))
 
 
@@ -362,7 +349,8 @@ def place_limit_order(
         PolymarketAPIError: When the order submission fails.
 
     """
-    try:
+
+    def _create_and_post() -> dict[str, Any]:
         order = client.create_order(
             order_args=OrderArgs(
                 token_id=token_id,
@@ -372,19 +360,9 @@ def place_limit_order(
             ),
             options=PartialCreateOrderOptions(tick_size="0.01"),
         )
-        result: dict[str, Any] = client.post_order(order, orderType=OrderType.GTC)  # type: ignore[no-any-return]
-    except PolyApiException as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to place limit order: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    except Exception as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to place limit order: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    else:
-        return result
+        return client.post_order(order, orderType=OrderType.GTC)  # type: ignore[no-any-return]
+
+    return _safe_clob_call("place limit order", _create_and_post)
 
 
 def place_market_order(
@@ -411,7 +389,8 @@ def place_market_order(
         PolymarketAPIError: When the order submission fails.
 
     """
-    try:
+
+    def _create_and_post() -> dict[str, Any]:
         order = client.create_market_order(
             order_args=MarketOrderArgs(
                 token_id=token_id,
@@ -420,19 +399,9 @@ def place_market_order(
             ),
             options=PartialCreateOrderOptions(tick_size="0.01"),
         )
-        result: dict[str, Any] = client.post_order(order, orderType=OrderType.FOK)  # type: ignore[no-any-return]
-    except PolyApiException as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to place market order: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    except Exception as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to place market order: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    else:
-        return result
+        return client.post_order(order, orderType=OrderType.FOK)  # type: ignore[no-any-return]
+
+    return _safe_clob_call("place market order", _create_and_post)
 
 
 def get_balance(client: Any, asset_type: str = "COLLATERAL") -> dict[str, Any]:
@@ -452,22 +421,12 @@ def get_balance(client: Any, asset_type: str = "COLLATERAL") -> dict[str, Any]:
     resolved_type: str = (
         AssetType.COLLATERAL if asset_type == "COLLATERAL" else AssetType.CONDITIONAL
     )
-    try:
-        result: dict[str, Any] = client.get_balance_allowance(  # type: ignore[no-any-return]
-            params=BalanceAllowanceParams(asset_type=resolved_type),  # type: ignore[reportArgumentType]
-        )
-    except PolyApiException as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch balance: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    except Exception as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch balance: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    else:
-        return result
+    params = BalanceAllowanceParams(asset_type=resolved_type)  # type: ignore[reportArgumentType]
+
+    def _fetch() -> dict[str, Any]:
+        return client.get_balance_allowance(params=params)  # type: ignore[no-any-return]
+
+    return _safe_clob_call("fetch balance", _fetch)
 
 
 def cancel_order(client: Any, order_id: str) -> dict[str, Any]:
@@ -484,20 +443,7 @@ def cancel_order(client: Any, order_id: str) -> dict[str, Any]:
         PolymarketAPIError: When the cancellation fails.
 
     """
-    try:
-        result: dict[str, Any] = client.cancel(order_id)  # type: ignore[no-any-return]
-    except PolyApiException as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to cancel order {order_id}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    except Exception as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to cancel order {order_id}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    else:
-        return result
+    return _safe_clob_call(f"cancel order {order_id}", client.cancel, order_id)
 
 
 def get_open_orders(client: Any) -> list[dict[str, Any]]:
@@ -513,21 +459,11 @@ def get_open_orders(client: Any) -> list[dict[str, Any]]:
         PolymarketAPIError: When the query fails.
 
     """
-    try:
-        result: Any = client.get_orders(
-            params=OpenOrderParams(),
-        )
-    except PolyApiException as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch open orders: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    except Exception as exc:
-        raise PolymarketAPIError(
-            msg=f"Failed to fetch open orders: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
-        ) from exc
-    else:
-        if isinstance(result, list):
-            return cast("list[dict[str, Any]]", result)
-        return []
+
+    def _fetch() -> Any:
+        return client.get_orders(params=OpenOrderParams())
+
+    result = _safe_clob_call("fetch open orders", _fetch)
+    if isinstance(result, list):
+        return cast("list[dict[str, Any]]", result)
+    return []

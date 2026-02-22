@@ -121,6 +121,7 @@ class BacktestRunner:
         self._windows_processed = 0
         self._wins = 0
         self._losses = 0
+        self._position_outcomes: dict[str, str] = {}
 
     def replay(
         self,
@@ -256,6 +257,7 @@ class BacktestRunner:
             edge=edge,
         )
         if trade is not None:
+            self._position_outcomes[condition_id] = outcome
             logger.info(
                 "TRADE: %s %s qty=%s @ %.4f edge=%.4f",
                 outcome,
@@ -326,13 +328,10 @@ class BacktestRunner:
             condition_id: Market condition identifier.
 
         Returns:
-            ``"Yes"`` or ``"No"`` based on the opening trade.
+            ``"Yes"`` or ``"No"`` based on the cached outcome dict.
 
         """
-        for trade in reversed(self._portfolio.trades):
-            if trade.condition_id == condition_id and trade.side == Side.BUY:
-                return trade.token_outcome
-        return "Yes"
+        return self._position_outcomes.pop(condition_id, "Yes")
 
     def _build_result(self) -> PaperTradingResult:
         """Build the final result with computed metrics.
@@ -343,7 +342,7 @@ class BacktestRunner:
         """
         trades = self._portfolio.trades
         final_capital = self._portfolio.total_equity
-        total_trades = len([t for t in trades if t.side == Side.BUY])
+        total_trades = sum(1 for t in trades if t.side == Side.BUY)
         metrics: dict[str, Decimal] = {
             "windows_processed": Decimal(self._windows_processed),
             "total_trades": Decimal(total_trades),

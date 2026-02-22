@@ -1,5 +1,6 @@
 """Configuration management for trading tools."""
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -97,6 +98,10 @@ class ConfigLoader:
 
             value = os.getenv(var_name, default)
             if value is None:
+                logging.getLogger(__name__).warning(
+                    "Unresolved env var ${%s} with no default — returning raw placeholder",
+                    var_name,
+                )
                 return config  # Return original if no env var and no default
             return value
 

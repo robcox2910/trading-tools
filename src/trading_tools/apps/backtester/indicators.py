@@ -34,6 +34,35 @@ def sma(candles: Sequence[Candle], period: int) -> Decimal:
     return sum(closes) / Decimal(period)
 
 
+def ema_from_values(values: Sequence[Decimal], period: int) -> Decimal:
+    """Compute the exponential moving average over a sequence of Decimal values.
+
+    Seed the EMA with the SMA of the first ``period`` values, then apply
+    the standard EMA formula: ``ema = prev + k * (value - prev)``
+    where ``k = 2 / (period + 1)``.
+
+    Args:
+        values: Sequence of Decimal values (at least ``period`` items required).
+        period: Lookback window for the EMA.
+
+    Returns:
+        The current EMA value.
+
+    Raises:
+        ValueError: If fewer than ``period`` values are provided.
+
+    """
+    if len(values) < period:
+        msg = f"Need at least {period} values for EMA, got {len(values)}"
+        raise ValueError(msg)
+    seed = sum(values[:period]) / Decimal(period)
+    multiplier = TWO / (Decimal(period) + ONE)
+    result = seed
+    for val in values[period:]:
+        result = (val - result) * multiplier + result
+    return result
+
+
 def ema(candles: Sequence[Candle], period: int) -> Decimal:
     """Compute the exponential moving average of close prices.
 
@@ -56,12 +85,7 @@ def ema(candles: Sequence[Candle], period: int) -> Decimal:
         msg = f"Need at least {period} candles for EMA, got {len(candles)}"
         raise ValueError(msg)
     closes = [c.close for c in candles]
-    seed = sum(closes[:period]) / Decimal(period)
-    multiplier = TWO / (Decimal(period) + ONE)
-    result = seed
-    for close in closes[period:]:
-        result = (close - result) * multiplier + result
-    return result
+    return ema_from_values(closes, period)
 
 
 def rolling_std(candles: Sequence[Candle], period: int = 20) -> Decimal:
