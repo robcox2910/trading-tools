@@ -273,6 +273,38 @@ class TestPolymarketClient:
         yes_token = next(t for t in market.tokens if t.outcome == "Yes")
         assert yes_token.price == Decimal("0.00")
 
+    @pytest.mark.asyncio
+    async def test_get_market_falls_back_on_404(self, client: PolymarketClient) -> None:
+        """Fall back to Gamma price when CLOB returns 404 (no order book)."""
+        raw_market = _make_gamma_market()
+
+        with (
+            patch.object(client._gamma, "get_market", new=AsyncMock(return_value=raw_market)),
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.fetch_midpoint",
+                return_value=None,
+            ),
+        ):
+            market = await client.get_market("cond1")
+
+        yes_token = next(t for t in market.tokens if t.outcome == "Yes")
+        assert yes_token.price == Decimal(_PRICE_YES)
+
+    @pytest.mark.asyncio
+    async def test_get_order_book_returns_empty_on_404(self, client: PolymarketClient) -> None:
+        """Return empty OrderBook when CLOB returns 404 (no order book)."""
+        with patch(
+            "trading_tools.clients.polymarket.client._clob_adapter.fetch_order_book",
+            return_value=None,
+        ):
+            book = await client.get_order_book(_BOOK_TOKEN)
+
+        assert isinstance(book, OrderBook)
+        assert book.token_id == _BOOK_TOKEN
+        assert book.bids == ()
+        assert book.asks == ()
+        assert book.spread == Decimal(0)
+
 
 class TestSafeDecimal:
     """Tests for _safe_decimal conversion."""
