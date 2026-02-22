@@ -271,6 +271,50 @@ class TestBotCommand:
         assert call_kwargs.kwargs["snipe_threshold"] == expected_threshold
         assert call_kwargs.kwargs["snipe_window"] == expected_window
 
+    def test_bot_series_slugs_passed_to_config(self) -> None:
+        """Test that series_slugs are passed to BotConfig for engine rotation."""
+        runner = CliRunner()
+        mock_result = _make_result()
+
+        with patch("trading_tools.apps.polymarket.cli.bot_cmd.PolymarketClient") as mock_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client.discover_series_markets = AsyncMock(
+                return_value=[("cond_btc", "2026-02-22T12:05:00Z")]
+            )
+
+            mock_engine_client = AsyncMock()
+            mock_engine_client.__aenter__ = AsyncMock(return_value=mock_engine_client)
+            mock_engine_client.__aexit__ = AsyncMock(return_value=None)
+
+            mock_cls.side_effect = [mock_client, mock_engine_client]
+
+            with patch(
+                "trading_tools.apps.polymarket.cli.bot_cmd.PaperTradingEngine"
+            ) as mock_engine_cls:
+                mock_engine = AsyncMock()
+                mock_engine.run = AsyncMock(return_value=mock_result)
+                mock_engine_cls.return_value = mock_engine
+
+                result = runner.invoke(
+                    app,
+                    [
+                        "bot",
+                        "--series",
+                        "btc-updown-5m",
+                        "--max-ticks",
+                        "1",
+                        "--poll-interval",
+                        "0",
+                    ],
+                )
+
+                # Verify series_slugs in the BotConfig passed to PaperTradingEngine
+                assert result.exit_code == 0
+                config_arg = mock_engine_cls.call_args[0][2]
+                assert config_arg.series_slugs == ("btc-updown-5m",)
+
     def test_bot_crypto_5m_shortcut(self) -> None:
         """Test that --series crypto-5m expands to all 4 crypto series."""
         runner = CliRunner()

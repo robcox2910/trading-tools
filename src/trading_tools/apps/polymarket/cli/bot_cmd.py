@@ -101,21 +101,17 @@ def bot(  # noqa: PLR0913
     )
 
 
-async def _discover_markets(
-    client: PolymarketClient,
-    series: str,
-) -> list[tuple[str, str]]:
-    """Discover active markets from series slugs.
+def _parse_series_slugs(series: str) -> tuple[str, ...]:
+    """Parse a comma-separated series string into expanded slug tuples.
 
-    Parse the comma-separated series string, expanding the special value
-    ``"crypto-5m"`` into all four crypto Up/Down 5-minute series.
+    Expand the special value ``"crypto-5m"`` into all four crypto
+    Up/Down 5-minute series slugs.
 
     Args:
-        client: Polymarket API client for Gamma lookups.
         series: Comma-separated series slugs or ``"crypto-5m"`` shortcut.
 
     Returns:
-        List of ``(condition_id, end_date)`` tuples.
+        Tuple of expanded series slug strings.
 
     """
     slugs: list[str] = []
@@ -127,12 +123,31 @@ async def _discover_markets(
             slugs.extend(_CRYPTO_5M_SERIES)
         else:
             slugs.append(s)
+    return tuple(slugs)
 
+
+async def _discover_markets(
+    client: PolymarketClient,
+    slugs: tuple[str, ...],
+) -> list[tuple[str, str]]:
+    """Discover active markets from series slugs.
+
+    Query the Gamma API for each slug and return the condition IDs
+    and end dates of all active markets found.
+
+    Args:
+        client: Polymarket API client for Gamma lookups.
+        slugs: Expanded series slug tuple.
+
+    Returns:
+        List of ``(condition_id, end_date)`` tuples.
+
+    """
     if not slugs:
         return []
 
     typer.echo(f"Discovering markets for series: {', '.join(slugs)}...")
-    discovered = await client.discover_series_markets(slugs)
+    discovered = await client.discover_series_markets(list(slugs))
     for cid, end_date in discovered:
         typer.echo(f"  Found: {cid[:20]}... ends {end_date}")
     return discovered
@@ -178,12 +193,13 @@ async def _bot(  # noqa: PLR0913
     """
     market_ids = tuple(m.strip() for m in markets.split(",") if m.strip())
     market_end_times: tuple[tuple[str, str], ...] = ()
+    series_slugs = _parse_series_slugs(series)
 
     # Discover markets from series slugs
-    if series.strip():
+    if series_slugs:
         try:
             async with PolymarketClient() as client:
-                discovered = await _discover_markets(client, series)
+                discovered = await _discover_markets(client, series_slugs)
         except PolymarketAPIError as exc:
             typer.echo(f"Warning: Series discovery failed: {exc}", err=True)
             discovered = []
@@ -222,6 +238,7 @@ async def _bot(  # noqa: PLR0913
         kelly_fraction=Decimal(str(kelly_frac)),
         markets=market_ids,
         market_end_times=market_end_times,
+        series_slugs=series_slugs,
     )
 
     typer.echo(f"Starting paper trading bot: {pm_strategy.name}")

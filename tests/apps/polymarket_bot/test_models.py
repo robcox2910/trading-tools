@@ -112,6 +112,7 @@ class TestBotConfig:
         assert config.kelly_fraction == Decimal("0.25")
         assert config.max_history == 500  # noqa: PLR2004
         assert config.markets == ()
+        assert config.series_slugs == ()
 
     def test_custom_values(self) -> None:
         """Test creating BotConfig with custom values."""
@@ -123,6 +124,14 @@ class TestBotConfig:
         assert config.poll_interval_seconds == 60  # noqa: PLR2004
         assert config.initial_capital == Decimal(5000)
         assert len(config.markets) == 2  # noqa: PLR2004
+
+    def test_series_slugs(self) -> None:
+        """Test that series_slugs can be set for market rotation."""
+        config = BotConfig(
+            series_slugs=("btc-updown-5m", "eth-updown-5m"),
+        )
+        assert len(config.series_slugs) == 2  # noqa: PLR2004
+        assert config.series_slugs[0] == "btc-updown-5m"
 
 
 class TestPaperTrade:

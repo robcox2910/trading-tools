@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 _TIMESTAMP_PLACEHOLDER = 0
 _MIN_TOKENS = 2
+_FIVE_MINUTES = 300
 
 
 class PaperTradingEngine:
@@ -65,12 +66,15 @@ class PaperTradingEngine:
         self._strategy = strategy
         self._config = config
         self._portfolio = PaperPortfolio(config.initial_capital, config.max_position_pct)
+        self._active_markets: list[str] = list(config.markets)
         self._history: dict[str, deque[MarketSnapshot]] = {
-            cid: deque(maxlen=config.max_history) for cid in config.markets
+            cid: deque(maxlen=config.max_history) for cid in self._active_markets
         }
         self._snapshots_processed = 0
         self._position_outcomes: dict[str, str] = {}
         self._end_time_overrides: dict[str, str] = dict(config.market_end_times)
+        now = int(time.time())
+        self._current_window: int = (now // _FIVE_MINUTES) * _FIVE_MINUTES
 
     async def run(self, *, max_ticks: int | None = None) -> PaperTradingResult:
         """Execute the polling loop until stopped or max_ticks reached.
@@ -139,16 +143,78 @@ class PaperTradingEngine:
             end_date=end_date,
         )
 
+    async def _rotate_markets(self) -> None:
+        """Re-discover active markets when the 5-minute window rotates.
+
+        Close all open positions at current mark-to-market prices (the
+        previous window's markets have resolved), then call the client
+        to discover new condition IDs for the current window. Update
+        ``_active_markets``, ``_end_time_overrides``, and initialize
+        fresh history deques for the new markets.
+        """
+        # Close all open positions — previous window resolved
+        for cid in list(self._portfolio.positions):
+            outcome = self._position_outcomes.get(cid, "Yes")
+            last_snap = self._history.get(cid)
+            if last_snap:
+                latest = last_snap[-1]
+                close_price = latest.yes_price if outcome == "Yes" else latest.no_price
+            else:
+                close_price = Decimal("0.50")
+            trade = self._portfolio.close_position(cid, close_price, int(time.time()))
+            if trade is not None:
+                logger.info(
+                    "ROTATION CLOSE: %s @ %.4f (window expired)",
+                    cid[:20],
+                    close_price,
+                )
+            self._position_outcomes.pop(cid, None)
+
+        # Discover new markets
+        try:
+            discovered = await self._client.discover_series_markets(list(self._config.series_slugs))
+        except Exception:
+            logger.warning("Market rotation discovery failed", exc_info=True)
+            return
+
+        if not discovered:
+            logger.warning("Market rotation found no new markets")
+            return
+
+        new_ids = [cid for cid, _ in discovered]
+        self._active_markets = new_ids
+        self._end_time_overrides = dict(discovered)
+        for cid in new_ids:
+            if cid not in self._history:
+                self._history[cid] = deque(maxlen=self._config.max_history)
+
+        logger.info(
+            "Rotating markets: %d new condition IDs for window %d",
+            len(new_ids),
+            self._current_window,
+        )
+
     async def _tick(self) -> None:
         """Execute one polling cycle across all tracked markets."""
-        for condition_id in self._config.markets:
+        # Check for 5-minute window rotation when series slugs are configured
+        if self._config.series_slugs:
+            now = int(time.time())
+            new_window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
+            if new_window != self._current_window:
+                self._current_window = new_window
+                await self._rotate_markets()
+
+        for condition_id in self._active_markets:
             snapshot = await self._fetch_snapshot(condition_id)
             if snapshot is None:
                 continue
 
             self._snapshots_processed += 1
-            history = list(self._history[condition_id])
-            self._history[condition_id].append(snapshot)
+            market_history = self._history.setdefault(
+                condition_id, deque(maxlen=self._config.max_history)
+            )
+            history = list(market_history)
+            market_history.append(snapshot)
 
             logger.info(
                 "[tick %d] %s YES=%.4f NO=%.4f vol=%s liq=%s bids=%d asks=%d",
@@ -198,7 +264,14 @@ class PaperTradingEngine:
         if signal.side == Side.SELL and condition_id in self._portfolio.positions:
             outcome = self._position_outcomes.get(condition_id, "Yes")
             close_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
-            self._portfolio.close_position(condition_id, close_price, snapshot.timestamp)
+            trade = self._portfolio.close_position(condition_id, close_price, snapshot.timestamp)
+            if trade is not None:
+                logger.info(
+                    "[tick %d] POSITION CLOSED: %s @ %.4f",
+                    self._snapshots_processed,
+                    condition_id[:20],
+                    close_price,
+                )
             self._position_outcomes.pop(condition_id, None)
             return
 
@@ -252,7 +325,7 @@ class PaperTradingEngine:
         quantity = max(Decimal(1), (max_qty * fraction).quantize(Decimal(1)))
 
         edge = estimated_prob - buy_price
-        self._portfolio.open_position(
+        trade = self._portfolio.open_position(
             condition_id=condition_id,
             outcome=outcome,
             side=Side.BUY,
@@ -262,7 +335,23 @@ class PaperTradingEngine:
             reason=signal.reason,
             edge=edge,
         )
-        self._position_outcomes[condition_id] = outcome
+        if trade is not None:
+            logger.info(
+                "[tick %d] TRADE OPENED: %s %s qty=%s @ %.4f edge=%.4f",
+                self._snapshots_processed,
+                outcome,
+                condition_id[:20],
+                quantity,
+                buy_price,
+                edge,
+            )
+            self._position_outcomes[condition_id] = outcome
+        else:
+            logger.warning(
+                "[tick %d] TRADE REJECTED: %s (duplicate or insufficient capital)",
+                self._snapshots_processed,
+                condition_id[:20],
+            )
 
     def _build_result(self) -> PaperTradingResult:
         """Build the final result from the portfolio state.

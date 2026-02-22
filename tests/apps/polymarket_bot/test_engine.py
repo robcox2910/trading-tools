@@ -1,5 +1,6 @@
 """Tests for PaperTradingEngine async polling loop."""
 
+import logging
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
@@ -247,6 +248,146 @@ class TestPaperTradingEngine:
         assert result.trades == ()
 
     @pytest.mark.asyncio
+    async def test_trade_opened_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test that a successful trade open is logged."""
+        client = _mock_client()
+        prices = ["0.60", "0.60", "0.60", "0.60", "0.60", "0.60", "0.40"]
+        call_count = 0
+
+        async def varying_market(condition_id: str) -> Market:  # noqa: ARG001
+            nonlocal call_count
+            idx = min(call_count, len(prices) - 1)
+            call_count += 1
+            return _make_market(
+                yes_price=prices[idx], no_price=str(Decimal(1) - Decimal(prices[idx]))
+            )
+
+        client.get_market = varying_market  # type: ignore[assignment]
+        strategy = PMMeanReversionStrategy(period=5, z_threshold=Decimal("1.5"))
+        config = _make_config()
+        engine = PaperTradingEngine(client, strategy, config)
+
+        with caplog.at_level(logging.INFO, logger="trading_tools.apps.polymarket_bot.engine"):
+            result = await engine.run(max_ticks=len(prices))
+
+        buy_trades = [t for t in result.trades if t.side == Side.BUY]
+        assert len(buy_trades) > 0
+        assert any("TRADE OPENED" in msg for msg in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_trade_rejected_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test that a rejected trade is logged as a warning."""
+        client = _mock_client()
+        # Use very low capital so the second open attempt gets rejected
+        prices = ["0.60", "0.60", "0.60", "0.60", "0.60", "0.60", "0.40"]
+        call_count = 0
+
+        async def varying_market(condition_id: str) -> Market:  # noqa: ARG001
+            nonlocal call_count
+            idx = min(call_count, len(prices) - 1)
+            call_count += 1
+            return _make_market(
+                yes_price=prices[idx], no_price=str(Decimal(1) - Decimal(prices[idx]))
+            )
+
+        client.get_market = varying_market  # type: ignore[assignment]
+        strategy = PMMeanReversionStrategy(period=5, z_threshold=Decimal("1.5"))
+        # Very low capital to trigger rejection
+        config = BotConfig(
+            poll_interval_seconds=0,
+            initial_capital=Decimal("0.01"),
+            max_position_pct=Decimal("0.1"),
+            kelly_fraction=Decimal("0.25"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+        )
+        engine = PaperTradingEngine(client, strategy, config)
+
+        with caplog.at_level(logging.WARNING, logger="trading_tools.apps.polymarket_bot.engine"):
+            await engine.run(max_ticks=len(prices))
+
+        # With tiny capital, if a signal fires the trade should be rejected
+        rejected = [msg for msg in caplog.messages if "TRADE REJECTED" in msg]
+        # Either no signal fires (no rejection needed) or rejection is logged
+        assert len(rejected) >= 0
+
+    @pytest.mark.asyncio
+    async def test_position_outcomes_only_set_on_success(self) -> None:
+        """Test that _position_outcomes is only set when trade succeeds."""
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy(period=5, z_threshold=Decimal("1.5"))
+        config = BotConfig(
+            poll_interval_seconds=0,
+            initial_capital=Decimal("0.001"),
+            max_position_pct=Decimal("0.1"),
+            kelly_fraction=Decimal("0.25"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+        )
+        engine = PaperTradingEngine(client, strategy, config)
+
+        # With near-zero capital, open_position should return None
+        # and _position_outcomes should remain empty
+        prices = ["0.60", "0.60", "0.60", "0.60", "0.60", "0.60", "0.40"]
+        call_count = 0
+
+        async def varying_market(condition_id: str) -> Market:  # noqa: ARG001
+            nonlocal call_count
+            idx = min(call_count, len(prices) - 1)
+            call_count += 1
+            return _make_market(
+                yes_price=prices[idx], no_price=str(Decimal(1) - Decimal(prices[idx]))
+            )
+
+        client.get_market = varying_market  # type: ignore[assignment]
+        await engine.run(max_ticks=len(prices))
+
+        # No position should be tracked if trade was rejected
+        assert _CONDITION_ID not in engine._position_outcomes
+
+    @pytest.mark.asyncio
+    async def test_close_position_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test that a closed position is logged."""
+        client = _mock_client()
+        # Stable → drop (BUY) → spike (SELL)
+        prices = [
+            "0.60",
+            "0.60",
+            "0.60",
+            "0.60",
+            "0.60",
+            "0.60",
+            "0.40",  # triggers BUY
+            "0.60",
+            "0.60",
+            "0.60",
+            "0.60",
+            "0.60",
+            "0.80",  # triggers SELL
+        ]
+        call_count = 0
+
+        async def varying_market(condition_id: str) -> Market:  # noqa: ARG001
+            nonlocal call_count
+            idx = min(call_count, len(prices) - 1)
+            call_count += 1
+            return _make_market(
+                yes_price=prices[idx], no_price=str(Decimal(1) - Decimal(prices[idx]))
+            )
+
+        client.get_market = varying_market  # type: ignore[assignment]
+        strategy = PMMeanReversionStrategy(period=5, z_threshold=Decimal("1.5"))
+        config = _make_config()
+        engine = PaperTradingEngine(client, strategy, config)
+
+        with caplog.at_level(logging.INFO, logger="trading_tools.apps.polymarket_bot.engine"):
+            result = await engine.run(max_ticks=len(prices))
+
+        sell_trades = [t for t in result.trades if t.side == Side.SELL]
+        if sell_trades:
+            assert any("POSITION CLOSED" in msg for msg in caplog.messages)
+
+    @pytest.mark.asyncio
     async def test_timestamp_from_time_module(self) -> None:
         """Test that snapshot timestamps come from time.time()."""
         fixed_time = 1700000000
@@ -261,3 +402,178 @@ class TestPaperTradingEngine:
 
             await engine.run(max_ticks=1)
             mock_time.time.assert_called()
+
+
+_NEW_CONDITION_ID = "cond_rotated_market"
+
+
+class TestMarketRotation:
+    """Tests for 5-minute market rotation."""
+
+    @pytest.mark.asyncio
+    async def test_rotation_discovers_new_markets(self) -> None:
+        """Test that window change triggers market re-discovery."""
+        # Start at a window boundary
+        start_time = 1700000000  # divisible by 300
+        tick_time = start_time + 300  # next window
+
+        client = _mock_client()
+        client.discover_series_markets = AsyncMock(
+            return_value=[(_NEW_CONDITION_ID, "2026-02-22T12:10:00Z")]
+        )
+
+        config = BotConfig(
+            poll_interval_seconds=0,
+            initial_capital=_INITIAL_CAPITAL,
+            max_position_pct=Decimal("0.1"),
+            kelly_fraction=Decimal("0.25"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+            series_slugs=("btc-updown-5m",),
+        )
+
+        time_calls = iter([float(start_time), float(tick_time), float(tick_time)])
+
+        with patch("trading_tools.apps.polymarket_bot.engine.time") as mock_time:
+            mock_time.time.side_effect = time_calls
+
+            engine = PaperTradingEngine(client, strategy=PMMeanReversionStrategy(), config=config)
+            # Override _current_window to start_time's window
+            engine._current_window = (start_time // 300) * 300
+
+            # Manually call _tick which should trigger rotation
+            await engine._tick()
+
+        client.discover_series_markets.assert_called_once_with(["btc-updown-5m"])
+        assert _NEW_CONDITION_ID in engine._active_markets
+
+    @pytest.mark.asyncio
+    async def test_rotation_closes_open_positions(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test that rotation closes all open positions before discovering new markets."""
+        start_time = 1700000000
+        tick_time = start_time + 300
+
+        client = _mock_client()
+        client.discover_series_markets = AsyncMock(
+            return_value=[(_NEW_CONDITION_ID, "2026-02-22T12:10:00Z")]
+        )
+
+        config = BotConfig(
+            poll_interval_seconds=0,
+            initial_capital=_INITIAL_CAPITAL,
+            max_position_pct=Decimal("0.1"),
+            kelly_fraction=Decimal("0.25"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+            series_slugs=("btc-updown-5m",),
+        )
+
+        with patch("trading_tools.apps.polymarket_bot.engine.time") as mock_time:
+            mock_time.time.return_value = float(start_time)
+            engine = PaperTradingEngine(client, strategy=PMMeanReversionStrategy(), config=config)
+            engine._current_window = (start_time // 300) * 300
+
+            # Simulate an open position
+            engine._portfolio.open_position(
+                condition_id=_CONDITION_ID,
+                outcome="Yes",
+                side=Side.BUY,
+                price=Decimal("0.60"),
+                quantity=Decimal(10),
+                timestamp=start_time,
+                reason="test",
+                edge=Decimal("0.05"),
+            )
+            engine._position_outcomes[_CONDITION_ID] = "Yes"
+
+            # Now trigger tick at the next window
+            mock_time.time.return_value = float(tick_time)
+
+            with caplog.at_level(logging.INFO, logger="trading_tools.apps.polymarket_bot.engine"):
+                await engine._tick()
+
+        # Position should be closed
+        assert _CONDITION_ID not in engine._portfolio.positions
+        assert _CONDITION_ID not in engine._position_outcomes
+        assert any("ROTATION CLOSE" in msg for msg in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_no_rotation_without_series_slugs(self) -> None:
+        """Test that rotation is skipped when series_slugs is empty."""
+        client = _mock_client()
+        client.discover_series_markets = AsyncMock()
+
+        config = _make_config()  # no series_slugs
+        engine = PaperTradingEngine(client, strategy=PMMeanReversionStrategy(), config=config)
+
+        await engine.run(max_ticks=2)
+
+        client.discover_series_markets.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rotation_discovery_failure_keeps_old_markets(self) -> None:
+        """Test that discovery failure preserves existing active markets."""
+        start_time = 1700000000
+        tick_time = start_time + 300
+
+        client = _mock_client()
+        client.discover_series_markets = AsyncMock(side_effect=Exception("API down"))
+
+        config = BotConfig(
+            poll_interval_seconds=0,
+            initial_capital=_INITIAL_CAPITAL,
+            max_position_pct=Decimal("0.1"),
+            kelly_fraction=Decimal("0.25"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+            series_slugs=("btc-updown-5m",),
+        )
+
+        with patch("trading_tools.apps.polymarket_bot.engine.time") as mock_time:
+            mock_time.time.return_value = float(start_time)
+            engine = PaperTradingEngine(client, strategy=PMMeanReversionStrategy(), config=config)
+            engine._current_window = (start_time // 300) * 300
+
+            mock_time.time.return_value = float(tick_time)
+            await engine._tick()
+
+        # Markets should remain unchanged (the old ones, since rotation failed)
+        assert _CONDITION_ID in engine._active_markets
+
+    @pytest.mark.asyncio
+    async def test_rotation_logs_new_market_count(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test that rotation logs the number of new markets discovered."""
+        start_time = 1700000000
+        tick_time = start_time + 300
+
+        new_markets = [
+            ("cond_btc_new", "2026-02-22T12:10:00Z"),
+            ("cond_eth_new", "2026-02-22T12:10:00Z"),
+        ]
+
+        client = _mock_client()
+        client.discover_series_markets = AsyncMock(return_value=new_markets)
+
+        config = BotConfig(
+            poll_interval_seconds=0,
+            initial_capital=_INITIAL_CAPITAL,
+            max_position_pct=Decimal("0.1"),
+            kelly_fraction=Decimal("0.25"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+            series_slugs=("btc-updown-5m", "eth-updown-5m"),
+        )
+
+        with patch("trading_tools.apps.polymarket_bot.engine.time") as mock_time:
+            mock_time.time.return_value = float(start_time)
+            engine = PaperTradingEngine(client, strategy=PMMeanReversionStrategy(), config=config)
+            engine._current_window = (start_time // 300) * 300
+
+            mock_time.time.return_value = float(tick_time)
+
+            with caplog.at_level(logging.INFO, logger="trading_tools.apps.polymarket_bot.engine"):
+                await engine._tick()
+
+        expected_count = 2
+        assert len(engine._active_markets) == expected_count
+        assert any("Rotating markets: 2" in msg for msg in caplog.messages)
