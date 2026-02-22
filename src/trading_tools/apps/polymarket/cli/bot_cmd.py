@@ -61,7 +61,7 @@ def bot(  # noqa: PLR0913
     min_edge: Annotated[float, typer.Option(help="Minimum edge (cross-market arb)")] = 0.02,
     snipe_threshold: Annotated[
         float, typer.Option(help="Price threshold for late snipe (0.5-1.0)")
-    ] = 0.9,
+    ] = 0.8,
     snipe_window: Annotated[
         int, typer.Option(help="Seconds before market end to start sniping")
     ] = 60,
