@@ -148,6 +148,8 @@ class PolymarketClient:
                 self._clob_client,
                 token_id,
             )
+        if raw is None:
+            return OrderBook(token_id=token_id, bids=(), asks=(), spread=_ZERO, midpoint=_ZERO)
         return self._parse_order_book(token_id, raw)
 
     async def close(self) -> None:
