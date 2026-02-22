@@ -142,13 +142,18 @@ class PolymarketClient:
             )
         market = self._parse_clob_market(raw)
 
-        # Enrich tokens with live CLOB midpoint prices
-        enriched_tokens: list[MarketToken] = []
-        for token in market.tokens:
+        # Enrich tokens with live CLOB midpoint prices (concurrent fetches)
+        async def _fetch_midpoint(token_id: str) -> str | None:
             async with self._clob_lock:
-                price = await asyncio.to_thread(
-                    _clob_adapter.fetch_midpoint, self._clob_client, token.token_id
+                return await asyncio.to_thread(
+                    _clob_adapter.fetch_midpoint, self._clob_client, token_id
                 )
+
+        midpoints = await asyncio.gather(
+            *(_fetch_midpoint(token.token_id) for token in market.tokens)
+        )
+        enriched_tokens: list[MarketToken] = []
+        for token, price in zip(market.tokens, midpoints, strict=True):
             live_price = _safe_decimal(price) if price is not None else token.price
             enriched_tokens.append(
                 MarketToken(
@@ -214,10 +219,12 @@ class PolymarketClient:
             found in the specified series.
 
         """
-        results: list[tuple[str, str]] = []
         resolved_slugs = _resolve_timestamped_slugs(series_slugs)
-        for slug in resolved_slugs:
-            events = await self._gamma.get_events(slug=slug, active=True, limit=5)
+        all_events = await asyncio.gather(
+            *(self._gamma.get_events(slug=slug, active=True, limit=5) for slug in resolved_slugs)
+        )
+        results: list[tuple[str, str]] = []
+        for events in all_events:
             for event in events:
                 for market_raw in event.get("markets", []):
                     if not market_raw.get("active", False):

@@ -5,6 +5,7 @@ before market resolution. Designed for 5-minute "Up or Down" crypto markets
 where one side typically reaches high confidence in the closing seconds.
 """
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -130,6 +131,11 @@ class PMLateSnipeStrategy:
         try:
             end_dt = datetime.fromisoformat(end_str)
         except (ValueError, TypeError):
+            logging.getLogger(__name__).warning(
+                "Cannot parse end_date %r for market %s",
+                end_str,
+                snapshot.condition_id[:20],
+            )
             return None
 
         now_dt = datetime.fromtimestamp(snapshot.timestamp, tz=UTC)

@@ -3,7 +3,7 @@
 import json
 import time
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -131,7 +131,7 @@ class RevolutXClient:
 
         # Sort parameters for consistent signature generation
         sorted_params = sorted(params.items())
-        return "&".join(f"{k}={v}" for k, v in sorted_params)
+        return "&".join(f"{quote(str(k))}={quote(str(v))}" for k, v in sorted_params)
 
     async def _request(
         self,
