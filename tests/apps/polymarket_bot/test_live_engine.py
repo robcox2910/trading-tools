@@ -342,6 +342,25 @@ class TestLiveTradingEngine:
         assert any("TRADE OPENED" in msg for msg in caplog.messages)
 
     @pytest.mark.asyncio
+    async def test_perf_log_emitted(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Verify periodic performance log appears at the configured interval."""
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy(period=3, z_threshold=Decimal("1.5"))
+        config = _make_config()
+        perf_interval = 2
+        engine = LiveTradingEngine(client, strategy, config, perf_log_interval=perf_interval)
+
+        with caplog.at_level(
+            logging.INFO,
+            logger="trading_tools.apps.polymarket_bot.live_engine",
+        ):
+            await engine.run(max_ticks=4)
+
+        perf_messages = [msg for msg in caplog.messages if "[PERF" in msg]
+        expected_count = 2
+        assert len(perf_messages) == expected_count
+
+    @pytest.mark.asyncio
     async def test_empty_markets_returns_clean_result(self) -> None:
         """Verify engine with no markets returns clean result."""
         client = _mock_client()

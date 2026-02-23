@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _TIMESTAMP_PLACEHOLDER = 0
 _MIN_TOKENS = 2
 _FIVE_MINUTES = 300
+_DEFAULT_PERF_LOG_INTERVAL = 50
 
 
 class PaperTradingEngine:
@@ -45,6 +46,7 @@ class PaperTradingEngine:
         client: Async Polymarket API client for fetching market data.
         strategy: Prediction market strategy that generates trading signals.
         config: Bot configuration (poll interval, capital, markets, etc.).
+        perf_log_interval: Log performance metrics every N ticks.
 
     """
 
@@ -53,6 +55,8 @@ class PaperTradingEngine:
         client: PolymarketClient,
         strategy: PredictionMarketStrategy,
         config: BotConfig,
+        *,
+        perf_log_interval: int = _DEFAULT_PERF_LOG_INTERVAL,
     ) -> None:
         """Initialize the paper trading engine.
 
@@ -60,11 +64,13 @@ class PaperTradingEngine:
             client: Async Polymarket API client.
             strategy: Prediction market strategy instance.
             config: Bot configuration.
+            perf_log_interval: Log performance metrics every N ticks.
 
         """
         self._client = client
         self._strategy = strategy
         self._config = config
+        self._perf_log_interval = perf_log_interval
         self._portfolio = PaperPortfolio(config.initial_capital, config.max_position_pct)
         self._active_markets: list[str] = list(config.markets)
         self._history: dict[str, deque[MarketSnapshot]] = {
@@ -93,11 +99,43 @@ class PaperTradingEngine:
         while max_ticks is None or tick_count < max_ticks:
             await self._tick()
             tick_count += 1
+            if tick_count % self._perf_log_interval == 0:
+                self._log_performance(tick_count)
             if max_ticks is not None and tick_count >= max_ticks:
                 break
             await asyncio.sleep(self._config.poll_interval_seconds)
 
         return self._build_result()
+
+    def _log_performance(self, tick_count: int) -> None:
+        """Log periodic performance metrics.
+
+        Emit an INFO log line with equity, cash, position count, trade count,
+        and return percentage so that long-running bots can be monitored via
+        log files or CloudWatch without stopping the engine.
+
+        Args:
+            tick_count: Current tick number.
+
+        """
+        equity = self._portfolio.total_equity
+        cash = self._portfolio.capital
+        positions = len(self._portfolio.positions)
+        trades = len(self._portfolio.trades)
+        ret = (
+            (equity - self._config.initial_capital) / self._config.initial_capital * 100
+            if self._config.initial_capital > ZERO
+            else ZERO
+        )
+        logger.info(
+            "[PERF tick=%d] equity=$%.2f cash=$%.2f positions=%d trades=%d return=%+.2f%%",
+            tick_count,
+            equity,
+            cash,
+            positions,
+            trades,
+            ret,
+        )
 
     async def _fetch_snapshot(self, condition_id: str) -> MarketSnapshot | None:
         """Fetch market data and build a MarketSnapshot.
