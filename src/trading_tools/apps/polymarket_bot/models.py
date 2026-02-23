@@ -153,3 +153,65 @@ class PaperTradingResult:
     trades: tuple[PaperTrade, ...]
     snapshots_processed: int
     metrics: dict[str, Decimal] = field(default_factory=_empty_metrics)
+
+
+@dataclass(frozen=True)
+class LiveTrade:
+    """Record of a real trade execution on the Polymarket CLOB.
+
+    Capture the full context of an executed trade including the market
+    identifiers, CLOB order ID, fill information, and the strategy's
+    reasoning. Unlike ``PaperTrade``, this includes ``token_id`` and
+    ``order_id`` from the live CLOB response.
+
+    Args:
+        condition_id: Market condition identifier.
+        token_id: CLOB token identifier that was traded.
+        token_outcome: Outcome token traded ("Yes" or "No").
+        order_id: Unique order identifier assigned by the CLOB.
+        side: Trade direction (BUY or SELL).
+        quantity: Number of tokens submitted.
+        price: Submitted price between 0 and 1.
+        filled: Actual number of tokens filled by the CLOB.
+        timestamp: Unix epoch seconds of execution.
+        reason: Human-readable explanation of why the trade was made.
+        estimated_edge: Strategy's estimated probability edge over market price.
+
+    """
+
+    condition_id: str
+    token_id: str
+    token_outcome: str
+    order_id: str
+    side: Side
+    quantity: Decimal
+    price: Decimal
+    filled: Decimal
+    timestamp: int
+    reason: str
+    estimated_edge: Decimal
+
+
+@dataclass(frozen=True)
+class LiveTradingResult:
+    """Summary of a completed live trading bot run.
+
+    Bundle the strategy name, balance figures, trade log, snapshot count,
+    and computed performance metrics into a single immutable result.
+
+    Args:
+        strategy_name: Name of the strategy that was run.
+        initial_balance: Starting USDC balance from the CLOB API.
+        final_balance: Ending USDC balance after all trades.
+        trades: Tuple of all live trades executed during the run.
+        snapshots_processed: Total number of market snapshots processed.
+        metrics: Performance metrics dictionary (total_return, win_rate, etc.).
+
+    """
+
+    strategy_name: str
+    initial_balance: Decimal
+    final_balance: Decimal
+    trades: tuple[LiveTrade, ...]
+    snapshots_processed: int
+    metrics: dict[str, Decimal] = field(default_factory=_empty_metrics)
