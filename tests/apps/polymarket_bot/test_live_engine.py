@@ -475,10 +475,8 @@ class TestAutoRedeem:
     """Tests for auto-redeem of redeemable positions on rotation."""
 
     @pytest.mark.asyncio
-    async def test_redeem_sells_redeemable_positions(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Verify auto-redeem places SELL orders for discovered positions."""
+    async def test_redeem_calls_ctf_redemption(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Verify auto-redeem calls on-chain CTF redemption with condition IDs."""
         start_time = 1700000000
         tick_time = start_time + 300
 
@@ -497,6 +495,7 @@ class TestAutoRedeem:
                 ),
             ],
         )
+        client.redeem_positions = AsyncMock(return_value=1)
 
         config = BotConfig(
             poll_interval_seconds=0,
@@ -527,8 +526,8 @@ class TestAutoRedeem:
                 await engine._tick()
 
         client.get_redeemable_positions.assert_called_once()
-        client.place_order.assert_called()
-        assert any("REDEEM SELL" in msg for msg in caplog.messages)
+        client.redeem_positions.assert_called_once_with(["0xresolved1"])
+        assert any("AUTO-REDEEM: redeemed" in msg for msg in caplog.messages)
 
     @pytest.mark.asyncio
     async def test_redeem_skips_small_positions(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -551,6 +550,7 @@ class TestAutoRedeem:
                 ),
             ],
         )
+        client.redeem_positions = AsyncMock(return_value=0)
 
         config = BotConfig(
             poll_interval_seconds=0,
@@ -581,6 +581,7 @@ class TestAutoRedeem:
                 await engine._tick()
 
         assert any("REDEEM skip" in msg for msg in caplog.messages)
+        client.redeem_positions.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_redeem_disabled_skips_discovery(self) -> None:
@@ -619,3 +620,59 @@ class TestAutoRedeem:
             await engine._tick()
 
         client.get_redeemable_positions.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_redeem_ctf_failure_logged_not_raised(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Verify CTF redemption failure is logged without crashing the engine."""
+        start_time = 1700000000
+        tick_time = start_time + 300
+
+        client = _mock_client()
+        client.discover_series_markets = AsyncMock(
+            return_value=[(_NEW_CONDITION_ID, "2026-02-22T12:10:00Z")],
+        )
+        client.get_redeemable_positions = AsyncMock(
+            return_value=[
+                RedeemablePosition(
+                    condition_id="0xfailing",
+                    token_id="tok_fail",
+                    outcome="Up",
+                    size=Decimal("10.0"),
+                    title="Failing redemption",
+                ),
+            ],
+        )
+        client.redeem_positions = AsyncMock(side_effect=Exception("RPC timeout"))
+
+        config = BotConfig(
+            poll_interval_seconds=0,
+            max_position_pct=Decimal("0.1"),
+            kelly_fraction=Decimal("0.25"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+            series_slugs=("btc-updown-5m",),
+        )
+
+        time_calls = iter([float(start_time), float(tick_time), float(tick_time)])
+
+        with patch("trading_tools.apps.polymarket_bot.live_engine.time") as mock_time:
+            mock_time.time.side_effect = time_calls
+
+            engine = LiveTradingEngine(
+                client,
+                strategy=PMMeanReversionStrategy(),
+                config=config,
+                auto_redeem=True,
+            )
+            engine._current_window = (start_time // 300) * 300
+
+            with caplog.at_level(
+                logging.WARNING,
+                logger="trading_tools.apps.polymarket_bot.live_engine",
+            ):
+                await engine._tick()
+
+        client.redeem_positions.assert_called_once_with(["0xfailing"])
+        assert any("CTF redemption failed" in msg for msg in caplog.messages)

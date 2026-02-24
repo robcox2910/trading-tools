@@ -160,7 +160,7 @@ def bot_live(  # noqa: PLR0913
         bool,
         typer.Option(
             "--auto-redeem/--no-auto-redeem",
-            help="Sell winning tokens at 0.99 on rotation to recover USDC",
+            help="Redeem winning tokens on-chain via CTF contract on rotation",
         ),
     ] = True,
     verbose: Annotated[  # noqa: FBT002
