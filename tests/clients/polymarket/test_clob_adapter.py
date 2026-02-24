@@ -117,7 +117,7 @@ class TestCreateAuthenticatedClobClient:
         """Create a Level 1 client when no API creds are provided."""
         with patch("trading_tools.clients.polymarket._clob_adapter.ClobClient") as mock_cls:
             _clob_adapter.create_authenticated_clob_client(_HOST, _PRIVATE_KEY)
-        mock_cls.assert_called_once_with(_HOST, chain_id=137, key=_PRIVATE_KEY)
+        mock_cls.assert_called_once_with(_HOST, chain_id=137, key=_PRIVATE_KEY, signature_type=1)
 
     def test_creates_level2_client_with_creds(self) -> None:
         """Create a Level 2 client when API creds are provided."""

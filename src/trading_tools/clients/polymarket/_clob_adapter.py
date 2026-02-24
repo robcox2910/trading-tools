@@ -27,6 +27,7 @@ from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 
 _HTTP_INTERNAL_ERROR = 500
 _HTTP_NOT_FOUND = 404
+_POLYGON_PROXY_WALLET = 1
 
 _logger = logging.getLogger(__name__)
 
@@ -299,8 +300,11 @@ def create_authenticated_clob_client(
                 api_secret=api_secret,
                 api_passphrase=api_passphrase,
             ),
+            signature_type=_POLYGON_PROXY_WALLET,
         )
-    return ClobClient(host, chain_id=chain_id, key=private_key)  # type: ignore[no-any-return]
+    return ClobClient(
+        host, chain_id=chain_id, key=private_key, signature_type=_POLYGON_PROXY_WALLET
+    )  # type: ignore[no-any-return]
 
 
 def derive_api_creds(client: Any) -> tuple[str, str, str]:
