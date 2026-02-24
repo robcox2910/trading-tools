@@ -75,6 +75,24 @@ class TestRefreshBalance:
         assert portfolio.balance == _INITIAL_BALANCE
         client.get_balance.assert_awaited_once_with("COLLATERAL")
 
+    @pytest.mark.asyncio
+    async def test_refresh_balance_survives_api_error(self) -> None:
+        """Return last known balance when the API call fails."""
+        client = _mock_client()
+        portfolio = LivePortfolio(client, _MAX_POSITION_PCT)
+
+        # First call succeeds
+        await portfolio.refresh_balance()
+        assert portfolio.balance == _INITIAL_BALANCE
+
+        # Second call fails — should keep the old balance
+        client.get_balance = AsyncMock(
+            side_effect=PolymarketAPIError(msg="Request exception!", status_code=500),
+        )
+        result = await portfolio.refresh_balance()
+        assert result == _INITIAL_BALANCE
+        assert portfolio.balance == _INITIAL_BALANCE
+
 
 class TestOpenPosition:
     """Tests for opening live positions."""

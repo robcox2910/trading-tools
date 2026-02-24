@@ -61,12 +61,23 @@ class LivePortfolio:
     async def refresh_balance(self) -> Decimal:
         """Fetch the live USDC balance from the CLOB API.
 
+        On transient API failures, log a warning and return the last known
+        balance so the engine can continue operating.
+
         Returns:
-            Current USDC balance as a ``Decimal``.
+            Current USDC balance as a ``Decimal``, or the last known balance
+            if the API call fails.
 
         """
-        bal = await self._client.get_balance("COLLATERAL")
-        self._balance = bal.balance
+        try:
+            bal = await self._client.get_balance("COLLATERAL")
+            self._balance = bal.balance
+        except Exception:
+            logger.warning(
+                "Balance refresh failed, using last known balance: $%.4f",
+                self._balance,
+                exc_info=True,
+            )
         return self._balance
 
     async def open_position(
