@@ -326,7 +326,6 @@ async def _cancel(*, order_id: str) -> None:
     typer.echo(f"Result: {result}")
 
 
-_REDEEM_SELL_PRICE = Decimal("0.99")
 _MIN_REDEEM_SIZE = Decimal(5)
 
 
@@ -335,11 +334,13 @@ def redeem(
         bool, typer.Option("--no-confirm", help="Skip confirmation prompt")
     ] = False,
 ) -> None:
-    """Discover and redeem all winning positions via CLOB SELL at 0.99.
+    """Discover and redeem all winning positions on-chain via the CTF contract.
 
     Query the Polymarket Data API for redeemable positions held by the
-    proxy wallet, then sell each at 0.99 to recover USDC collateral.
-    Require ``POLYMARKET_FUNDER_ADDRESS`` to discover positions.
+    proxy wallet, then call ``redeemPositions`` on the CTF contract to
+    recover USDC collateral at full $1.00 face value.  Require POL in the
+    signing EOA for gas and ``POLYMARKET_FUNDER_ADDRESS`` to discover
+    positions.
 
     Args:
         no_confirm: Skip the confirmation prompt.
@@ -349,10 +350,10 @@ def redeem(
 
 
 async def _redeem(*, confirm: bool) -> None:
-    """Discover and redeem positions asynchronously.
+    """Discover and redeem positions on-chain asynchronously.
 
     Args:
-        confirm: Whether to prompt for confirmation before selling.
+        confirm: Whether to prompt for confirmation before redeeming.
 
     """
     client = _build_authenticated_client()
@@ -380,33 +381,19 @@ async def _redeem(*, confirm: bool) -> None:
                 typer.echo("\nNo positions large enough to redeem.")
                 return
 
-            typer.echo(f"\nWill sell {len(eligible)} position(s) at {_REDEEM_SELL_PRICE}:")
+            condition_ids = [p.condition_id for p in eligible]
+            typer.echo(f"\nWill redeem {len(eligible)} position(s) on-chain via CTF contract:")
             for pos in eligible:
-                typer.echo(f"  SELL {pos.size} {pos.outcome} @ {_REDEEM_SELL_PRICE} — {pos.title}")
+                typer.echo(f"  {pos.size} {pos.outcome} @ $1.00 — {pos.title}")
 
             if confirm:
-                proceed = typer.confirm("\nProceed with redemption?")
+                proceed = typer.confirm("\nProceed with on-chain redemption?")
                 if not proceed:
                     typer.echo("Cancelled.")
                     raise typer.Exit(code=0)
 
-            redeemed = 0
-            for pos in eligible:
-                request = OrderRequest(
-                    token_id=pos.token_id,
-                    side=_SIDE_SELL,
-                    price=_REDEEM_SELL_PRICE,
-                    size=pos.size,
-                    order_type="limit",
-                )
-                result = await client.place_order(request)
-                redeemed += 1
-                typer.echo(
-                    f"  Sold {pos.outcome} @ {_REDEEM_SELL_PRICE}: "
-                    f"order={result.order_id[:20]}... status={result.status}"
-                )
-
-            typer.echo(f"\nRedeemed {redeemed}/{len(eligible)} positions.")
+            redeemed = await client.redeem_positions(condition_ids)
+            typer.echo(f"\nRedeemed {redeemed}/{len(eligible)} positions on-chain via CTF.")
 
     except PolymarketAPIError as exc:
         typer.echo(f"Error: {exc}", err=True)

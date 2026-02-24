@@ -26,7 +26,6 @@ from trading_tools.apps.polymarket_bot.models import (
 )
 from trading_tools.apps.polymarket_bot.protocols import PredictionMarketStrategy
 from trading_tools.clients.polymarket.client import PolymarketClient
-from trading_tools.clients.polymarket.models import OrderRequest
 from trading_tools.core.models import ZERO, Side, Signal
 
 if TYPE_CHECKING:
@@ -38,7 +37,6 @@ _MIN_TOKENS = 2
 _MIN_ORDER_SIZE = Decimal(5)
 _FIVE_MINUTES = 300
 _DEFAULT_MAX_LOSS_PCT = Decimal("0.10")
-_REDEEM_SELL_PRICE = Decimal("0.99")
 
 
 class LiveTradingEngine:
@@ -285,15 +283,16 @@ class LiveTradingEngine:
         self._log_performance()
 
     async def _redeem_resolved(self) -> None:
-        """Discover and sell redeemable positions via the Data API and CLOB.
+        """Redeem winning positions on-chain via the CTF contract.
 
         Query the Polymarket Data API for all redeemable positions held by
-        the proxy wallet, then place SELL orders at ``0.99`` for each one.
-        This recovers ~99% of winning token value without needing POL for
-        on-chain gas.
+        the proxy wallet, extract condition IDs (skipping positions below
+        the minimum order size), and call ``client.redeem_positions()`` for
+        on-chain CTF redemption at $1.00 face value.
 
-        Log errors but do not raise — redemption failures should not
-        prevent the engine from continuing to trade.
+        Require POL in the signing EOA for gas.  Log errors but do not
+        raise — redemption failures should not prevent the engine from
+        continuing to trade.
         """
         try:
             redeemable = await self._client.get_redeemable_positions()
@@ -305,7 +304,7 @@ class LiveTradingEngine:
             return
 
         logger.info("AUTO-REDEEM: found %d redeemable positions", len(redeemable))
-        redeemed = 0
+        condition_ids: list[str] = []
         for pos in redeemable:
             if pos.size < _MIN_ORDER_SIZE:
                 logger.info(
@@ -315,27 +314,20 @@ class LiveTradingEngine:
                     _MIN_ORDER_SIZE,
                 )
                 continue
-            try:
-                request = OrderRequest(
-                    token_id=pos.token_id,
-                    side="SELL",
-                    price=_REDEEM_SELL_PRICE,
-                    size=pos.size,
-                    order_type="limit",
-                )
-                response = await self._client.place_order(request)
-                redeemed += 1
-                logger.info(
-                    "REDEEM SELL %s (%s): size=%s @ 0.99 order=%s",
-                    pos.title[:40],
-                    pos.outcome,
-                    pos.size,
-                    response.order_id,
-                )
-            except Exception:
-                logger.warning("Redeem sell failed for %s", pos.title[:40], exc_info=True)
-        if redeemed > 0:
-            logger.info("AUTO-REDEEM: sold %d positions at 0.99", redeemed)
+            condition_ids.append(pos.condition_id)
+
+        if not condition_ids:
+            return
+
+        try:
+            redeemed = await self._client.redeem_positions(condition_ids)
+            logger.info(
+                "AUTO-REDEEM: redeemed %d/%d positions on-chain via CTF",
+                redeemed,
+                len(condition_ids),
+            )
+        except Exception:
+            logger.warning("CTF redemption failed", exc_info=True)
 
     async def _tick(self) -> None:
         """Execute one polling cycle across all tracked markets."""
@@ -479,16 +471,6 @@ class LiveTradingEngine:
             sig: Strategy signal that triggered the trade.
 
         """
-        if buy_price >= _REDEEM_SELL_PRICE:
-            logger.info(
-                "[tick %d] Skipping %s: price %.4f >= redeem price %.4f (no edge)",
-                self._snapshots_processed,
-                condition_id[:20],
-                buy_price,
-                _REDEEM_SELL_PRICE,
-            )
-            return
-
         estimated_prob = buy_price + sig.strength * (Decimal(1) - buy_price)
         estimated_prob = min(estimated_prob, Decimal("0.99"))
 
