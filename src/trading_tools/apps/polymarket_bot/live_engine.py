@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 _MIN_TOKENS = 2
 _FIVE_MINUTES = 300
 _DEFAULT_MAX_LOSS_PCT = Decimal("0.10")
-_DEFAULT_PERF_LOG_INTERVAL = 50
 
 
 class LiveTradingEngine:
@@ -59,7 +58,6 @@ class LiveTradingEngine:
         config: Bot configuration (poll interval, capital, markets, etc.).
         max_loss_pct: Maximum drawdown fraction before auto-stop (default 10%).
         use_market_orders: Use FOK market orders (default) or GTC limit.
-        perf_log_interval: Log performance metrics every N ticks.
 
     """
 
@@ -71,7 +69,6 @@ class LiveTradingEngine:
         *,
         max_loss_pct: Decimal = _DEFAULT_MAX_LOSS_PCT,
         use_market_orders: bool = True,
-        perf_log_interval: int = _DEFAULT_PERF_LOG_INTERVAL,
     ) -> None:
         """Initialize the live trading engine.
 
@@ -81,14 +78,12 @@ class LiveTradingEngine:
             config: Bot configuration.
             max_loss_pct: Maximum allowed loss fraction (0-1).
             use_market_orders: Use FOK market orders or GTC limit orders.
-            perf_log_interval: Log performance metrics every N ticks.
 
         """
         self._client = client
         self._strategy = strategy
         self._config = config
         self._max_loss_pct = max_loss_pct
-        self._perf_log_interval = perf_log_interval
         self._portfolio = LivePortfolio(
             client,
             config.max_position_pct,
@@ -141,8 +136,6 @@ class LiveTradingEngine:
 
             await self._tick()
             tick_count += 1
-            if tick_count % self._perf_log_interval == 0:
-                self._log_performance(tick_count)
             if max_ticks is not None and tick_count >= max_ticks:
                 break
             await asyncio.sleep(self._config.poll_interval_seconds)
@@ -166,16 +159,12 @@ class LiveTradingEngine:
         equity = self._portfolio.total_equity
         return equity / self._initial_balance < (Decimal(1) - self._max_loss_pct)
 
-    def _log_performance(self, tick_count: int) -> None:
-        """Log periodic performance metrics.
+    def _log_performance(self) -> None:
+        """Log performance metrics at market rotation boundaries.
 
         Emit an INFO log line with equity, cash balance, position count, trade
         count, and return percentage so that long-running bots can be monitored
         via log files or CloudWatch without stopping the engine.
-
-        Args:
-            tick_count: Current tick number.
-
         """
         equity = self._portfolio.total_equity
         cash = self._portfolio.balance
@@ -188,7 +177,7 @@ class LiveTradingEngine:
         )
         logger.info(
             "[PERF tick=%d] equity=$%.2f cash=$%.2f positions=%d trades=%d return=%+.2f%%",
-            tick_count,
+            self._snapshots_processed,
             equity,
             cash,
             positions,
@@ -312,6 +301,7 @@ class LiveTradingEngine:
             len(new_ids),
             self._current_window,
         )
+        self._log_performance()
 
     async def _tick(self) -> None:
         """Execute one polling cycle across all tracked markets."""

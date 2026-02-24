@@ -65,9 +65,6 @@ def bot(  # noqa: PLR0913
     snipe_window: Annotated[
         int, typer.Option(help="Seconds before market end to start sniping")
     ] = 60,
-    perf_log_interval: Annotated[
-        int, typer.Option(help="Log performance metrics every N ticks")
-    ] = 50,
     verbose: Annotated[  # noqa: FBT002
         bool, typer.Option("--verbose", "-v", help="Enable tick-by-tick logging")
     ] = False,
@@ -100,7 +97,6 @@ def bot(  # noqa: PLR0913
             min_edge=min_edge,
             snipe_threshold=snipe_threshold,
             snipe_window=snipe_window,
-            perf_log_interval=perf_log_interval,
         )
     )
 
@@ -174,7 +170,6 @@ async def _bot(  # noqa: PLR0913
     min_edge: float,
     snipe_threshold: float,
     snipe_window: int,
-    perf_log_interval: int,
 ) -> None:
     """Run the paper trading bot asynchronously.
 
@@ -194,7 +189,6 @@ async def _bot(  # noqa: PLR0913
         min_edge: Minimum edge for cross-market arb.
         snipe_threshold: Price threshold for late snipe strategy.
         snipe_window: Window in seconds before market end for sniping.
-        perf_log_interval: Log performance metrics every N ticks.
 
     """
     market_ids = tuple(m.strip() for m in markets.split(",") if m.strip())
@@ -259,9 +253,7 @@ async def _bot(  # noqa: PLR0913
 
     try:
         async with PolymarketClient() as client:
-            engine = PaperTradingEngine(
-                client, pm_strategy, config, perf_log_interval=perf_log_interval
-            )
+            engine = PaperTradingEngine(client, pm_strategy, config)
             result = await engine.run(max_ticks=max_ticks)
     except PolymarketAPIError as exc:
         typer.echo(f"Error: {exc}", err=True)
