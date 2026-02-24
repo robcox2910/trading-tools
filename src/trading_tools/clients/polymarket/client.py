@@ -7,9 +7,12 @@ a single async interface.  Synchronous CLOB calls are wrapped in
 
 import asyncio
 import json
+import logging
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
+
+import httpx
 
 from trading_tools.clients.polymarket import _clob_adapter, _ctf_redeemer
 from trading_tools.clients.polymarket._gamma_client import GammaClient
@@ -22,11 +25,15 @@ from trading_tools.clients.polymarket.models import (
     OrderLevel,
     OrderRequest,
     OrderResponse,
+    RedeemablePosition,
 )
+
+logger = logging.getLogger(__name__)
 
 _ZERO = Decimal(0)
 _TWO = Decimal(2)
 _USDC_DECIMALS = Decimal("1e6")
+_HTTP_BAD_REQUEST = 400
 
 
 class PolymarketClient:
@@ -44,6 +51,7 @@ class PolymarketClient:
 
     CLOB_HOST = "https://clob.polymarket.com"
     GAMMA_URL = "https://gamma-api.polymarket.com"
+    DATA_API_URL = "https://data-api.polymarket.com"
 
     def __init__(
         self,
@@ -74,6 +82,7 @@ class PolymarketClient:
 
         """
         self._private_key = private_key
+        self._funder_address = funder_address
         self._authenticated = private_key is not None
         if private_key is not None:
             creds = (
@@ -87,6 +96,7 @@ class PolymarketClient:
         else:
             self._clob_client = _clob_adapter.create_clob_client(host)
         self._gamma = GammaClient(base_url=gamma_base_url)
+        self._data_client = httpx.AsyncClient(timeout=30.0)
         self._clob_lock = asyncio.Lock()
 
     async def search_markets(
@@ -364,6 +374,63 @@ class PolymarketClient:
             raw_list = await asyncio.to_thread(_clob_adapter.get_open_orders, self._clob_client)
         return [_parse_raw_order(raw) for raw in raw_list]
 
+    async def get_redeemable_positions(self) -> list[RedeemablePosition]:
+        """Discover redeemable positions via the Polymarket Data API.
+
+        Query the unauthenticated Data API for all positions held by the
+        proxy wallet that are marked as redeemable (resolved and winning).
+
+        Returns:
+            List of redeemable positions with token IDs and sizes.
+
+        Raises:
+            PolymarketAPIError: When the funder address is not configured
+                or the Data API request fails.
+
+        """
+        if not self._funder_address:
+            raise PolymarketAPIError(
+                msg="Funder address required for position discovery. "
+                "Set POLYMARKET_FUNDER_ADDRESS.",
+                status_code=0,
+            )
+        url = f"{self.DATA_API_URL}/positions"
+        params: dict[str, str] = {
+            "user": self._funder_address,
+            "redeemable": "true",
+            "sizeThreshold": "0",
+        }
+        try:
+            response = await self._data_client.get(url, params=params)
+        except httpx.HTTPError as exc:
+            raise PolymarketAPIError(
+                msg=f"Data API request failed: {exc}",
+                status_code=0,
+            ) from exc
+
+        if response.status_code >= _HTTP_BAD_REQUEST:
+            raise PolymarketAPIError(
+                msg=f"Data API error: HTTP {response.status_code}",
+                status_code=response.status_code,
+            )
+
+        raw_positions: list[dict[str, Any]] = response.json()
+        results: list[RedeemablePosition] = []
+        for raw in raw_positions:
+            size = _safe_decimal(raw.get("size", "0"))
+            if size <= _ZERO:
+                continue
+            results.append(
+                RedeemablePosition(
+                    condition_id=str(raw.get("conditionId", "")),
+                    token_id=str(raw.get("asset", "")),
+                    outcome=str(raw.get("outcome", "")),
+                    size=size,
+                    title=str(raw.get("title", "")),
+                )
+            )
+        return results
+
     async def redeem_positions(
         self,
         condition_ids: list[str],
@@ -400,6 +467,7 @@ class PolymarketClient:
     async def close(self) -> None:
         """Close underlying HTTP clients."""
         await self._gamma.close()
+        await self._data_client.aclose()
 
     async def __aenter__(self) -> "PolymarketClient":
         """Enter async context manager."""
