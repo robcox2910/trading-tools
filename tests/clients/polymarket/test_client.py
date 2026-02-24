@@ -541,13 +541,13 @@ class TestAuthenticatedPolymarketClient:
         """Fetch USDC balance and return typed Balance."""
         with patch(
             "trading_tools.clients.polymarket.client._clob_adapter.get_balance",
-            return_value={"balance": "1000.00", "allowance": "500.00"},
+            return_value={"balance": "1000000000", "allowance": "500000000"},
         ):
             result = await auth_client.get_balance("COLLATERAL")
 
         assert isinstance(result, Balance)
-        assert result.balance == Decimal("1000.00")
-        assert result.allowance == Decimal("500.00")
+        assert result.balance == Decimal(1000)
+        assert result.allowance == Decimal(500)
         assert result.asset_type == "COLLATERAL"
 
     @pytest.mark.asyncio
