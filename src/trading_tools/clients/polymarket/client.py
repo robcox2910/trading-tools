@@ -11,7 +11,7 @@ import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from trading_tools.clients.polymarket import _clob_adapter
+from trading_tools.clients.polymarket import _clob_adapter, _ctf_redeemer
 from trading_tools.clients.polymarket._gamma_client import GammaClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import (
@@ -53,6 +53,7 @@ class PolymarketClient:
         api_key: str | None = None,
         api_secret: str | None = None,
         api_passphrase: str | None = None,
+        funder_address: str | None = None,
     ) -> None:
         """Initialize the Polymarket client.
 
@@ -68,8 +69,11 @@ class PolymarketClient:
             api_key: Pre-existing CLOB API key.
             api_secret: Pre-existing CLOB API secret.
             api_passphrase: Pre-existing CLOB API passphrase.
+            funder_address: Proxy wallet address holding the trading funds.
+                Required for Polymarket UI-funded (proxy wallet) accounts.
 
         """
+        self._private_key = private_key
         self._authenticated = private_key is not None
         if private_key is not None:
             creds = (
@@ -78,7 +82,7 @@ class PolymarketClient:
                 else None
             )
             self._clob_client: Any = _clob_adapter.create_authenticated_clob_client(
-                host, private_key, creds=creds
+                host, private_key, creds=creds, funder=funder_address
             )
         else:
             self._clob_client = _clob_adapter.create_clob_client(host)
@@ -359,6 +363,39 @@ class PolymarketClient:
         async with self._clob_lock:
             raw_list = await asyncio.to_thread(_clob_adapter.get_open_orders, self._clob_client)
         return [_parse_raw_order(raw) for raw in raw_list]
+
+    async def redeem_positions(
+        self,
+        condition_ids: list[str],
+        rpc_url: str = "https://rpc-mainnet.matic.quiknode.pro",
+    ) -> int:
+        """Redeem winning positions for resolved markets.
+
+        Call ``redeemPositions`` on the CTF contract through the Polymarket
+        ProxyWalletFactory.  Require POL in the signing EOA for gas (typically
+        less than $0.01 per redemption on Polygon).
+
+        Args:
+            condition_ids: List of resolved market condition IDs to redeem.
+            rpc_url: Polygon JSON-RPC endpoint URL.
+
+        Returns:
+            Number of successfully redeemed positions.
+
+        Raises:
+            PolymarketAPIError: When not authenticated or redemption fails.
+
+        """
+        self._require_auth()
+        if not self._private_key or not condition_ids:
+            return 0
+        receipts = await asyncio.to_thread(
+            _ctf_redeemer.redeem_positions,
+            rpc_url,
+            self._private_key,
+            condition_ids,
+        )
+        return sum(1 for r in receipts if r["status"] == 1)
 
     async def close(self) -> None:
         """Close underlying HTTP clients."""

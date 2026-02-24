@@ -10,6 +10,7 @@ typed dataclasses.
 import logging
 from typing import Any, cast
 
+from eth_account import Account  # type: ignore[import-untyped]
 from py_clob_client.client import ClobClient  # type: ignore[import-untyped]
 from py_clob_client.clob_types import (  # type: ignore[import-untyped]
     ApiCreds,
@@ -266,11 +267,28 @@ def fetch_last_trade_price(client: Any, token_id: str) -> str | None:
 _POLYGON_CHAIN_ID = 137
 
 
+def derive_funder_address(private_key: str) -> str:
+    """Derive the EOA address from a private key.
+
+    The funder address is required for proxy wallet order signatures.
+    It is the Ethereum address corresponding to the given private key.
+
+    Args:
+        private_key: Hex-encoded private key (with ``0x`` prefix).
+
+    Returns:
+        Checksummed Ethereum address string.
+
+    """
+    return Account.from_key(private_key).address  # type: ignore[no-any-return]
+
+
 def create_authenticated_clob_client(
     host: str,
     private_key: str,
     chain_id: int = _POLYGON_CHAIN_ID,
     creds: tuple[str, str, str] | None = None,
+    funder: str | None = None,
 ) -> ClobClient:  # type: ignore[no-any-unimported]
     """Create an authenticated CLOB client for trading.
 
@@ -278,17 +296,24 @@ def create_authenticated_clob_client(
     orders and check balances.  Without ``creds``, create a Level 1 client
     that can derive API credentials.
 
+    The ``funder`` address is the Polymarket proxy wallet contract that
+    holds funds.  When omitted, the EOA address derived from the private
+    key is used (which only works for non-proxy-wallet accounts).
+
     Args:
         host: Base URL for the Polymarket CLOB API.
         private_key: Polygon wallet private key (hex string with ``0x`` prefix).
         chain_id: Blockchain chain ID (default 137 for Polygon mainnet).
         creds: Optional tuple of ``(api_key, api_secret, api_passphrase)``
             for Level 2 authentication.
+        funder: Proxy wallet address that holds the trading funds.  If
+            ``None``, falls back to the EOA address derived from the key.
 
     Returns:
         Configured ``ClobClient`` ready for authenticated API calls.
 
     """
+    resolved_funder = funder or derive_funder_address(private_key)
     if creds is not None:
         api_key, api_secret, api_passphrase = creds
         return ClobClient(  # type: ignore[no-any-return]
@@ -301,9 +326,14 @@ def create_authenticated_clob_client(
                 api_passphrase=api_passphrase,
             ),
             signature_type=_POLYGON_PROXY_WALLET,
+            funder=resolved_funder,
         )
     return ClobClient(
-        host, chain_id=chain_id, key=private_key, signature_type=_POLYGON_PROXY_WALLET
+        host,
+        chain_id=chain_id,
+        key=private_key,
+        signature_type=_POLYGON_PROXY_WALLET,
+        funder=resolved_funder,
     )  # type: ignore[no-any-return]
 
 

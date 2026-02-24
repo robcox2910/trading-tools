@@ -11,7 +11,7 @@ from trading_tools.apps.polymarket.cli.bot_cmd import bot
 from trading_tools.apps.polymarket.cli.bot_live_cmd import bot_live
 from trading_tools.apps.polymarket.cli.markets_cmd import markets
 from trading_tools.apps.polymarket.cli.odds_cmd import odds
-from trading_tools.apps.polymarket.cli.trade_cmd import balance, cancel, orders, trade
+from trading_tools.apps.polymarket.cli.trade_cmd import balance, cancel, orders, redeem, trade
 
 app = typer.Typer(help="Polymarket prediction market tools")
 
@@ -25,5 +25,6 @@ app.command()(trade)
 app.command()(balance)
 app.command()(orders)
 app.command()(cancel)
+app.command()(redeem)
 
 __all__ = ["app"]

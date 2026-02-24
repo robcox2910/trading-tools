@@ -34,8 +34,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MIN_TOKENS = 2
+_MIN_ORDER_SIZE = Decimal(5)
 _FIVE_MINUTES = 300
 _DEFAULT_MAX_LOSS_PCT = Decimal("0.10")
+_REDEEM_SELL_PRICE = Decimal("0.99")
 
 
 class LiveTradingEngine:
@@ -69,6 +71,7 @@ class LiveTradingEngine:
         *,
         max_loss_pct: Decimal = _DEFAULT_MAX_LOSS_PCT,
         use_market_orders: bool = True,
+        auto_redeem: bool = False,
     ) -> None:
         """Initialize the live trading engine.
 
@@ -78,12 +81,15 @@ class LiveTradingEngine:
             config: Bot configuration.
             max_loss_pct: Maximum allowed loss fraction (0-1).
             use_market_orders: Use FOK market orders or GTC limit orders.
+            auto_redeem: Attempt to redeem resolved positions on rotation.
+                Require POL in the signing EOA for gas.
 
         """
         self._client = client
         self._strategy = strategy
         self._config = config
         self._max_loss_pct = max_loss_pct
+        self._auto_redeem = auto_redeem
         self._portfolio = LivePortfolio(
             client,
             config.max_position_pct,
@@ -235,47 +241,23 @@ class LiveTradingEngine:
     async def _rotate_markets(self) -> None:
         """Re-discover active markets when the 5-minute window rotates.
 
-        Close all open positions via real SELL orders (the previous window's
-        markets have resolved), then discover new condition IDs.
+        Attempt to redeem resolved positions (if auto-redeem is enabled),
+        then clear all local position tracking and refresh the balance.
         """
-        for cid in list(self._portfolio.positions):
-            outcome = self._position_outcomes.get(cid, "Yes")
-            last_snap = self._history.get(cid)
-            if last_snap:
-                latest = last_snap[-1]
-                close_price = latest.yes_price if outcome == "Yes" else latest.no_price
-            else:
-                close_price = Decimal("0.50")
-                logger.warning(
-                    "No price history for %s, using fallback price 0.50",
-                    cid[:20],
-                )
+        previous_markets = list(self._active_markets)
 
-            token_ids = self._token_ids.get(cid)
-            if token_ids:
-                token_id = token_ids[0] if outcome == "Yes" else token_ids[1]
-            else:
-                logger.warning("No cached token ID for %s, skipping close", cid[:20])
-                continue
+        if self._auto_redeem and previous_markets:
+            await self._redeem_resolved(previous_markets)
 
-            pos = self._portfolio.positions.get(cid)
-            qty = pos.quantity if pos else ZERO
-            trade = await self._portfolio.close_position(
-                cid,
-                token_id,
-                close_price,
-                qty,
-                int(time.time()),
-            )
-            if trade is not None:
-                logger.info(
-                    "ROTATION CLOSE: %s @ %.4f order=%s filled=%s",
-                    cid[:20],
-                    close_price,
-                    trade.order_id,
-                    trade.filled,
-                )
-            self._position_outcomes.pop(cid, None)
+        remaining = len(self._portfolio.positions)
+        if remaining > 0:
+            self._portfolio.clear_positions()
+        self._position_outcomes.clear()
+        await self._portfolio.refresh_balance()
+        logger.info(
+            "ROTATION: balance now $%.4f",
+            self._portfolio.balance,
+        )
 
         try:
             discovered = await self._client.discover_series_markets(
@@ -302,6 +284,58 @@ class LiveTradingEngine:
             self._current_window,
         )
         self._log_performance()
+
+    async def _redeem_resolved(self, condition_ids: list[str]) -> None:
+        """Sell winning tokens at 0.99 to redeem resolved positions via CLOB.
+
+        Place SELL orders at ``0.99`` for each open position, recovering
+        ~99% of the winning token value. This avoids the need for on-chain
+        ``redeemPositions`` calls (which require POL for gas).
+
+        Log errors but do not raise — redemption failures should not
+        prevent the engine from continuing to trade.
+
+        Args:
+            condition_ids: Condition IDs from the previous market window.
+
+        """
+        positions = self._portfolio.positions
+        redeemed = 0
+        for cid in condition_ids:
+            if cid not in positions:
+                continue
+            pos = positions[cid]
+            token_id = self._portfolio.get_token_id(cid)
+            if token_id is None:
+                continue
+            if pos.quantity < _MIN_ORDER_SIZE:
+                logger.info(
+                    "REDEEM skip %s: qty=%s below minimum %s",
+                    cid[:20],
+                    pos.quantity,
+                    _MIN_ORDER_SIZE,
+                )
+                continue
+            try:
+                trade = await self._portfolio.close_position(
+                    cid,
+                    token_id,
+                    _REDEEM_SELL_PRICE,
+                    pos.quantity,
+                    int(time.time()),
+                )
+                if trade is not None:
+                    redeemed += 1
+                    logger.info(
+                        "REDEEM SELL %s: qty=%s @ 0.99 order=%s",
+                        cid[:20],
+                        pos.quantity,
+                        trade.order_id,
+                    )
+            except Exception:
+                logger.warning("Redeem sell failed for %s", cid[:20], exc_info=True)
+        if redeemed > 0:
+            logger.info("AUTO-REDEEM: sold %d positions at 0.99", redeemed)
 
     async def _tick(self) -> None:
         """Execute one polling cycle across all tracked markets."""
@@ -458,9 +492,19 @@ class LiveTradingEngine:
             return
 
         max_qty = self._portfolio.max_quantity_for(buy_price)
-        quantity = max(Decimal(1), (max_qty * fraction).quantize(Decimal(1)))
+        quantity = max(_MIN_ORDER_SIZE, (max_qty * fraction).quantize(Decimal(1)))
 
         edge = estimated_prob - buy_price
+        logger.info(
+            "[tick %d] Placing order: %s %s qty=%s @ %.4f kelly=%.4f balance=$%.4f",
+            self._snapshots_processed,
+            outcome,
+            condition_id[:20],
+            quantity,
+            buy_price,
+            fraction,
+            self._portfolio.balance,
+        )
         trade = await self._portfolio.open_position(
             condition_id=condition_id,
             token_id=token_id,
@@ -493,43 +537,16 @@ class LiveTradingEngine:
             )
 
     async def _close_all_positions(self) -> None:
-        """Close all open positions before engine shutdown.
+        """Clear all position tracking before engine shutdown.
 
-        Attempt to sell all held tokens at the last known mark-to-market
-        price. Log each closure result.
+        For resolved 5-minute markets, Polymarket auto-redeems winning
+        tokens so no SELL orders are needed.  Just clear local tracking.
         """
-        for cid in list(self._portfolio.positions):
-            outcome = self._position_outcomes.get(cid, "Yes")
-            token_ids = self._token_ids.get(cid)
-            if token_ids is None:
-                logger.warning("No token ID for %s, cannot close", cid[:20])
-                continue
-
-            token_id = token_ids[0] if outcome == "Yes" else token_ids[1]
-            last_snap = self._history.get(cid)
-            if last_snap:
-                latest = last_snap[-1]
-                close_price = latest.yes_price if outcome == "Yes" else latest.no_price
-            else:
-                close_price = Decimal("0.50")
-
-            pos = self._portfolio.positions[cid]
-            trade = await self._portfolio.close_position(
-                cid,
-                token_id,
-                close_price,
-                pos.quantity,
-                int(time.time()),
-            )
-            if trade is not None:
-                logger.info(
-                    "SHUTDOWN CLOSE: %s @ %.4f order=%s filled=%s",
-                    cid[:20],
-                    close_price,
-                    trade.order_id,
-                    trade.filled,
-                )
-            self._position_outcomes.pop(cid, None)
+        open_count = len(self._portfolio.positions)
+        if open_count > 0:
+            self._portfolio.clear_positions()
+            self._position_outcomes.clear()
+            logger.info("SHUTDOWN: cleared %d positions", open_count)
 
     async def _build_result(self) -> LiveTradingResult:
         """Build the final result from the portfolio state.

@@ -103,11 +103,22 @@ class LivePortfolio:
 
         """
         if condition_id in self._positions:
+            logger.warning(
+                "Rejected %s: duplicate position already open",
+                condition_id[:20],
+            )
             return None
 
         cost = price * quantity
         max_allocation = self._balance * self._max_position_pct
         if cost > max_allocation or cost > self._balance:
+            logger.warning(
+                "Rejected %s: cost=$%.4f exceeds max_alloc=$%.4f or balance=$%.4f",
+                condition_id[:20],
+                cost,
+                max_allocation,
+                self._balance,
+            )
             return None
 
         order_type = "market" if self._use_market_orders else "limit"
@@ -121,8 +132,15 @@ class LivePortfolio:
 
         try:
             response = await self._client.place_order(request)
-        except PolymarketAPIError:
-            logger.exception("Failed to place %s order for %s", side.value, condition_id[:20])
+        except PolymarketAPIError as exc:
+            logger.exception(
+                "API error placing %s %s order for %s: %s (status=%s)",
+                order_type,
+                side.value,
+                condition_id[:20],
+                exc.msg,
+                exc.status_code,
+            )
             return None
 
         self._positions[condition_id] = Position(
@@ -193,8 +211,13 @@ class LivePortfolio:
 
         try:
             response = await self._client.place_order(request)
-        except PolymarketAPIError:
-            logger.exception("Failed to close position for %s", condition_id[:20])
+        except PolymarketAPIError as exc:
+            logger.exception(
+                "API error closing position for %s: %s (status=%s)",
+                condition_id[:20],
+                exc.msg,
+                exc.status_code,
+            )
             return None
 
         outcome = self._outcomes.pop(condition_id, "Yes")
@@ -217,6 +240,18 @@ class LivePortfolio:
         )
         self._trades.append(trade)
         return trade
+
+    def clear_positions(self) -> None:
+        """Remove all local position tracking.
+
+        Use when markets have resolved and Polymarket has auto-redeemed
+        winning tokens.  Does not place any orders — just clears internal
+        state so the engine can start fresh for the next market window.
+        """
+        self._positions.clear()
+        self._mark_prices.clear()
+        self._outcomes.clear()
+        self._token_ids.clear()
 
     def mark_to_market(self, condition_id: str, current_price: Decimal) -> None:
         """Update the mark-to-market price for an open position.
