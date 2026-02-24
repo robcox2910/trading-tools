@@ -37,6 +37,7 @@ _MIN_TOKENS = 2
 _MIN_ORDER_SIZE = Decimal(5)
 _FIVE_MINUTES = 300
 _DEFAULT_MAX_LOSS_PCT = Decimal("0.10")
+_REDEEM_SELL_PRICE = Decimal("0.99")
 
 
 class LiveTradingEngine:
@@ -244,20 +245,19 @@ class LiveTradingEngine:
         then clear all local position tracking and refresh the balance.
         """
         previous_markets = list(self._active_markets)
-        closed_count = len(self._portfolio.positions)
 
         if self._auto_redeem and previous_markets:
             await self._redeem_resolved(previous_markets)
 
-        if closed_count > 0:
+        remaining = len(self._portfolio.positions)
+        if remaining > 0:
             self._portfolio.clear_positions()
-            self._position_outcomes.clear()
-            await self._portfolio.refresh_balance()
-            logger.info(
-                "ROTATION: cleared %d positions, balance now $%.4f",
-                closed_count,
-                self._portfolio.balance,
-            )
+        self._position_outcomes.clear()
+        await self._portfolio.refresh_balance()
+        logger.info(
+            "ROTATION: balance now $%.4f",
+            self._portfolio.balance,
+        )
 
         try:
             discovered = await self._client.discover_series_markets(
@@ -286,7 +286,11 @@ class LiveTradingEngine:
         self._log_performance()
 
     async def _redeem_resolved(self, condition_ids: list[str]) -> None:
-        """Attempt to redeem winning positions for resolved markets.
+        """Sell winning tokens at 0.99 to redeem resolved positions via CLOB.
+
+        Place SELL orders at ``0.99`` for each open position, recovering
+        ~99% of the winning token value. This avoids the need for on-chain
+        ``redeemPositions`` calls (which require POL for gas).
 
         Log errors but do not raise — redemption failures should not
         prevent the engine from continuing to trade.
@@ -295,16 +299,43 @@ class LiveTradingEngine:
             condition_ids: Condition IDs from the previous market window.
 
         """
-        try:
-            redeemed = await self._client.redeem_positions(condition_ids)
-            if redeemed > 0:
+        positions = self._portfolio.positions
+        redeemed = 0
+        for cid in condition_ids:
+            if cid not in positions:
+                continue
+            pos = positions[cid]
+            token_id = self._portfolio.get_token_id(cid)
+            if token_id is None:
+                continue
+            if pos.quantity < _MIN_ORDER_SIZE:
                 logger.info(
-                    "AUTO-REDEEM: redeemed %d/%d positions",
-                    redeemed,
-                    len(condition_ids),
+                    "REDEEM skip %s: qty=%s below minimum %s",
+                    cid[:20],
+                    pos.quantity,
+                    _MIN_ORDER_SIZE,
                 )
-        except Exception:
-            logger.warning("Auto-redemption failed", exc_info=True)
+                continue
+            try:
+                trade = await self._portfolio.close_position(
+                    cid,
+                    token_id,
+                    _REDEEM_SELL_PRICE,
+                    pos.quantity,
+                    int(time.time()),
+                )
+                if trade is not None:
+                    redeemed += 1
+                    logger.info(
+                        "REDEEM SELL %s: qty=%s @ 0.99 order=%s",
+                        cid[:20],
+                        pos.quantity,
+                        trade.order_id,
+                    )
+            except Exception:
+                logger.warning("Redeem sell failed for %s", cid[:20], exc_info=True)
+        if redeemed > 0:
+            logger.info("AUTO-REDEEM: sold %d positions at 0.99", redeemed)
 
     async def _tick(self) -> None:
         """Execute one polling cycle across all tracked markets."""

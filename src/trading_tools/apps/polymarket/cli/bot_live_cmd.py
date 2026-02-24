@@ -158,8 +158,11 @@ def bot_live(  # noqa: PLR0913
     ] = False,
     auto_redeem: Annotated[  # noqa: FBT002
         bool,
-        typer.Option("--auto-redeem", help="Auto-redeem resolved positions (requires POL for gas)"),
-    ] = False,
+        typer.Option(
+            "--auto-redeem/--no-auto-redeem",
+            help="Sell winning tokens at 0.99 on rotation to recover USDC",
+        ),
+    ] = True,
     verbose: Annotated[  # noqa: FBT002
         bool, typer.Option("--verbose", "-v", help="Enable tick-by-tick logging")
     ] = False,
