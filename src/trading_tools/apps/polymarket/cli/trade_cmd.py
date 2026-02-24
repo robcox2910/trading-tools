@@ -43,12 +43,14 @@ def _build_authenticated_client() -> PolymarketClient:
     api_key = os.environ.get("POLYMARKET_API_KEY") or None
     api_secret = os.environ.get("POLYMARKET_API_SECRET") or None
     api_passphrase = os.environ.get("POLYMARKET_API_PASSPHRASE") or None
+    funder_address = os.environ.get("POLYMARKET_FUNDER_ADDRESS") or None
 
     return PolymarketClient(
         private_key=private_key,
         api_key=api_key,
         api_secret=api_secret,
         api_passphrase=api_passphrase,
+        funder_address=funder_address,
     )
 
 
@@ -322,3 +324,50 @@ async def _cancel(*, order_id: str) -> None:
 
     typer.echo(f"\nOrder cancelled: {order_id}")
     typer.echo(f"Result: {result}")
+
+
+def redeem(
+    condition_ids: Annotated[str, typer.Option(help="Comma-separated condition IDs to redeem")],
+    rpc_url: Annotated[
+        str, typer.Option(help="Polygon JSON-RPC endpoint")
+    ] = "https://rpc-mainnet.matic.quiknode.pro",
+) -> None:
+    """Redeem winning positions for resolved Polymarket markets.
+
+    Call ``redeemPositions`` on the CTF contract through the proxy wallet.
+    Require POL in the signing EOA for gas (< $0.01 per redemption).
+
+    Args:
+        condition_ids: Comma-separated market condition IDs.
+        rpc_url: Polygon JSON-RPC endpoint URL.
+
+    """
+    cids = [c.strip() for c in condition_ids.split(",") if c.strip()]
+    if not cids:
+        typer.echo("Error: No condition IDs provided.", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"\nRedeeming {len(cids)} position(s)...")
+    for cid in cids:
+        typer.echo(f"  {cid[:40]}...")
+
+    asyncio.run(_redeem(cids=cids, rpc_url=rpc_url))
+
+
+async def _redeem(*, cids: list[str], rpc_url: str) -> None:
+    """Redeem positions asynchronously.
+
+    Args:
+        cids: List of condition IDs to redeem.
+        rpc_url: Polygon JSON-RPC endpoint URL.
+
+    """
+    client = _build_authenticated_client()
+    try:
+        async with client:
+            count = await client.redeem_positions(cids, rpc_url=rpc_url)
+    except PolymarketAPIError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"\nRedeemed {count}/{len(cids)} positions successfully.")

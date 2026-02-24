@@ -54,12 +54,14 @@ def _build_authenticated_client() -> PolymarketClient:
     api_key = os.environ.get("POLYMARKET_API_KEY") or None
     api_secret = os.environ.get("POLYMARKET_API_SECRET") or None
     api_passphrase = os.environ.get("POLYMARKET_API_PASSPHRASE") or None
+    funder_address = os.environ.get("POLYMARKET_FUNDER_ADDRESS") or None
 
     return PolymarketClient(
         private_key=private_key,
         api_key=api_key,
         api_secret=api_secret,
         api_passphrase=api_passphrase,
+        funder_address=funder_address,
     )
 
 
@@ -154,6 +156,10 @@ def bot_live(  # noqa: PLR0913
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Required flag to enable live trading")
     ] = False,
+    auto_redeem: Annotated[  # noqa: FBT002
+        bool,
+        typer.Option("--auto-redeem", help="Auto-redeem resolved positions (requires POL for gas)"),
+    ] = False,
     verbose: Annotated[  # noqa: FBT002
         bool, typer.Option("--verbose", "-v", help="Enable tick-by-tick logging")
     ] = False,
@@ -191,6 +197,7 @@ def bot_live(  # noqa: PLR0913
             min_edge=min_edge,
             snipe_threshold=snipe_threshold,
             snipe_window=snipe_window,
+            auto_redeem=auto_redeem,
         )
     )
 
@@ -269,6 +276,7 @@ async def _bot_live(  # noqa: PLR0913
     min_edge: float,
     snipe_threshold: float,
     snipe_window: int,
+    auto_redeem: bool,
 ) -> None:
     """Run the live trading bot asynchronously.
 
@@ -289,6 +297,7 @@ async def _bot_live(  # noqa: PLR0913
         min_edge: Minimum edge for cross-market arb.
         snipe_threshold: Price threshold for late snipe strategy.
         snipe_window: Window in seconds before market end for sniping.
+        auto_redeem: Auto-redeem resolved positions on rotation.
 
     """
     market_ids = tuple(m.strip() for m in markets.split(",") if m.strip())
@@ -365,6 +374,7 @@ async def _bot_live(  # noqa: PLR0913
                 config,
                 max_loss_pct=Decimal(str(max_loss_pct)),
                 use_market_orders=market_orders,
+                auto_redeem=auto_redeem,
             )
             result = await engine.run(max_ticks=max_ticks)
     except PolymarketAPIError as exc:

@@ -115,17 +115,50 @@ class TestCreateAuthenticatedClobClient:
 
     def test_creates_level1_client_without_creds(self) -> None:
         """Create a Level 1 client when no API creds are provided."""
-        with patch("trading_tools.clients.polymarket._clob_adapter.ClobClient") as mock_cls:
+        with (
+            patch("trading_tools.clients.polymarket._clob_adapter.ClobClient") as mock_cls,
+            patch(
+                "trading_tools.clients.polymarket._clob_adapter.derive_funder_address",
+                return_value="0xFunderAddr",
+            ),
+        ):
             _clob_adapter.create_authenticated_clob_client(_HOST, _PRIVATE_KEY)
-        mock_cls.assert_called_once_with(_HOST, chain_id=137, key=_PRIVATE_KEY, signature_type=1)
+        mock_cls.assert_called_once_with(
+            _HOST,
+            chain_id=137,
+            key=_PRIVATE_KEY,
+            signature_type=1,
+            funder="0xFunderAddr",
+        )
 
     def test_creates_level2_client_with_creds(self) -> None:
         """Create a Level 2 client when API creds are provided."""
         creds = ("key", "secret", "passphrase")
-        with patch("trading_tools.clients.polymarket._clob_adapter.ClobClient") as mock_cls:
+        with (
+            patch("trading_tools.clients.polymarket._clob_adapter.ClobClient") as mock_cls,
+            patch(
+                "trading_tools.clients.polymarket._clob_adapter.derive_funder_address",
+                return_value="0xFunderAddr",
+            ),
+        ):
             _clob_adapter.create_authenticated_clob_client(_HOST, _PRIVATE_KEY, creds=creds)
         call_kwargs = mock_cls.call_args
         assert call_kwargs[1]["key"] == _PRIVATE_KEY
+        assert call_kwargs[1]["funder"] == "0xFunderAddr"
+
+    def test_explicit_funder_overrides_derived(self) -> None:
+        """Use explicit funder address instead of deriving from private key."""
+        with (
+            patch("trading_tools.clients.polymarket._clob_adapter.ClobClient") as mock_cls,
+            patch(
+                "trading_tools.clients.polymarket._clob_adapter.derive_funder_address",
+            ) as mock_derive,
+        ):
+            _clob_adapter.create_authenticated_clob_client(
+                _HOST, _PRIVATE_KEY, funder="0xProxyWallet"
+            )
+        mock_derive.assert_not_called()
+        assert mock_cls.call_args[1]["funder"] == "0xProxyWallet"
 
 
 class TestDeriveApiCreds:
