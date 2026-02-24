@@ -21,6 +21,7 @@ from trading_tools.clients.polymarket.models import (
     OrderBook,
     OrderLevel,
     OrderResponse,
+    RedeemablePosition,
 )
 from trading_tools.core.models import ZERO, Side
 
@@ -468,3 +469,153 @@ class TestLiveMarketRotation:
 
         perf_messages = [msg for msg in caplog.messages if "[PERF" in msg]
         assert len(perf_messages) == 1
+
+
+class TestAutoRedeem:
+    """Tests for auto-redeem of redeemable positions on rotation."""
+
+    @pytest.mark.asyncio
+    async def test_redeem_sells_redeemable_positions(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Verify auto-redeem places SELL orders for discovered positions."""
+        start_time = 1700000000
+        tick_time = start_time + 300
+
+        client = _mock_client()
+        client.discover_series_markets = AsyncMock(
+            return_value=[(_NEW_CONDITION_ID, "2026-02-22T12:10:00Z")],
+        )
+        client.get_redeemable_positions = AsyncMock(
+            return_value=[
+                RedeemablePosition(
+                    condition_id="0xresolved1",
+                    token_id="tok_resolved_1",
+                    outcome="Down",
+                    size=Decimal("10.0"),
+                    title="ETH Up or Down - Feb 24",
+                ),
+            ],
+        )
+
+        config = BotConfig(
+            poll_interval_seconds=0,
+            max_position_pct=Decimal("0.1"),
+            kelly_fraction=Decimal("0.25"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+            series_slugs=("btc-updown-5m",),
+        )
+
+        time_calls = iter([float(start_time), float(tick_time), float(tick_time)])
+
+        with patch("trading_tools.apps.polymarket_bot.live_engine.time") as mock_time:
+            mock_time.time.side_effect = time_calls
+
+            engine = LiveTradingEngine(
+                client,
+                strategy=PMMeanReversionStrategy(),
+                config=config,
+                auto_redeem=True,
+            )
+            engine._current_window = (start_time // 300) * 300
+
+            with caplog.at_level(
+                logging.INFO,
+                logger="trading_tools.apps.polymarket_bot.live_engine",
+            ):
+                await engine._tick()
+
+        client.get_redeemable_positions.assert_called_once()
+        client.place_order.assert_called()
+        assert any("REDEEM SELL" in msg for msg in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_redeem_skips_small_positions(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Verify auto-redeem skips positions below minimum order size."""
+        start_time = 1700000000
+        tick_time = start_time + 300
+
+        client = _mock_client()
+        client.discover_series_markets = AsyncMock(
+            return_value=[(_NEW_CONDITION_ID, "2026-02-22T12:10:00Z")],
+        )
+        client.get_redeemable_positions = AsyncMock(
+            return_value=[
+                RedeemablePosition(
+                    condition_id="0xsmall",
+                    token_id="tok_small",
+                    outcome="Up",
+                    size=Decimal("2.0"),
+                    title="Small position",
+                ),
+            ],
+        )
+
+        config = BotConfig(
+            poll_interval_seconds=0,
+            max_position_pct=Decimal("0.1"),
+            kelly_fraction=Decimal("0.25"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+            series_slugs=("btc-updown-5m",),
+        )
+
+        time_calls = iter([float(start_time), float(tick_time), float(tick_time)])
+
+        with patch("trading_tools.apps.polymarket_bot.live_engine.time") as mock_time:
+            mock_time.time.side_effect = time_calls
+
+            engine = LiveTradingEngine(
+                client,
+                strategy=PMMeanReversionStrategy(),
+                config=config,
+                auto_redeem=True,
+            )
+            engine._current_window = (start_time // 300) * 300
+
+            with caplog.at_level(
+                logging.INFO,
+                logger="trading_tools.apps.polymarket_bot.live_engine",
+            ):
+                await engine._tick()
+
+        assert any("REDEEM skip" in msg for msg in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_redeem_disabled_skips_discovery(self) -> None:
+        """Verify auto-redeem is skipped when disabled."""
+        start_time = 1700000000
+        tick_time = start_time + 300
+
+        client = _mock_client()
+        client.discover_series_markets = AsyncMock(
+            return_value=[(_NEW_CONDITION_ID, "2026-02-22T12:10:00Z")],
+        )
+        client.get_redeemable_positions = AsyncMock()
+
+        config = BotConfig(
+            poll_interval_seconds=0,
+            max_position_pct=Decimal("0.1"),
+            kelly_fraction=Decimal("0.25"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+            series_slugs=("btc-updown-5m",),
+        )
+
+        time_calls = iter([float(start_time), float(tick_time), float(tick_time)])
+
+        with patch("trading_tools.apps.polymarket_bot.live_engine.time") as mock_time:
+            mock_time.time.side_effect = time_calls
+
+            engine = LiveTradingEngine(
+                client,
+                strategy=PMMeanReversionStrategy(),
+                config=config,
+                auto_redeem=False,
+            )
+            engine._current_window = (start_time // 300) * 300
+
+            await engine._tick()
+
+        client.get_redeemable_positions.assert_not_called()

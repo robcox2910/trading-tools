@@ -3,7 +3,7 @@
 import json
 from decimal import Decimal
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -18,6 +18,7 @@ from trading_tools.clients.polymarket.models import (
     OrderBook,
     OrderRequest,
     OrderResponse,
+    RedeemablePosition,
 )
 
 _PRICE_YES = "0.72"
@@ -631,3 +632,107 @@ class TestAuthenticatedPolymarketClient:
         """Raise PolymarketAPIError when deriving creds without auth."""
         with pytest.raises(PolymarketAPIError, match="Authentication required"):
             await readonly_client.derive_api_creds()
+
+
+_FUNDER_ADDRESS = "0x21A4820a9f89cD05b715d3B10fBbBDd748d4c85D"
+_REDEEMABLE_COUNT = 2
+
+
+class TestGetRedeemablePositions:
+    """Test suite for get_redeemable_positions Data API integration."""
+
+    @pytest.fixture
+    def client_with_funder(self) -> PolymarketClient:
+        """Create a PolymarketClient with a funder address configured."""
+        with patch("trading_tools.clients.polymarket.client._clob_adapter.create_clob_client"):
+            return PolymarketClient(funder_address=_FUNDER_ADDRESS)
+
+    @pytest.mark.asyncio
+    async def test_returns_redeemable_positions(self, client_with_funder: PolymarketClient) -> None:
+        """Return typed RedeemablePosition list from the Data API response."""
+        raw_response = [
+            {
+                "conditionId": "0xabc123",
+                "asset": "token_id_1",
+                "outcome": "Down",
+                "size": 6.0643,
+                "title": "ETH Up or Down - Feb 24",
+                "redeemable": True,
+            },
+            {
+                "conditionId": "0xdef456",
+                "asset": "token_id_2",
+                "outcome": "Up",
+                "size": 10.5,
+                "title": "BTC Up or Down - Feb 24",
+                "redeemable": True,
+            },
+        ]
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = raw_response
+
+        with patch.object(
+            client_with_funder._data_client,
+            "get",
+            new=AsyncMock(return_value=mock_response),
+        ):
+            result = await client_with_funder.get_redeemable_positions()
+
+        assert len(result) == _REDEEMABLE_COUNT
+        assert all(isinstance(p, RedeemablePosition) for p in result)
+        assert result[0].condition_id == "0xabc123"
+        assert result[0].token_id == "token_id_1"
+        assert result[0].outcome == "Down"
+        assert result[0].size == Decimal("6.0643")
+
+    @pytest.mark.asyncio
+    async def test_filters_zero_size_positions(self, client_with_funder: PolymarketClient) -> None:
+        """Filter out positions with zero size."""
+        raw_response = [
+            {
+                "conditionId": "0xabc123",
+                "asset": "token_id_1",
+                "outcome": "Down",
+                "size": 0,
+                "title": "Empty position",
+                "redeemable": True,
+            },
+        ]
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = raw_response
+
+        with patch.object(
+            client_with_funder._data_client,
+            "get",
+            new=AsyncMock(return_value=mock_response),
+        ):
+            result = await client_with_funder.get_redeemable_positions()
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_raises_without_funder_address(self) -> None:
+        """Raise PolymarketAPIError when funder address is not set."""
+        with patch("trading_tools.clients.polymarket.client._clob_adapter.create_clob_client"):
+            client = PolymarketClient()
+
+        with pytest.raises(PolymarketAPIError, match="Funder address required"):
+            await client.get_redeemable_positions()
+
+    @pytest.mark.asyncio
+    async def test_raises_on_api_error(self, client_with_funder: PolymarketClient) -> None:
+        """Raise PolymarketAPIError on Data API HTTP error."""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+
+        with (
+            patch.object(
+                client_with_funder._data_client,
+                "get",
+                new=AsyncMock(return_value=mock_response),
+            ),
+            pytest.raises(PolymarketAPIError, match="Data API error"),
+        ):
+            await client_with_funder.get_redeemable_positions()

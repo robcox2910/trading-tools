@@ -326,48 +326,88 @@ async def _cancel(*, order_id: str) -> None:
     typer.echo(f"Result: {result}")
 
 
-def redeem(
-    condition_ids: Annotated[str, typer.Option(help="Comma-separated condition IDs to redeem")],
-    rpc_url: Annotated[
-        str, typer.Option(help="Polygon JSON-RPC endpoint")
-    ] = "https://rpc-mainnet.matic.quiknode.pro",
-) -> None:
-    """Redeem winning positions for resolved Polymarket markets.
+_REDEEM_SELL_PRICE = Decimal("0.99")
+_MIN_REDEEM_SIZE = Decimal(5)
 
-    Call ``redeemPositions`` on the CTF contract through the proxy wallet.
-    Require POL in the signing EOA for gas (< $0.01 per redemption).
+
+def redeem(
+    no_confirm: Annotated[  # noqa: FBT002
+        bool, typer.Option("--no-confirm", help="Skip confirmation prompt")
+    ] = False,
+) -> None:
+    """Discover and redeem all winning positions via CLOB SELL at 0.99.
+
+    Query the Polymarket Data API for redeemable positions held by the
+    proxy wallet, then sell each at 0.99 to recover USDC collateral.
+    Require ``POLYMARKET_FUNDER_ADDRESS`` to discover positions.
 
     Args:
-        condition_ids: Comma-separated market condition IDs.
-        rpc_url: Polygon JSON-RPC endpoint URL.
+        no_confirm: Skip the confirmation prompt.
 
     """
-    cids = [c.strip() for c in condition_ids.split(",") if c.strip()]
-    if not cids:
-        typer.echo("Error: No condition IDs provided.", err=True)
-        raise typer.Exit(code=1)
-
-    typer.echo(f"\nRedeeming {len(cids)} position(s)...")
-    for cid in cids:
-        typer.echo(f"  {cid[:40]}...")
-
-    asyncio.run(_redeem(cids=cids, rpc_url=rpc_url))
+    asyncio.run(_redeem(confirm=not no_confirm))
 
 
-async def _redeem(*, cids: list[str], rpc_url: str) -> None:
-    """Redeem positions asynchronously.
+async def _redeem(*, confirm: bool) -> None:
+    """Discover and redeem positions asynchronously.
 
     Args:
-        cids: List of condition IDs to redeem.
-        rpc_url: Polygon JSON-RPC endpoint URL.
+        confirm: Whether to prompt for confirmation before selling.
 
     """
     client = _build_authenticated_client()
     try:
         async with client:
-            count = await client.redeem_positions(cids, rpc_url=rpc_url)
+            positions = await client.get_redeemable_positions()
+
+            if not positions:
+                typer.echo("\nNo redeemable positions found.")
+                return
+
+            typer.echo(f"\nFound {len(positions)} redeemable position(s):")
+            for pos in positions:
+                typer.echo(f"  {pos.title} ({pos.outcome}): {pos.size} tokens")
+
+            # Filter out positions below minimum order size
+            eligible = [p for p in positions if p.size >= _MIN_REDEEM_SIZE]
+            skipped = len(positions) - len(eligible)
+            if skipped > 0:
+                typer.echo(
+                    f"\n  Skipping {skipped} position(s) below minimum size ({_MIN_REDEEM_SIZE})"
+                )
+
+            if not eligible:
+                typer.echo("\nNo positions large enough to redeem.")
+                return
+
+            typer.echo(f"\nWill sell {len(eligible)} position(s) at {_REDEEM_SELL_PRICE}:")
+            for pos in eligible:
+                typer.echo(f"  SELL {pos.size} {pos.outcome} @ {_REDEEM_SELL_PRICE} — {pos.title}")
+
+            if confirm:
+                proceed = typer.confirm("\nProceed with redemption?")
+                if not proceed:
+                    typer.echo("Cancelled.")
+                    raise typer.Exit(code=0)
+
+            redeemed = 0
+            for pos in eligible:
+                request = OrderRequest(
+                    token_id=pos.token_id,
+                    side=_SIDE_SELL,
+                    price=_REDEEM_SELL_PRICE,
+                    size=pos.size,
+                    order_type="limit",
+                )
+                result = await client.place_order(request)
+                redeemed += 1
+                typer.echo(
+                    f"  Sold {pos.outcome} @ {_REDEEM_SELL_PRICE}: "
+                    f"order={result.order_id[:20]}... status={result.status}"
+                )
+
+            typer.echo(f"\nRedeemed {redeemed}/{len(eligible)} positions.")
+
     except PolymarketAPIError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
-
-    typer.echo(f"\nRedeemed {count}/{len(cids)} positions successfully.")

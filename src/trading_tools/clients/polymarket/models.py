@@ -159,3 +159,27 @@ class Balance:
     asset_type: str
     balance: Decimal
     allowance: Decimal
+
+
+@dataclass(frozen=True)
+class RedeemablePosition:
+    """A resolved position that can be redeemed for USDC collateral.
+
+    Represent a winning conditional token position discovered via the
+    Polymarket Data API.  Include the token ID and size needed to place
+    a SELL order on the CLOB to recover value.
+
+    Args:
+        condition_id: Market condition identifier.
+        token_id: CLOB token identifier (the ``asset`` field from the Data API).
+        outcome: Outcome label (e.g. ``"Up"``, ``"Down"``, ``"Yes"``, ``"No"``).
+        size: Number of tokens held.
+        title: Human-readable market title.
+
+    """
+
+    condition_id: str
+    token_id: str
+    outcome: str
+    size: Decimal
+    title: str
