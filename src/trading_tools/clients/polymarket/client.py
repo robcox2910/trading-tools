@@ -26,6 +26,7 @@ from trading_tools.clients.polymarket.models import (
 
 _ZERO = Decimal(0)
 _TWO = Decimal(2)
+_USDC_DECIMALS = Decimal("1e6")
 
 
 class PolymarketClient:
@@ -319,10 +320,12 @@ class PolymarketClient:
         self._require_auth()
         async with self._clob_lock:
             raw = await asyncio.to_thread(_clob_adapter.get_balance, self._clob_client, asset_type)
+        raw_balance = _safe_decimal(raw.get("balance"))
+        raw_allowance = _safe_decimal(raw.get("allowance"))
         return Balance(
             asset_type=asset_type,
-            balance=_safe_decimal(raw.get("balance")),
-            allowance=_safe_decimal(raw.get("allowance")),
+            balance=raw_balance / _USDC_DECIMALS,
+            allowance=raw_allowance / _USDC_DECIMALS,
         )
 
     async def cancel_order(self, order_id: str) -> dict[str, Any]:
