@@ -447,10 +447,11 @@ class PolymarketClient:
             rpc_url: Polygon JSON-RPC endpoint URL.
 
         Returns:
-            Number of successfully redeemed positions.
+            Number of successfully redeemed positions.  Individual failures
+            are logged and skipped so remaining positions are still attempted.
 
         Raises:
-            PolymarketAPIError: When not authenticated or redemption fails.
+            PolymarketAPIError: When not authenticated or the RPC is unreachable.
 
         """
         self._require_auth()
