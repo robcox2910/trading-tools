@@ -226,8 +226,8 @@ class TestLiveTradingEngine:
         assert len(buy_trades) > 0
 
     @pytest.mark.asyncio
-    async def test_sell_signal_closes_position(self) -> None:
-        """Verify a SELL signal closes an existing position."""
+    async def test_opened_position_stops_polling(self) -> None:
+        """Verify that once a position is opened, the market is no longer polled."""
         client = _mock_client()
         prices = [
             "0.60",
@@ -236,13 +236,9 @@ class TestLiveTradingEngine:
             "0.60",
             "0.60",
             "0.60",
-            "0.40",  # triggers BUY
+            "0.40",  # triggers BUY on tick 7
+            "0.60",  # should never be fetched
             "0.60",
-            "0.60",
-            "0.60",
-            "0.60",
-            "0.60",
-            "0.80",  # triggers SELL
         ]
         call_count = 0
 
@@ -262,8 +258,14 @@ class TestLiveTradingEngine:
 
         result = await engine.run(max_ticks=len(prices))
 
-        sell_trades = [t for t in result.trades if t.side == Side.SELL]
-        assert len(sell_trades) > 0
+        buy_trades = [t for t in result.trades if t.side == Side.BUY]
+        assert len(buy_trades) > 0
+        # After the BUY on tick 7, ticks 8-9 should not fetch the market
+        buy_tick = 7
+        assert call_count < len(prices), (
+            f"Expected fewer than {len(prices)} fetches, got {call_count} "
+            f"(market should stop being polled after BUY on tick {buy_tick})"
+        )
 
     @pytest.mark.asyncio
     async def test_loss_limit_stops_engine(self) -> None:
