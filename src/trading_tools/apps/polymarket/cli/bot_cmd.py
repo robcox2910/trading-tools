@@ -233,6 +233,7 @@ async def _bot(  # noqa: PLR0913
 
     config = BotConfig(
         poll_interval_seconds=poll_interval,
+        snipe_window_seconds=snipe_window,
         initial_capital=Decimal(str(capital)),
         max_position_pct=Decimal(str(max_position_pct)),
         kelly_fraction=Decimal(str(kelly_frac)),
