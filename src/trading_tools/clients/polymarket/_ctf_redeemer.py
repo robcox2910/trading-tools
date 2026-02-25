@@ -147,7 +147,7 @@ def redeem_positions(
     )
 
     receipts: list[TxReceipt] = []
-    nonce = w3.eth.get_transaction_count(account.address)
+    nonce = w3.eth.get_transaction_count(account.address, "pending")
 
     for cid in condition_ids:
         redeem_data = _encode_redeem_calldata(cid)
