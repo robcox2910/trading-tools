@@ -14,6 +14,7 @@ import logging
 import signal
 import time
 from collections import deque
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 _MIN_TOKENS = 2
 _MIN_ORDER_SIZE = Decimal(5)
 _FIVE_MINUTES = 300
+_SLEEP_BUFFER_SECONDS = 5
 _DEFAULT_MAX_LOSS_PCT = Decimal("0.10")
 
 
@@ -144,7 +146,8 @@ class LiveTradingEngine:
             tick_count += 1
             if max_ticks is not None and tick_count >= max_ticks:
                 break
-            await asyncio.sleep(self._config.poll_interval_seconds)
+            sleep_seconds = self._compute_sleep()
+            await asyncio.sleep(sleep_seconds)
 
         await self._close_all_positions()
         return await self._build_result()
@@ -164,6 +167,52 @@ class LiveTradingEngine:
             return False
         equity = self._portfolio.total_equity
         return equity / self._initial_balance < (Decimal(1) - self._max_loss_pct)
+
+    def _compute_sleep(self) -> float:
+        """Compute seconds to sleep before the next tick.
+
+        When end-time overrides are available, sleep until the snipe window
+        opens (minus a small buffer) instead of polling at the default
+        interval.  Inside the snipe window, fast-poll at
+        ``snipe_poll_seconds``.  Fall back to ``poll_interval_seconds``
+        when no end times are configured.
+
+        Returns:
+            Number of seconds to sleep before the next polling cycle.
+
+        """
+        if not self._end_time_overrides:
+            return float(self._config.poll_interval_seconds)
+
+        now = time.time()
+        earliest_end: float | None = None
+        for end_iso in self._end_time_overrides.values():
+            try:
+                end_dt = datetime.fromisoformat(end_iso)
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=UTC)
+                end_ts = end_dt.timestamp()
+            except (ValueError, OSError):
+                continue
+            if earliest_end is None or end_ts < earliest_end:
+                earliest_end = end_ts
+
+        if earliest_end is None:
+            return float(self._config.poll_interval_seconds)
+
+        seconds_remaining = earliest_end - now
+        snipe_window = self._config.snipe_window_seconds
+
+        if seconds_remaining > snipe_window + _SLEEP_BUFFER_SECONDS:
+            sleep = seconds_remaining - snipe_window - _SLEEP_BUFFER_SECONDS
+            logger.info(
+                "Sleeping %.0fs until snipe window (%.0fs remaining)",
+                sleep,
+                seconds_remaining,
+            )
+            return sleep
+
+        return float(self._config.snipe_poll_seconds)
 
     def _log_performance(self) -> None:
         """Log performance metrics at market rotation boundaries.

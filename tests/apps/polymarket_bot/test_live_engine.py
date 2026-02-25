@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import time
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
@@ -723,3 +725,148 @@ class TestAutoRedeem:
         client.get_redeemable_positions.assert_not_called()
         assert any("still in progress" in msg for msg in caplog.messages)
         engine._redeem_task.cancel()
+
+
+class TestComputeSleep:
+    """Tests for adaptive sleep timing via _compute_sleep()."""
+
+    def test_returns_poll_interval_without_end_times(self) -> None:
+        """Verify fallback to poll_interval_seconds when no end times are set."""
+        poll_interval = 30
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy()
+        config = BotConfig(poll_interval_seconds=poll_interval, markets=(_CONDITION_ID,))
+        engine = LiveTradingEngine(client, strategy, config)
+
+        result = engine._compute_sleep()
+
+        assert result == float(poll_interval)
+
+    def test_returns_large_sleep_far_from_window(self) -> None:
+        """Verify long sleep when market end is far away."""
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy()
+        snipe_window = 60
+        config = BotConfig(
+            poll_interval_seconds=30,
+            snipe_window_seconds=snipe_window,
+            markets=(_CONDITION_ID,),
+            market_end_times=((_CONDITION_ID, "2026-12-31T00:00:00Z"),),
+        )
+        engine = LiveTradingEngine(client, strategy, config)
+
+        result = engine._compute_sleep()
+
+        # Should be much larger than snipe_poll_seconds
+        assert result > snipe_window
+
+    def test_returns_snipe_poll_inside_window(self) -> None:
+        """Verify fast polling when inside the snipe window."""
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy()
+        snipe_poll = 1
+        snipe_window = 60
+        # Set end time to 30 seconds from now (inside snipe window)
+        now = time.time()
+        end_time = now + 30
+        end_iso = datetime.fromtimestamp(end_time, tz=UTC).isoformat()
+
+        config = BotConfig(
+            poll_interval_seconds=30,
+            snipe_poll_seconds=snipe_poll,
+            snipe_window_seconds=snipe_window,
+            markets=(_CONDITION_ID,),
+            market_end_times=((_CONDITION_ID, end_iso),),
+        )
+        engine = LiveTradingEngine(client, strategy, config)
+
+        result = engine._compute_sleep()
+
+        assert result == float(snipe_poll)
+
+    def test_returns_snipe_poll_at_buffer_boundary(self) -> None:
+        """Verify fast polling when exactly at the buffer boundary."""
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy()
+        snipe_window = 60
+        buffer = 5  # _SLEEP_BUFFER_SECONDS
+        now = time.time()
+        # Set end time exactly at snipe_window + buffer from now
+        end_time = now + snipe_window + buffer
+        end_iso = datetime.fromtimestamp(end_time, tz=UTC).isoformat()
+
+        config = BotConfig(
+            poll_interval_seconds=30,
+            snipe_window_seconds=snipe_window,
+            markets=(_CONDITION_ID,),
+            market_end_times=((_CONDITION_ID, end_iso),),
+        )
+        engine = LiveTradingEngine(client, strategy, config)
+
+        result = engine._compute_sleep()
+
+        assert result == float(config.snipe_poll_seconds)
+
+    def test_uses_earliest_end_time(self) -> None:
+        """Verify _compute_sleep uses the earliest market end time."""
+        second_cid = "cond_second_market"
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy()
+        now = time.time()
+        # One market ends in 20s (inside window), one in 200s (outside)
+        early_iso = datetime.fromtimestamp(now + 20, tz=UTC).isoformat()
+        late_iso = datetime.fromtimestamp(now + 200, tz=UTC).isoformat()
+
+        config = BotConfig(
+            poll_interval_seconds=30,
+            snipe_window_seconds=60,
+            markets=(_CONDITION_ID, second_cid),
+            market_end_times=((_CONDITION_ID, late_iso), (second_cid, early_iso)),
+        )
+        engine = LiveTradingEngine(client, strategy, config)
+
+        result = engine._compute_sleep()
+
+        # Earliest end is 20s away, inside snipe window → fast poll
+        assert result == float(config.snipe_poll_seconds)
+
+    def test_invalid_end_time_falls_back_to_poll_interval(self) -> None:
+        """Verify invalid ISO end times fall back to poll_interval_seconds."""
+        poll_interval = 30
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy()
+        config = BotConfig(
+            poll_interval_seconds=poll_interval,
+            markets=(_CONDITION_ID,),
+            market_end_times=((_CONDITION_ID, "not-a-date"),),
+        )
+        engine = LiveTradingEngine(client, strategy, config)
+
+        result = engine._compute_sleep()
+
+        assert result == float(poll_interval)
+
+
+class TestAdaptivePollingIntegration:
+    """Integration test verifying adaptive polling in the run loop."""
+
+    @pytest.mark.asyncio
+    async def test_run_uses_compute_sleep(self) -> None:
+        """Verify run() calls _compute_sleep() instead of fixed interval."""
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy(period=3, z_threshold=Decimal("1.5"))
+        end_iso = datetime.fromtimestamp(time.time() + 20, tz=UTC).isoformat()
+        config = BotConfig(
+            poll_interval_seconds=30,
+            snipe_poll_seconds=1,
+            snipe_window_seconds=60,
+            markets=(_CONDITION_ID,),
+            market_end_times=((_CONDITION_ID, end_iso),),
+        )
+        engine = LiveTradingEngine(client, strategy, config)
+
+        with patch.object(engine, "_compute_sleep", return_value=0) as mock_sleep:
+            await engine.run(max_ticks=2)
+
+        # _compute_sleep is called once between ticks (not after the last tick)
+        assert mock_sleep.call_count == 1

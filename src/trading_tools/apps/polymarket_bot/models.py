@@ -16,6 +16,8 @@ _DEFAULT_INITIAL_CAPITAL = Decimal(1000)
 _DEFAULT_MAX_POSITION_PCT = Decimal("0.1")
 _DEFAULT_KELLY_FRACTION = Decimal("0.25")
 _DEFAULT_POLL_INTERVAL = 30
+_DEFAULT_SNIPE_POLL_INTERVAL = 1
+_DEFAULT_SNIPE_WINDOW = 60
 _DEFAULT_MAX_HISTORY = 500
 
 
@@ -73,6 +75,10 @@ class BotConfig:
 
     Args:
         poll_interval_seconds: Seconds between market data polls.
+        snipe_poll_seconds: Seconds between polls inside the snipe window.
+        snipe_window_seconds: Seconds before market end that define the
+            snipe window. Outside this window the engine sleeps; inside it
+            the engine fast-polls at ``snipe_poll_seconds``.
         initial_capital: Starting virtual capital in USD.
         max_position_pct: Maximum fraction of capital per market (0-1).
         kelly_fraction: Fractional Kelly multiplier (e.g. 0.25 = quarter-Kelly).
@@ -87,6 +93,8 @@ class BotConfig:
     """
 
     poll_interval_seconds: int = _DEFAULT_POLL_INTERVAL
+    snipe_poll_seconds: int = _DEFAULT_SNIPE_POLL_INTERVAL
+    snipe_window_seconds: int = _DEFAULT_SNIPE_WINDOW
     initial_capital: Decimal = _DEFAULT_INITIAL_CAPITAL
     max_position_pct: Decimal = _DEFAULT_MAX_POSITION_PCT
     kelly_fraction: Decimal = _DEFAULT_KELLY_FRACTION

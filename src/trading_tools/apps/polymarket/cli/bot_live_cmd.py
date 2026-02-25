@@ -349,6 +349,7 @@ async def _bot_live(  # noqa: PLR0913
 
     config = BotConfig(
         poll_interval_seconds=poll_interval,
+        snipe_window_seconds=snipe_window,
         max_position_pct=Decimal(str(max_position_pct)),
         kelly_fraction=Decimal(str(kelly_frac)),
         markets=market_ids,
