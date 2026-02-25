@@ -408,6 +408,9 @@ class LiveTradingEngine:
         await self._portfolio.refresh_balance()
 
         for condition_id in self._active_markets:
+            if condition_id in self._position_outcomes:
+                continue
+
             snapshot = await self._fetch_snapshot(condition_id)
             if snapshot is None:
                 continue
