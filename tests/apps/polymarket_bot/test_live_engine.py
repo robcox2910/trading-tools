@@ -1,5 +1,6 @@
 """Tests for LiveTradingEngine async polling loop."""
 
+import asyncio
 import logging
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
@@ -524,6 +525,9 @@ class TestAutoRedeem:
                 logger="trading_tools.apps.polymarket_bot.live_engine",
             ):
                 await engine._tick()
+                # Let the background redeem task complete
+                assert engine._redeem_task is not None
+                await engine._redeem_task
 
         client.get_redeemable_positions.assert_called_once()
         client.redeem_positions.assert_called_once_with(["0xresolved1"])
@@ -579,6 +583,8 @@ class TestAutoRedeem:
                 logger="trading_tools.apps.polymarket_bot.live_engine",
             ):
                 await engine._tick()
+                # No background task should be created for undersized positions
+                assert engine._redeem_task is None
 
         assert any("REDEEM skip" in msg for msg in caplog.messages)
         client.redeem_positions.assert_not_called()
@@ -673,6 +679,47 @@ class TestAutoRedeem:
                 logger="trading_tools.apps.polymarket_bot.live_engine",
             ):
                 await engine._tick()
+                # Let the background redeem task complete
+                assert engine._redeem_task is not None
+                await engine._redeem_task
 
         client.redeem_positions.assert_called_once_with(["0xfailing"])
         assert any("CTF redemption failed" in msg for msg in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_redeem_skips_when_previous_still_running(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Verify auto-redeem skips if a previous redemption task is in progress."""
+        client = _mock_client()
+        client.get_redeemable_positions = AsyncMock(
+            return_value=[
+                RedeemablePosition(
+                    condition_id="0xpending",
+                    token_id="tok_pending",
+                    outcome="Up",
+                    size=Decimal("10.0"),
+                    title="Pending redemption",
+                ),
+            ],
+        )
+
+        config = _make_config()
+        engine = LiveTradingEngine(
+            client,
+            strategy=PMMeanReversionStrategy(),
+            config=config,
+            auto_redeem=True,
+        )
+        # Simulate a still-running redeem task
+        engine._redeem_task = asyncio.create_task(asyncio.sleep(10))
+
+        with caplog.at_level(
+            logging.INFO,
+            logger="trading_tools.apps.polymarket_bot.live_engine",
+        ):
+            await engine._redeem_resolved()
+
+        client.get_redeemable_positions.assert_not_called()
+        assert any("still in progress" in msg for msg in caplog.messages)
+        engine._redeem_task.cancel()

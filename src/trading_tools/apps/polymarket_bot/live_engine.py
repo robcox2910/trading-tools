@@ -106,6 +106,7 @@ class LiveTradingEngine:
         self._current_window: int = (now // _FIVE_MINUTES) * _FIVE_MINUTES
         self._initial_balance = ZERO
         self._shutdown = False
+        self._redeem_task: asyncio.Task[None] | None = None
 
     async def run(self, *, max_ticks: int | None = None) -> LiveTradingResult:
         """Execute the polling loop until stopped, loss limit hit, or max_ticks reached.
@@ -283,17 +284,22 @@ class LiveTradingEngine:
         self._log_performance()
 
     async def _redeem_resolved(self) -> None:
-        """Redeem winning positions on-chain via the CTF contract.
+        """Discover redeemable positions and kick off background CTF redemption.
 
         Query the Polymarket Data API for all redeemable positions held by
         the proxy wallet, extract condition IDs (skipping positions below
-        the minimum order size), and call ``client.redeem_positions()`` for
-        on-chain CTF redemption at $1.00 face value.
+        the minimum order size), and spawn a background task to call
+        ``client.redeem_positions()`` for on-chain CTF redemption at $1.00
+        face value.
 
-        Require POL in the signing EOA for gas.  Log errors but do not
-        raise — redemption failures should not prevent the engine from
-        continuing to trade.
+        The on-chain call runs in the background so the trading loop is not
+        blocked by slow Polygon transactions.  Require POL in the signing
+        EOA for gas.
         """
+        if self._redeem_task is not None and not self._redeem_task.done():
+            logger.info("AUTO-REDEEM: previous redemption still in progress, skipping")
+            return
+
         try:
             redeemable = await self._client.get_redeemable_positions()
         except Exception:
@@ -319,6 +325,18 @@ class LiveTradingEngine:
         if not condition_ids:
             return
 
+        self._redeem_task = asyncio.create_task(self._redeem_on_chain(condition_ids))
+
+    async def _redeem_on_chain(self, condition_ids: list[str]) -> None:
+        """Execute on-chain CTF redemption in the background.
+
+        Log results when complete.  Errors are caught and logged so they
+        do not propagate to the main trading loop.
+
+        Args:
+            condition_ids: Resolved market condition IDs to redeem.
+
+        """
         try:
             redeemed = await self._client.redeem_positions(condition_ids)
             logger.info(
