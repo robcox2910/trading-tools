@@ -8,6 +8,7 @@ a single async interface.  Synchronous CLOB calls are wrapped in
 import asyncio
 import json
 import logging
+import os
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -434,7 +435,7 @@ class PolymarketClient:
     async def redeem_positions(
         self,
         condition_ids: list[str],
-        rpc_url: str = "https://rpc-mainnet.matic.quiknode.pro",
+        rpc_url: str = "",
     ) -> int:
         """Redeem winning positions for resolved markets.
 
@@ -444,7 +445,9 @@ class PolymarketClient:
 
         Args:
             condition_ids: List of resolved market condition IDs to redeem.
-            rpc_url: Polygon JSON-RPC endpoint URL.
+            rpc_url: Polygon JSON-RPC endpoint URL.  Falls back to the
+                ``POLYGON_RPC_URL`` environment variable, then the public
+                QuikNode endpoint.
 
         Returns:
             Number of successfully redeemed positions.  Individual failures
@@ -457,9 +460,12 @@ class PolymarketClient:
         self._require_auth()
         if not self._private_key or not condition_ids:
             return 0
+        resolved_rpc = rpc_url or os.environ.get(
+            "POLYGON_RPC_URL", "https://rpc-mainnet.matic.quiknode.pro"
+        )
         receipts = await asyncio.to_thread(
             _ctf_redeemer.redeem_positions,
-            rpc_url,
+            resolved_rpc,
             self._private_key,
             condition_ids,
         )
