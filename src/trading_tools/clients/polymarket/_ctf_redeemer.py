@@ -14,7 +14,7 @@ import logging
 from typing import Any
 
 from web3 import Web3
-from web3.types import Nonce, TxParams, TxReceipt
+from web3.types import Nonce, TxParams, TxReceipt, Wei
 
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 
@@ -69,8 +69,8 @@ _FACTORY_PROXY_ABI: list[dict[str, Any]] = [
 
 _CALL_TYPE_CODE = 1  # CALL (not DELEGATECALL)
 _DEFAULT_GAS = 300_000
-_DEFAULT_GAS_PRICE_GWEI = 50
 _TX_RECEIPT_TIMEOUT = 120
+_GAS_PRICE_MULTIPLIER = 1.25  # 25% above estimated to ensure inclusion
 
 
 def _encode_redeem_calldata(condition_id: str) -> bytes:
@@ -105,7 +105,6 @@ def redeem_positions(
     condition_ids: list[str],
     *,
     gas: int = _DEFAULT_GAS,
-    gas_price_gwei: int = _DEFAULT_GAS_PRICE_GWEI,
 ) -> list[TxReceipt]:
     """Redeem winning positions for resolved markets via the proxy wallet.
 
@@ -113,6 +112,9 @@ def redeem_positions(
     ProxyWalletFactory's ``proxy()`` function. Each transaction calls
     ``redeemPositions`` on the CTF contract, burning conditional tokens
     and recovering USDC.e collateral.
+
+    Use the network's recommended gas price (with a 25% buffer) instead
+    of a static value to avoid stale-gas failures on Polygon.
 
     Require POL in the signing EOA to pay for gas (typically < $0.01 per
     redemption on Polygon).
@@ -122,7 +124,6 @@ def redeem_positions(
         private_key: Hex-encoded private key of the proxy wallet owner.
         condition_ids: List of resolved market condition IDs to redeem.
         gas: Gas limit per transaction.
-        gas_price_gwei: Gas price in gwei.
 
     Returns:
         List of transaction receipts for successful redemptions.
@@ -159,10 +160,12 @@ def redeem_positions(
         )
 
         try:
+            base_gas_price = w3.eth.gas_price
+            boosted_gas_price = Wei(int(base_gas_price * _GAS_PRICE_MULTIPLIER))
             tx_params: TxParams = {
                 "from": account.address,
                 "gas": gas,
-                "gasPrice": w3.to_wei(gas_price_gwei, "gwei"),
+                "gasPrice": boosted_gas_price,
                 "nonce": Nonce(nonce),
             }
             tx = factory.functions.proxy([proxy_call]).build_transaction(tx_params)
