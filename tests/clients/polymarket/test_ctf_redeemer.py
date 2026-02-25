@@ -61,8 +61,8 @@ class TestRedeemPositions:
             )
             assert result == []
 
-    def test_raises_on_transaction_failure(self) -> None:
-        """Raise PolymarketAPIError when a transaction fails."""
+    def test_transaction_failure_logs_and_continues(self) -> None:
+        """Log and skip a failed transaction instead of raising."""
         with patch("trading_tools.clients.polymarket._ctf_redeemer.Web3") as mock_web3:
             mock_instance = MagicMock()
             mock_instance.is_connected.return_value = True
@@ -82,9 +82,9 @@ class TestRedeemPositions:
                 "gas estimation failed"
             )
 
-            with pytest.raises(PolymarketAPIError, match="Failed to redeem"):
-                _ctf_redeemer.redeem_positions(
-                    _RPC_URL,
-                    _PRIVATE_KEY,
-                    [_CONDITION_ID],
-                )
+            result = _ctf_redeemer.redeem_positions(
+                _RPC_URL,
+                _PRIVATE_KEY,
+                [_CONDITION_ID],
+            )
+            assert result == []

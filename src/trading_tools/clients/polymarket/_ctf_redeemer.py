@@ -70,6 +70,7 @@ _FACTORY_PROXY_ABI: list[dict[str, Any]] = [
 _CALL_TYPE_CODE = 1  # CALL (not DELEGATECALL)
 _DEFAULT_GAS = 300_000
 _DEFAULT_GAS_PRICE_GWEI = 50
+_TX_RECEIPT_TIMEOUT = 120
 
 
 def _encode_redeem_calldata(condition_id: str) -> bytes:
@@ -124,10 +125,12 @@ def redeem_positions(
         gas_price_gwei: Gas price in gwei.
 
     Returns:
-        List of transaction receipts, one per condition ID.
+        List of transaction receipts for successful redemptions.
+        Failed redemptions are logged and skipped so that remaining
+        condition IDs are still attempted.
 
     Raises:
-        PolymarketAPIError: When a redemption transaction fails.
+        PolymarketAPIError: When the RPC connection cannot be established.
 
     """
     w3 = Web3(Web3.HTTPProvider(rpc_url))
@@ -165,7 +168,7 @@ def redeem_positions(
             tx = factory.functions.proxy([proxy_call]).build_transaction(tx_params)
             signed = w3.eth.account.sign_transaction(tx, private_key=private_key)
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=_TX_RECEIPT_TIMEOUT)
             receipts.append(receipt)
 
             status = "SUCCESS" if receipt["status"] == 1 else "FAILED"
@@ -177,10 +180,7 @@ def redeem_positions(
                 tx_hash.hex(),
             )
             nonce = Nonce(nonce + 1)
-        except Exception as exc:
-            raise PolymarketAPIError(
-                msg=f"Failed to redeem {cid[:20]}: {exc}",
-                status_code=0,
-            ) from exc
+        except Exception:
+            logger.warning("Failed to redeem %s", cid[:20], exc_info=True)
 
     return receipts
