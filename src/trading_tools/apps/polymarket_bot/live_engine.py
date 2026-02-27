@@ -239,6 +239,8 @@ class LiveTradingEngine:
             trades,
             ret,
         )
+        if ret <= Decimal(-20):
+            logger.warning("DRAWDOWN ALERT return=%+.2f%%", ret)
 
     async def _fetch_snapshot(self, condition_id: str) -> MarketSnapshot | None:
         """Fetch market data and build a MarketSnapshot.

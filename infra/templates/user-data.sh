@@ -185,13 +185,14 @@ ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket bot-live \
   --poll-interval 5 \
   --max-position-pct 0.25 \
   --snipe-window 60 \
+  --max-loss-pct 1.0 \
   --confirm-live \
   --verbose
 
 StandardOutput=append:/var/log/trading-tools/live-bot.log
 StandardError=append:/var/log/trading-tools/live-bot.log
 
-Restart=on-failure
+Restart=always
 RestartSec=60
 KillSignal=SIGINT
 TimeoutStopSec=120
