@@ -168,16 +168,11 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
         width  = 12
         height = 6
         properties = {
-          title  = "Equity Over Time"
-          region = var.aws_region
-          query  = <<-EOQ
-            fields @timestamp
-            | filter @message like /\[PERF/
-            | parse @message "[PERF tick=*] equity=$* cash=*" as tick, equity, rest
-            | stats avg(equity) as Equity by bin(5m)
-          EOQ
-          source = [aws_cloudwatch_log_group.live_bot.name]
-          view   = "timeSeries"
+          title   = "Equity Over Time"
+          region  = var.aws_region
+          stacked = false
+          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message '[PERF tick=*] equity=$* cash=$*' as tick, equity, rest | stats avg(equity) as Equity by bin(5m)"
+          view    = "timeSeries"
           yAxis = {
             left = { label = "USD" }
           }
@@ -190,16 +185,11 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
         width  = 12
         height = 6
         properties = {
-          title  = "Return % Over Time"
-          region = var.aws_region
-          query  = <<-EOQ
-            fields @timestamp
-            | filter @message like /\[PERF/
-            | parse @message "return=*%" as returnPct
-            | stats avg(returnPct) as ReturnPct by bin(5m)
-          EOQ
-          source = [aws_cloudwatch_log_group.live_bot.name]
-          view   = "timeSeries"
+          title   = "Return % Over Time"
+          region  = var.aws_region
+          stacked = false
+          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'return=*%%' as returnPct | stats avg(returnPct) as ReturnPct by bin(5m)"
+          view    = "timeSeries"
           yAxis = {
             left = { label = "%" }
           }
@@ -212,16 +202,11 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
         width  = 6
         height = 6
         properties = {
-          title  = "Trade Count"
-          region = var.aws_region
-          query  = <<-EOQ
-            fields @timestamp
-            | filter @message like /\[PERF/
-            | parse @message "trades=* return" as trades
-            | stats max(trades) as Trades by bin(5m)
-          EOQ
-          source = [aws_cloudwatch_log_group.live_bot.name]
-          view   = "timeSeries"
+          title   = "Trade Count"
+          region  = var.aws_region
+          stacked = false
+          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'trades=* return' as trades | stats max(trades) as Trades by bin(5m)"
+          view    = "timeSeries"
         }
       },
       {
