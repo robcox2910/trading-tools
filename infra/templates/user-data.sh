@@ -147,7 +147,7 @@ EnvironmentFile=-/run/trading-bot-paper.env
 ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket bot \
   --strategy ${bot_strategy} \
   --series ${bot_series} \
-  --poll-interval 5 \
+  --poll-interval 1 \
   --max-position-pct 0.25 \
   --snipe-window 60 \
   --verbose
@@ -182,7 +182,7 @@ EnvironmentFile=-/run/trading-bot-live.env
 ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket bot-live \
   --strategy ${bot_strategy} \
   --series ${bot_series} \
-  --poll-interval 5 \
+  --poll-interval 1 \
   --max-position-pct 0.25 \
   --snipe-window 60 \
   --confirm-live \
