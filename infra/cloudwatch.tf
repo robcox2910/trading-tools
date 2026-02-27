@@ -20,51 +20,22 @@ resource "aws_cloudwatch_log_group" "live_bot" {
 }
 
 # ---------------------------------------------------------------------------
-# Metric Filters — extract numeric values from PERF log lines
+# Metric Filters — count log line patterns
 # ---------------------------------------------------------------------------
 
-resource "aws_cloudwatch_log_metric_filter" "equity" {
-  name           = "trading-bot-equity"
+# PERF heartbeat: counts each rotation tick
+resource "aws_cloudwatch_log_metric_filter" "perf_heartbeat" {
+  name           = "trading-bot-perf-heartbeat"
   log_group_name = aws_cloudwatch_log_group.live_bot.name
-  pattern        = "[PERF tick=%tick] equity=$%equity"
+  pattern        = "\"[PERF\""
 
   metric_transformation {
-    name          = "Equity"
+    name          = "PerfHeartbeat"
     namespace     = "TradingBot"
-    value         = "$equity"
-    default_value = null
+    value         = "1"
+    default_value = "0"
   }
 }
-
-resource "aws_cloudwatch_log_metric_filter" "return_pct" {
-  name           = "trading-bot-return-pct"
-  log_group_name = aws_cloudwatch_log_group.live_bot.name
-  pattern        = "[PERF tick=%tick] equity=$%equity cash=$%cash positions=%positions trades=%trades return=%return%"
-
-  metric_transformation {
-    name          = "ReturnPct"
-    namespace     = "TradingBot"
-    value         = "$return"
-    default_value = null
-  }
-}
-
-resource "aws_cloudwatch_log_metric_filter" "trade_count" {
-  name           = "trading-bot-trade-count"
-  log_group_name = aws_cloudwatch_log_group.live_bot.name
-  pattern        = "[PERF tick=%tick] equity=$%equity cash=$%cash positions=%positions trades=%trades"
-
-  metric_transformation {
-    name          = "TradeCount"
-    namespace     = "TradingBot"
-    value         = "$trades"
-    default_value = null
-  }
-}
-
-# ---------------------------------------------------------------------------
-# Metric Filters — count error and event patterns
-# ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_log_metric_filter" "errors" {
   name           = "trading-bot-errors"
@@ -134,28 +105,6 @@ resource "aws_cloudwatch_metric_alarm" "bot_stopped" {
   }
 }
 
-# Return drawdown: return % below threshold
-resource "aws_cloudwatch_metric_alarm" "return_drawdown" {
-  alarm_name          = "trading-bot-return-drawdown"
-  alarm_description   = "Return percentage dropped below ${var.return_alarm_threshold}%"
-  comparison_operator = "LessThanThreshold"
-  evaluation_periods  = 1
-  period              = 300
-  threshold           = var.return_alarm_threshold
-  statistic           = "Minimum"
-  treat_missing_data  = "notBreaching"
-
-  namespace   = "TradingBot"
-  metric_name = "ReturnPct"
-
-  alarm_actions = [aws_sns_topic.trading_alerts.arn]
-  ok_actions    = [aws_sns_topic.trading_alerts.arn]
-
-  tags = {
-    Project = "trading-tools"
-  }
-}
-
 # High error rate: 5+ errors in 5 minutes
 resource "aws_cloudwatch_metric_alarm" "high_error_rate" {
   alarm_name          = "trading-bot-high-error-rate"
@@ -213,7 +162,7 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
   dashboard_body = jsonencode({
     widgets = [
       {
-        type   = "metric"
+        type   = "log"
         x      = 0
         y      = 0
         width  = 12
@@ -221,17 +170,21 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
         properties = {
           title  = "Equity Over Time"
           region = var.aws_region
-          metrics = [
-            ["TradingBot", "Equity", { stat = "Average", period = 300 }]
-          ]
-          view = "timeSeries"
+          query  = <<-EOQ
+            fields @timestamp
+            | filter @message like /\[PERF/
+            | parse @message "[PERF tick=*] equity=$* cash=*" as tick, equity, rest
+            | stats avg(equity) as Equity by bin(5m)
+          EOQ
+          source = [aws_cloudwatch_log_group.live_bot.name]
+          view   = "timeSeries"
           yAxis = {
-            left = { label = "USD", showUnits = false }
+            left = { label = "USD" }
           }
         }
       },
       {
-        type   = "metric"
+        type   = "log"
         x      = 12
         y      = 0
         width  = 12
@@ -239,17 +192,21 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
         properties = {
           title  = "Return % Over Time"
           region = var.aws_region
-          metrics = [
-            ["TradingBot", "ReturnPct", { stat = "Average", period = 300 }]
-          ]
-          view = "timeSeries"
+          query  = <<-EOQ
+            fields @timestamp
+            | filter @message like /\[PERF/
+            | parse @message "return=*%" as returnPct
+            | stats avg(returnPct) as ReturnPct by bin(5m)
+          EOQ
+          source = [aws_cloudwatch_log_group.live_bot.name]
+          view   = "timeSeries"
           yAxis = {
-            left = { label = "%", showUnits = false }
+            left = { label = "%" }
           }
         }
       },
       {
-        type   = "metric"
+        type   = "log"
         x      = 0
         y      = 6
         width  = 6
@@ -257,11 +214,14 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
         properties = {
           title  = "Trade Count"
           region = var.aws_region
-          metrics = [
-            ["TradingBot", "TradeCount", { stat = "Maximum", period = 300 }]
-          ]
-          view   = "singleValue"
-          period = 300
+          query  = <<-EOQ
+            fields @timestamp
+            | filter @message like /\[PERF/
+            | parse @message "trades=* return" as trades
+            | stats max(trades) as Trades by bin(5m)
+          EOQ
+          source = [aws_cloudwatch_log_group.live_bot.name]
+          view   = "timeSeries"
         }
       },
       {
