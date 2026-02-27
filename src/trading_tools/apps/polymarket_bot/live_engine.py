@@ -541,8 +541,12 @@ class LiveTradingEngine:
             sig: Strategy signal that triggered the trade.
 
         """
-        estimated_prob = buy_price + sig.strength * (Decimal(1) - buy_price)
-        estimated_prob = min(estimated_prob, Decimal("0.99"))
+        min_edge = Decimal("0.005")
+        estimated_prob = max(
+            buy_price + sig.strength * (Decimal(1) - buy_price),
+            buy_price + min_edge,
+        )
+        estimated_prob = min(estimated_prob, Decimal("0.999"))
 
         fraction = kelly_fraction(
             estimated_prob,
