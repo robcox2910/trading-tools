@@ -33,7 +33,11 @@ _CRYPTO_5M_SERIES = (
 
 def _configure_verbose_logging() -> None:
     """Enable INFO-level logging for tick-by-tick engine output."""
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
 
 def _build_authenticated_client() -> PolymarketClient:
