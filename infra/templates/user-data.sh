@@ -149,7 +149,7 @@ ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket bot \
   --series ${bot_series} \
   --poll-interval 5 \
   --max-position-pct 0.25 \
-  --snipe-window 90 \
+  --snipe-window 60 \
   --verbose
 
 StandardOutput=append:/var/log/trading-tools/paper-bot.log
@@ -184,7 +184,7 @@ ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket bot-live \
   --series ${bot_series} \
   --poll-interval 5 \
   --max-position-pct 0.25 \
-  --snipe-window 90 \
+  --snipe-window 60 \
   --confirm-live \
   --verbose
 
