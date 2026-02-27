@@ -76,6 +76,19 @@ resource "aws_cloudwatch_log_metric_filter" "trades_opened" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "drawdown_alert" {
+  name           = "trading-bot-drawdown-alert"
+  log_group_name = aws_cloudwatch_log_group.live_bot.name
+  pattern        = "\"DRAWDOWN ALERT\""
+
+  metric_transformation {
+    name          = "DrawdownAlert"
+    namespace     = "TradingBot"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
 # ---------------------------------------------------------------------------
 # CloudWatch Alarms → SNS
 # ---------------------------------------------------------------------------
@@ -143,6 +156,28 @@ resource "aws_cloudwatch_metric_alarm" "ec2_status_check" {
   dimensions = {
     InstanceId = aws_instance.trading_bot.id
   }
+
+  alarm_actions = [aws_sns_topic.trading_alerts.arn]
+  ok_actions    = [aws_sns_topic.trading_alerts.arn]
+
+  tags = {
+    Project = "trading-tools"
+  }
+}
+
+# Drawdown alert: return dropped below -20%
+resource "aws_cloudwatch_metric_alarm" "drawdown_alert" {
+  alarm_name          = "trading-bot-drawdown-alert"
+  alarm_description   = "Return has dropped below -20%"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  period              = 300
+  threshold           = 1
+  statistic           = "Sum"
+  treat_missing_data  = "notBreaching"
+
+  namespace   = "TradingBot"
+  metric_name = "DrawdownAlert"
 
   alarm_actions = [aws_sns_topic.trading_alerts.arn]
   ok_actions    = [aws_sns_topic.trading_alerts.arn]
