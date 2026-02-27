@@ -60,9 +60,3 @@ variable "alert_email" {
   description = "Email address for CloudWatch alarm notifications"
   type        = string
 }
-
-variable "return_alarm_threshold" {
-  description = "Return percentage below which the drawdown alarm fires (e.g. -5.0)"
-  type        = number
-  default     = -5.0
-}
