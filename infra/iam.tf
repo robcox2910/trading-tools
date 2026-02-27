@@ -37,7 +37,7 @@ resource "aws_iam_role_policy" "secrets_read" {
   })
 }
 
-# Policy: write to CloudWatch Logs
+# Policy: write to CloudWatch Logs and publish custom metrics
 resource "aws_iam_role_policy" "cloudwatch_logs" {
   name = "cloudwatch-logs"
   role = aws_iam_role.trading_bot.id
@@ -54,6 +54,11 @@ resource "aws_iam_role_policy" "cloudwatch_logs" {
           "logs:DescribeLogStreams"
         ]
         Resource = "arn:aws:logs:${var.aws_region}:*:log-group:/trading-tools/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "cloudwatch:PutMetricData"
+        Resource = "*"
       }
     ]
   })
