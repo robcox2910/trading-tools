@@ -207,8 +207,42 @@ TimeoutStopSec=120
 WantedBy=multi-user.target
 SVCEOF
 
-# ── 10. Systemd service: tick collector ────────────────────────
-mkdir -p /var/lib/trading-tools
+# ── 10. Mount persistent EBS volume for tick data ──────────────
+# Wait for the EBS volume device to appear (Nitro instances use /dev/nvme*n1)
+TICK_DEVICE=""
+for i in $(seq 1 30); do
+  if [ -b /dev/xvdf ]; then
+    TICK_DEVICE="/dev/xvdf"
+    break
+  elif [ -b /dev/nvme1n1 ]; then
+    TICK_DEVICE="/dev/nvme1n1"
+    break
+  fi
+  echo "Waiting for tick data EBS volume to appear... ($i/30)"
+  sleep 2
+done
+
+if [ -n "$TICK_DEVICE" ]; then
+  # Format only on first use (idempotent)
+  if ! blkid "$TICK_DEVICE" | grep -q ext4; then
+    echo "Formatting $TICK_DEVICE as ext4..."
+    mkfs.ext4 "$TICK_DEVICE"
+  fi
+
+  mkdir -p /var/lib/trading-tools
+  mount "$TICK_DEVICE" /var/lib/trading-tools
+
+  # Add fstab entry for reboot persistence (idempotent)
+  if ! grep -q '/var/lib/trading-tools' /etc/fstab; then
+    echo "$TICK_DEVICE /var/lib/trading-tools ext4 defaults,nofail 0 2" >> /etc/fstab
+  fi
+  echo "Tick data volume mounted at /var/lib/trading-tools ($TICK_DEVICE)"
+else
+  echo "WARNING: Tick data EBS volume not found, falling back to root volume"
+  mkdir -p /var/lib/trading-tools
+fi
+
+# ── 11. Systemd service: tick collector ────────────────────────
 cat > /etc/systemd/system/tick-collector.service <<SVCEOF
 [Unit]
 Description=Polymarket Tick Collector
@@ -243,7 +277,7 @@ TimeoutStopSec=90
 WantedBy=multi-user.target
 SVCEOF
 
-# ── 11. Enable and start paper bot + tick collector ────────────
+# ── 12. Enable and start paper bot + tick collector ────────────
 systemctl daemon-reload
 systemctl enable trading-bot-paper.service
 systemctl start trading-bot-paper.service
