@@ -360,6 +360,43 @@ class PolymarketClient:
             allowance=raw_allowance / _USDC_DECIMALS,
         )
 
+    async def get_wallet_balance(self, rpc_url: str = "") -> Decimal:
+        """Fetch the on-chain USDC.e balance of the proxy wallet.
+
+        Query the Polygon blockchain for the USDC.e token balance held
+        directly in the proxy wallet address.  This captures funds that
+        are not deposited to the CLOB exchange contract (e.g. unredeemed
+        winnings from resolved markets).
+
+        Args:
+            rpc_url: Polygon JSON-RPC endpoint URL.  Falls back to the
+                ``POLYGON_RPC_URL`` environment variable, then the public
+                QuikNode endpoint.
+
+        Returns:
+            Balance in USDC (human-readable, divided by 1e6).
+
+        Raises:
+            PolymarketAPIError: When the funder address is not configured
+                or the RPC call fails.
+
+        """
+        if not self._funder_address:
+            raise PolymarketAPIError(
+                msg="Funder address required for on-chain balance query. "
+                "Set POLYMARKET_FUNDER_ADDRESS.",
+                status_code=0,
+            )
+        resolved_rpc = rpc_url or os.environ.get(
+            "POLYGON_RPC_URL", "https://rpc-mainnet.matic.quiknode.pro"
+        )
+        raw_balance = await asyncio.to_thread(
+            _clob_adapter.get_onchain_usdc_balance,
+            resolved_rpc,
+            self._funder_address,
+        )
+        return Decimal(raw_balance) / _USDC_DECIMALS
+
     async def cancel_order(self, order_id: str) -> dict[str, Any]:
         """Cancel an open order.
 

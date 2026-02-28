@@ -303,3 +303,70 @@ class TestGetOpenOrders:
         client.get_orders.side_effect = _make_poly_api_exception(_HTTP_SERVER_ERROR)
         with pytest.raises(PolymarketAPIError, match="Failed to fetch open orders"):
             _clob_adapter.get_open_orders(client)
+
+
+_WALLET_ADDRESS = "0x1234567890abcdef1234567890abcdef12345678"
+_RPC_URL = "https://polygon-rpc.example.com"
+_MICRO_USDC_BALANCE = 19_889_479
+
+
+def _passthrough_checksum(address: str) -> str:
+    """Return the address unchanged, bypassing real checksum logic.
+
+    Args:
+        address: Ethereum address string.
+
+    Returns:
+        The address string unchanged.
+
+    """
+    return address
+
+
+class TestGetOnchainUsdcBalance:
+    """Test on-chain USDC.e balance query."""
+
+    def test_returns_raw_balance(self) -> None:
+        """Return micro-USDC balance from the contract call."""
+        mock_w3 = MagicMock()
+        mock_w3.is_connected.return_value = True
+        mock_contract = MagicMock()
+        mock_contract.functions.balanceOf.return_value.call.return_value = _MICRO_USDC_BALANCE
+        mock_w3.eth.contract.return_value = mock_contract
+
+        with patch("trading_tools.clients.polymarket._clob_adapter.Web3") as mock_web3_cls:
+            mock_web3_cls.return_value = mock_w3
+            mock_web3_cls.HTTPProvider = MagicMock()
+            mock_web3_cls.to_checksum_address = _passthrough_checksum
+
+            result = _clob_adapter.get_onchain_usdc_balance(_RPC_URL, _WALLET_ADDRESS)
+
+        assert result == _MICRO_USDC_BALANCE
+
+    def test_raises_on_rpc_disconnected(self) -> None:
+        """Raise PolymarketAPIError when the RPC is not connected."""
+        mock_w3 = MagicMock()
+        mock_w3.is_connected.return_value = False
+
+        with patch("trading_tools.clients.polymarket._clob_adapter.Web3") as mock_web3_cls:
+            mock_web3_cls.return_value = mock_w3
+            mock_web3_cls.HTTPProvider = MagicMock()
+
+            with pytest.raises(PolymarketAPIError, match="Cannot connect"):
+                _clob_adapter.get_onchain_usdc_balance(_RPC_URL, _WALLET_ADDRESS)
+
+    def test_raises_on_contract_call_failure(self) -> None:
+        """Raise PolymarketAPIError when the contract call reverts."""
+        mock_w3 = MagicMock()
+        mock_w3.is_connected.return_value = True
+        mock_contract = MagicMock()
+        mock_contract.functions.balanceOf.return_value.call.side_effect = RuntimeError("revert")
+        mock_w3.eth.contract.return_value = mock_contract
+
+        with patch("trading_tools.clients.polymarket._clob_adapter.Web3") as mock_web3_cls:
+            mock_web3_cls.return_value = mock_w3
+            mock_web3_cls.HTTPProvider = MagicMock()
+            mock_web3_cls.to_checksum_address = _passthrough_checksum
+
+            with pytest.raises(PolymarketAPIError, match="Failed to query"):
+                _clob_adapter.get_onchain_usdc_balance(_RPC_URL, _WALLET_ADDRESS)

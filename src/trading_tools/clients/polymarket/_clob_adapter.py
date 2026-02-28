@@ -5,6 +5,9 @@ imports carry ``# type: ignore[import-untyped]`` so the rest of the
 codebase remains clean under pyright strict mode.  Functions return
 primitive types (``dict``, ``str``) which the facade layer converts into
 typed dataclasses.
+
+Also provides ``get_onchain_usdc_balance()`` for querying the proxy
+wallet's on-chain USDC.e balance via a Polygon RPC endpoint.
 """
 
 import logging
@@ -23,10 +26,23 @@ from py_clob_client.clob_types import (  # type: ignore[import-untyped]
     PartialCreateOrderOptions,
 )
 from py_clob_client.exceptions import PolyApiException  # type: ignore[import-untyped]
+from web3 import Web3
 
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 
 _HTTP_INTERNAL_ERROR = 500
+_USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+
+# Minimal ERC-20 ABI for balanceOf
+_ERC20_BALANCE_ABI: list[dict[str, Any]] = [
+    {
+        "name": "balanceOf",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [{"name": "account", "type": "address"}],
+        "outputs": [{"name": "", "type": "uint256"}],
+    },
+]
 _HTTP_NOT_FOUND = 404
 _POLYGON_PROXY_WALLET = 1
 
@@ -526,3 +542,46 @@ def get_open_orders(client: Any) -> list[dict[str, Any]]:
     if isinstance(result, list):
         return cast("list[dict[str, Any]]", result)
     return []
+
+
+def get_onchain_usdc_balance(rpc_url: str, wallet_address: str) -> int:
+    """Query the on-chain USDC.e balance of a wallet on Polygon.
+
+    Perform a read-only ``balanceOf`` call against the USDC.e contract.
+    No gas is required — this is a pure view call.
+
+    Args:
+        rpc_url: Polygon JSON-RPC endpoint URL.
+        wallet_address: Checksummed Ethereum address of the wallet to query.
+
+    Returns:
+        Raw balance in micro-USDC (6 decimal places).  Divide by ``1e6``
+        to get human-readable USDC.
+
+    Raises:
+        PolymarketAPIError: When the RPC connection fails or the contract
+            call reverts.
+
+    """
+    w3 = Web3(Web3.HTTPProvider(rpc_url))
+    if not w3.is_connected():
+        raise PolymarketAPIError(
+            msg=f"Cannot connect to Polygon RPC at {rpc_url}",
+            status_code=0,
+        )
+
+    usdc = w3.eth.contract(
+        address=Web3.to_checksum_address(_USDC_E_ADDRESS),
+        abi=_ERC20_BALANCE_ABI,
+    )
+    try:
+        balance: int = usdc.functions.balanceOf(
+            Web3.to_checksum_address(wallet_address),
+        ).call()
+    except Exception as exc:
+        raise PolymarketAPIError(
+            msg=f"Failed to query on-chain USDC.e balance: {exc}",
+            status_code=0,
+        ) from exc
+
+    return balance

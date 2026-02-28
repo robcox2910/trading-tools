@@ -120,6 +120,9 @@ def _make_order_response(filled: Decimal = ZERO) -> OrderResponse:
     )
 
 
+_WALLET_BALANCE = Decimal("1050.00")
+
+
 def _mock_client(
     market: Market | None = None,
     order_book: OrderBook | None = None,
@@ -144,6 +147,7 @@ def _mock_client(
             allowance=Decimal(10000),
         ),
     )
+    client.get_wallet_balance = AsyncMock(return_value=_WALLET_BALANCE)
     client.place_order = AsyncMock(return_value=_make_order_response(filled=Decimal(10)))
     return client
 
@@ -474,6 +478,7 @@ class TestLiveMarketRotation:
 
         perf_messages = [msg for msg in caplog.messages if "[PERF" in msg]
         assert len(perf_messages) == 1
+        assert "wallet=$" in perf_messages[0]
 
 
 class TestAutoRedeem:

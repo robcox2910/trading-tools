@@ -52,6 +52,7 @@ class LivePortfolio:
         self._max_position_pct = max_position_pct
         self._use_market_orders = use_market_orders
         self._balance = ZERO
+        self._wallet_balance = ZERO
         self._positions: dict[str, Position] = {}
         self._mark_prices: dict[str, Decimal] = {}
         self._trades: list[LiveTrade] = []
@@ -59,10 +60,12 @@ class LivePortfolio:
         self._token_ids: dict[str, str] = {}
 
     async def refresh_balance(self) -> Decimal:
-        """Fetch the live USDC balance from the CLOB API.
+        """Fetch the live USDC balance from the CLOB API and on-chain wallet.
 
         On transient API failures, log a warning and return the last known
-        balance so the engine can continue operating.
+        balance so the engine can continue operating.  The on-chain wallet
+        balance is fetched independently — its failure does not affect the
+        CLOB balance refresh.
 
         Returns:
             Current USDC balance as a ``Decimal``, or the last known balance
@@ -79,6 +82,16 @@ class LivePortfolio:
                 self._balance,
                 exc_info=True,
             )
+
+        try:
+            self._wallet_balance = await self._client.get_wallet_balance()
+        except Exception:
+            logger.warning(
+                "Wallet balance refresh failed, using last known: $%.4f",
+                self._wallet_balance,
+                exc_info=True,
+            )
+
         return self._balance
 
     async def open_position(
@@ -298,6 +311,11 @@ class LivePortfolio:
     def balance(self) -> Decimal:
         """Return the last-fetched USDC balance."""
         return self._balance
+
+    @property
+    def wallet_balance(self) -> Decimal:
+        """Return the last-fetched on-chain USDC.e balance of the proxy wallet."""
+        return self._wallet_balance
 
     @property
     def total_equity(self) -> Decimal:
