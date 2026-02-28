@@ -45,4 +45,7 @@ class Tick(Base):
     timestamp: Mapped[int] = mapped_column(BigInteger, index=True)
     received_at: Mapped[int] = mapped_column(BigInteger)
 
-    __table_args__ = (Index("ix_ticks_asset_timestamp", "asset_id", "timestamp"),)
+    __table_args__ = (
+        Index("ix_ticks_asset_timestamp", "asset_id", "timestamp"),
+        Index("ix_ticks_condition_timestamp", "condition_id", "timestamp"),
+    )

@@ -7,13 +7,19 @@ win rate and P&L over a date range. No live Polymarket connection is required.
 
 import asyncio
 import logging
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated
 
 import typer
 
-from trading_tools.apps.polymarket_bot.kelly import kelly_fraction
+from trading_tools.apps.polymarket.backtest_common import (
+    build_backtest_result,
+    configure_verbose_logging,
+    display_result,
+    feed_snapshot_to_strategy,
+    parse_date,
+    resolve_positions,
+)
 from trading_tools.apps.polymarket_bot.models import (
     MarketSnapshot,
     PaperTradingResult,
@@ -22,39 +28,13 @@ from trading_tools.apps.polymarket_bot.portfolio import PaperPortfolio
 from trading_tools.apps.polymarket_bot.snapshot_simulator import SnapshotSimulator
 from trading_tools.apps.polymarket_bot.strategies.late_snipe import PMLateSnipeStrategy
 from trading_tools.clients.binance.client import BinanceClient
-from trading_tools.core.models import ZERO, Candle, Interval, Side
+from trading_tools.core.models import Candle, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
 logger = logging.getLogger(__name__)
 
 _FIVE_MINUTES = 300
 _DEFAULT_SYMBOLS = "BTC-USD,ETH-USD,SOL-USD,XRP-USD"
-
-
-def _configure_verbose_logging() -> None:
-    """Enable INFO-level logging for per-window backtest output."""
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-
-
-def _parse_date(value: str) -> int:
-    """Parse a YYYY-MM-DD date string to a UTC epoch timestamp.
-
-    Args:
-        value: Date string in YYYY-MM-DD format.
-
-    Returns:
-        Unix epoch seconds at midnight UTC on the given date.
-
-    Raises:
-        typer.BadParameter: If the date cannot be parsed.
-
-    """
-    try:
-        dt = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC)
-    except ValueError as exc:
-        msg = f"Invalid date format: {value!r} (expected YYYY-MM-DD)"
-        raise typer.BadParameter(msg) from exc
-    return int(dt.timestamp())
 
 
 def _group_candles_into_windows(
@@ -201,71 +181,16 @@ class BacktestRunner:
                     continue
                 snapshot = snaps[tick_idx]
                 self._snapshots_processed += 1
-                self._feed_snapshot(snapshot)
+                feed_snapshot_to_strategy(
+                    snapshot=snapshot,
+                    strategy=self._strategy,
+                    portfolio=self._portfolio,
+                    kelly_frac=self._kelly_frac,
+                    position_outcomes=self._position_outcomes,
+                )
 
         # Resolve all positions at window end
         self._resolve_window(window_snapshots, window_ts)
-
-    def _feed_snapshot(self, snapshot: MarketSnapshot) -> None:
-        """Feed a single snapshot to the strategy and apply any signal.
-
-        Args:
-            snapshot: Synthetic market snapshot.
-
-        """
-        signal = self._strategy.on_snapshot(snapshot, [])
-        if signal is None:
-            return
-
-        condition_id = snapshot.condition_id
-        if condition_id in self._portfolio.positions:
-            return
-
-        # Determine outcome and price
-        if signal.side == Side.BUY:
-            buy_price = snapshot.yes_price
-            outcome = "Yes"
-        elif signal.side == Side.SELL:
-            buy_price = snapshot.no_price
-            outcome = "No"
-        else:
-            return
-
-        # Kelly sizing
-        estimated_prob = buy_price + signal.strength * (Decimal(1) - buy_price)
-        estimated_prob = min(estimated_prob, Decimal("0.99"))
-        fraction = kelly_fraction(
-            estimated_prob,
-            buy_price,
-            fractional=self._kelly_frac,
-        )
-        if fraction <= ZERO:
-            return
-
-        max_qty = self._portfolio.max_quantity_for(buy_price)
-        quantity = max(Decimal(1), (max_qty * fraction).quantize(Decimal(1)))
-
-        edge = estimated_prob - buy_price
-        trade = self._portfolio.open_position(
-            condition_id=condition_id,
-            outcome=outcome,
-            side=Side.BUY,
-            price=buy_price,
-            quantity=quantity,
-            timestamp=snapshot.timestamp,
-            reason=signal.reason,
-            edge=edge,
-        )
-        if trade is not None:
-            self._position_outcomes[condition_id] = outcome
-            logger.info(
-                "TRADE: %s %s qty=%s @ %.4f edge=%.4f",
-                outcome,
-                condition_id,
-                quantity,
-                buy_price,
-                edge,
-            )
 
     def _resolve_window(
         self,
@@ -284,54 +209,23 @@ class BacktestRunner:
 
         """
         resolve_ts = window_ts + _FIVE_MINUTES
+
+        # Build final-price map from last snapshot of each symbol
+        final_prices: dict[str, Decimal] = {}
         for cid in list(self._portfolio.positions):
-            # Determine resolution from the final snapshot
             symbol = cid.rsplit("_", 1)[0]
             snaps = window_snapshots.get(symbol, [])
             if snaps:
-                final_yes = snaps[-1].yes_price
-                went_up = final_yes > Decimal("0.5")
-            else:
-                went_up = True  # default if no data
+                final_prices[cid] = snaps[-1].yes_price
 
-            # Get outcome of the position from portfolio trades
-            pos = self._portfolio.positions[cid]
-            # Find the opening trade to determine outcome
-            outcome = self._get_position_outcome(cid)
-
-            if outcome == "Yes":
-                resolve_price = Decimal(1) if went_up else ZERO
-            else:
-                resolve_price = ZERO if went_up else Decimal(1)
-
-            # Track wins/losses
-            if resolve_price > pos.entry_price:
-                self._wins += 1
-            elif resolve_price < pos.entry_price:
-                self._losses += 1
-
-            trade = self._portfolio.close_position(cid, resolve_price, resolve_ts)
-            if trade is not None:
-                result_str = "WIN" if resolve_price > pos.entry_price else "LOSS"
-                logger.info(
-                    "RESOLVE: %s %s @ %.2f (%s)",
-                    cid,
-                    outcome,
-                    resolve_price,
-                    result_str,
-                )
-
-    def _get_position_outcome(self, condition_id: str) -> str:
-        """Look up the outcome token for an open position.
-
-        Args:
-            condition_id: Market condition identifier.
-
-        Returns:
-            ``"Yes"`` or ``"No"`` based on the cached outcome dict.
-
-        """
-        return self._position_outcomes.pop(condition_id, "Yes")
+        wins, losses = resolve_positions(
+            portfolio=self._portfolio,
+            position_outcomes=self._position_outcomes,
+            final_prices=final_prices,
+            resolve_ts=resolve_ts,
+        )
+        self._wins += wins
+        self._losses += losses
 
     def _build_result(self) -> PaperTradingResult:
         """Build the final result with computed metrics.
@@ -340,31 +234,14 @@ class BacktestRunner:
             Summary of the backtest run.
 
         """
-        trades = self._portfolio.trades
-        final_capital = self._portfolio.total_equity
-        total_trades = sum(1 for t in trades if t.side == Side.BUY)
-        metrics: dict[str, Decimal] = {
-            "windows_processed": Decimal(self._windows_processed),
-            "total_trades": Decimal(total_trades),
-            "wins": Decimal(self._wins),
-            "losses": Decimal(self._losses),
-        }
-        if self._wins + self._losses > 0:
-            metrics["win_rate"] = Decimal(self._wins) / Decimal(
-                self._wins + self._losses,
-            )
-        if total_trades > 0:
-            total_return = final_capital - self._portfolio.capital
-            # Calculate based on initial state
-            metrics["total_return"] = total_return
-
-        return PaperTradingResult(
+        return build_backtest_result(
             strategy_name=self._strategy.name,
-            initial_capital=final_capital,  # placeholder, overridden by caller
-            final_capital=final_capital,
-            trades=tuple(trades),
+            initial_capital=self._portfolio.total_equity,
+            portfolio=self._portfolio,
             snapshots_processed=self._snapshots_processed,
-            metrics=metrics,
+            windows_processed=self._windows_processed,
+            wins=self._wins,
+            losses=self._losses,
         )
 
 
@@ -452,34 +329,6 @@ def _run_backtest(
     )
 
 
-def _display_result(result: PaperTradingResult) -> None:
-    """Display backtest results to the terminal.
-
-    Args:
-        result: Completed backtest result.
-
-    """
-    typer.echo("\n--- Backtest Results ---")
-    typer.echo(f"Strategy: {result.strategy_name}")
-    typer.echo(f"Snapshots processed: {result.snapshots_processed}")
-    typer.echo(f"Initial capital: ${result.initial_capital:.2f}")
-    typer.echo(f"Final capital:   ${result.final_capital:.2f}")
-
-    pnl = result.final_capital - result.initial_capital
-    pnl_pct = pnl / result.initial_capital * Decimal(100) if result.initial_capital > ZERO else ZERO
-    typer.echo(f"P&L: ${pnl:.2f} ({pnl_pct:.2f}%)")
-
-    if result.metrics:
-        typer.echo(f"\nWindows processed: {result.metrics.get('windows_processed', 0)}")
-        typer.echo(f"Total trades: {result.metrics.get('total_trades', 0)}")
-        wins = result.metrics.get("wins", ZERO)
-        losses = result.metrics.get("losses", ZERO)
-        typer.echo(f"Wins: {wins}  Losses: {losses}")
-        if "win_rate" in result.metrics:
-            win_rate = result.metrics["win_rate"] * Decimal(100)
-            typer.echo(f"Win rate: {win_rate:.1f}%")
-
-
 def backtest_snipe(
     symbols: Annotated[
         str, typer.Option(help="Comma-separated symbols (e.g. BTC-USD,ETH-USD)")
@@ -515,10 +364,10 @@ def backtest_snipe(
         raise typer.Exit(code=1)
 
     if verbose:
-        _configure_verbose_logging()
+        configure_verbose_logging()
 
-    start_ts = _parse_date(start)
-    end_ts = _parse_date(end)
+    start_ts = parse_date(start)
+    end_ts = parse_date(end)
     if start_ts >= end_ts:
         typer.echo("Error: --start must be before --end", err=True)
         raise typer.Exit(code=1)
@@ -550,4 +399,4 @@ def backtest_snipe(
         max_position_pct=Decimal(str(max_position_pct)),
     )
 
-    _display_result(result)
+    display_result(result)

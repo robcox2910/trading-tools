@@ -8,7 +8,7 @@ SQLite to PostgreSQL by changing the connection string.
 
 import logging
 
-from sqlalchemy import func, select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -104,6 +104,60 @@ class TickRepository:
         async with self._session_factory() as session:
             result = await session.execute(stmt)
             return result.scalar_one()
+
+    async def get_distinct_condition_ids(
+        self,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[str]:
+        """Return unique condition IDs that have ticks in a time range.
+
+        Args:
+            start_ms: Inclusive lower bound (epoch milliseconds).
+            end_ms: Inclusive upper bound (epoch milliseconds).
+
+        Returns:
+            List of distinct ``condition_id`` values, sorted alphabetically.
+
+        """
+        stmt = (
+            select(distinct(Tick.condition_id))
+            .where(Tick.timestamp >= start_ms, Tick.timestamp <= end_ms)
+            .order_by(Tick.condition_id)
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def get_ticks_by_condition(
+        self,
+        condition_id: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[Tick]:
+        """Query tick records for a given condition within a time range.
+
+        Args:
+            condition_id: Market condition identifier to filter on.
+            start_ms: Inclusive lower bound (epoch milliseconds).
+            end_ms: Inclusive upper bound (epoch milliseconds).
+
+        Returns:
+            List of matching ``Tick`` records ordered by timestamp ascending.
+
+        """
+        stmt = (
+            select(Tick)
+            .where(
+                Tick.condition_id == condition_id,
+                Tick.timestamp >= start_ms,
+                Tick.timestamp <= end_ms,
+            )
+            .order_by(Tick.timestamp)
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
 
     async def close(self) -> None:
         """Dispose the async engine and release all connections."""

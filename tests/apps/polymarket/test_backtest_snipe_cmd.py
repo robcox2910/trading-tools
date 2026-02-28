@@ -7,16 +7,16 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from trading_tools.apps.polymarket.backtest_common import parse_date
 from trading_tools.apps.polymarket.cli import app
 from trading_tools.apps.polymarket.cli.backtest_snipe_cmd import (
     BacktestRunner,
-    SnapshotSimulator,
     _group_candles_into_windows,
-    _parse_date,
     _run_backtest,
 )
 from trading_tools.apps.polymarket_bot.models import PaperTradingResult
 from trading_tools.apps.polymarket_bot.portfolio import PaperPortfolio
+from trading_tools.apps.polymarket_bot.snapshot_simulator import SnapshotSimulator
 from trading_tools.apps.polymarket_bot.strategies.late_snipe import PMLateSnipeStrategy
 from trading_tools.core.models import Candle, Interval
 
@@ -58,17 +58,17 @@ def _make_candle(
 
 
 class TestParseDate:
-    """Test the _parse_date helper."""
+    """Test the parse_date helper."""
 
     def test_valid_date(self) -> None:
         """Parse a valid YYYY-MM-DD date to epoch seconds."""
-        ts = _parse_date("2026-02-20")
+        ts = parse_date("2026-02-20")
         assert ts > 0
 
     def test_invalid_date_raises(self) -> None:
         """Raise BadParameter for invalid date format."""
         with pytest.raises(typer.BadParameter):
-            _parse_date("not-a-date")
+            parse_date("not-a-date")
 
 
 class TestGroupCandlesIntoWindows:
