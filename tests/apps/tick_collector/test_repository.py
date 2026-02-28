@@ -16,6 +16,8 @@ _BATCH_COUNT_5 = 5
 _RANGE_COUNT_4 = 4
 _ASSET_FILTER_COUNT_2 = 2
 _COMBINED_COUNT_7 = 7
+_CONDITION_TICKS_COUNT_3 = 3
+_DISTINCT_CONDITIONS_COUNT_2 = 2
 
 
 def _make_tick(
@@ -170,6 +172,110 @@ class TestTickRepository:
 
         count = await repo.get_tick_count()
         assert count == _COMBINED_COUNT_7
+
+    @pytest.mark.asyncio
+    async def test_get_distinct_condition_ids(self, repo: TickRepository) -> None:
+        """Return unique condition IDs within a time range."""
+        ticks = [
+            _make_tick(condition_id=_CONDITION_A, timestamp=_BASE_TS),
+            _make_tick(condition_id=_CONDITION_A, timestamp=_BASE_TS + 1000),
+            _make_tick(condition_id=_CONDITION_B, timestamp=_BASE_TS + 2000),
+            _make_tick(condition_id=_CONDITION_A, timestamp=_BASE_TS + 20000),
+        ]
+        await repo.save_ticks(ticks)
+
+        result = await repo.get_distinct_condition_ids(
+            start_ms=_BASE_TS,
+            end_ms=_BASE_TS + 5000,
+        )
+
+        assert len(result) == _DISTINCT_CONDITIONS_COUNT_2
+        assert set(result) == {_CONDITION_A, _CONDITION_B}
+
+    @pytest.mark.asyncio
+    async def test_get_distinct_condition_ids_empty_range(self, repo: TickRepository) -> None:
+        """Return empty list when no ticks exist in range."""
+        ticks = [_make_tick(condition_id=_CONDITION_A, timestamp=_BASE_TS)]
+        await repo.save_ticks(ticks)
+
+        result = await repo.get_distinct_condition_ids(
+            start_ms=_BASE_TS + 10000,
+            end_ms=_BASE_TS + 20000,
+        )
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_ticks_by_condition(self, repo: TickRepository) -> None:
+        """Return ticks filtered by condition_id and time range."""
+        ticks = [
+            _make_tick(
+                asset_id=_ASSET_A,
+                condition_id=_CONDITION_A,
+                timestamp=_BASE_TS,
+            ),
+            _make_tick(
+                asset_id=_ASSET_B,
+                condition_id=_CONDITION_A,
+                timestamp=_BASE_TS + 1000,
+            ),
+            _make_tick(
+                asset_id=_ASSET_A,
+                condition_id=_CONDITION_B,
+                timestamp=_BASE_TS + 2000,
+            ),
+            _make_tick(
+                asset_id=_ASSET_A,
+                condition_id=_CONDITION_A,
+                timestamp=_BASE_TS + 3000,
+            ),
+        ]
+        await repo.save_ticks(ticks)
+
+        result = await repo.get_ticks_by_condition(
+            condition_id=_CONDITION_A,
+            start_ms=_BASE_TS,
+            end_ms=_BASE_TS + 5000,
+        )
+
+        assert len(result) == _CONDITION_TICKS_COUNT_3
+        assert all(t.condition_id == _CONDITION_A for t in result)
+
+    @pytest.mark.asyncio
+    async def test_get_ticks_by_condition_ordered_by_timestamp(
+        self,
+        repo: TickRepository,
+    ) -> None:
+        """Return ticks ordered by ascending timestamp."""
+        ticks = [
+            _make_tick(condition_id=_CONDITION_A, timestamp=_BASE_TS + 3000),
+            _make_tick(condition_id=_CONDITION_A, timestamp=_BASE_TS + 1000),
+            _make_tick(condition_id=_CONDITION_A, timestamp=_BASE_TS + 2000),
+        ]
+        await repo.save_ticks(ticks)
+
+        result = await repo.get_ticks_by_condition(
+            condition_id=_CONDITION_A,
+            start_ms=_BASE_TS,
+            end_ms=_BASE_TS + 5000,
+        )
+
+        timestamps = [t.timestamp for t in result]
+        assert timestamps == sorted(timestamps)
+
+    @pytest.mark.asyncio
+    async def test_get_ticks_by_condition_empty_range(self, repo: TickRepository) -> None:
+        """Return empty list when no ticks match condition in range."""
+        ticks = [_make_tick(condition_id=_CONDITION_A, timestamp=_BASE_TS)]
+        await repo.save_ticks(ticks)
+
+        result = await repo.get_ticks_by_condition(
+            condition_id=_CONDITION_B,
+            start_ms=_BASE_TS,
+            end_ms=_BASE_TS + 5000,
+        )
+
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_close(self, repo: TickRepository) -> None:
