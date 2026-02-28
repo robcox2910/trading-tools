@@ -32,6 +32,24 @@ resource "aws_instance" "trading_bot" {
   }
 }
 
+# Persistent EBS volume for tick data (survives instance replacement)
+resource "aws_ebs_volume" "tick_data" {
+  availability_zone = aws_instance.trading_bot.availability_zone
+  size              = 1
+  type              = "gp3"
+
+  tags = {
+    Name    = "trading-bot-tick-data"
+    Project = "trading-tools"
+  }
+}
+
+resource "aws_volume_attachment" "tick_data" {
+  device_name = "/dev/xvdf"
+  volume_id   = aws_ebs_volume.tick_data.id
+  instance_id = aws_instance.trading_bot.id
+}
+
 # Elastic IP for stable public address across reboots
 resource "aws_eip" "trading_bot" {
   instance = aws_instance.trading_bot.id

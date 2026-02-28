@@ -37,3 +37,8 @@ output "sns_topic_arn" {
   description = "ARN of the SNS topic for trading bot alerts"
   value       = aws_sns_topic.trading_alerts.arn
 }
+
+output "tick_data_volume_id" {
+  description = "EBS volume ID for persistent tick data storage"
+  value       = aws_ebs_volume.tick_data.id
+}
