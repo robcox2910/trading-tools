@@ -259,7 +259,7 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
           title   = "Wallet vs Exchange Equity"
           region  = var.aws_region
           stacked = false
-          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* wallet=$* cash=$*' as equity, wallet, rest | stats avg(equity) as Exchange, avg(wallet) as Wallet by bin(5m)"
+          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* ' as equity | parse @message 'wallet=$* ' as wallet | stats avg(equity) as Exchange, avg(wallet) as Wallet by bin(5m)"
           view    = "timeSeries"
           yAxis = {
             left = { label = "USD" }
@@ -276,7 +276,7 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
           title   = "Return % Over Time"
           region  = var.aws_region
           stacked = false
-          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* wallet=$* cash=$* positions=* trades=* return=*%' as equity, wallet, cash, positions, trades, returnPct | stats avg(returnPct) as ReturnPct by bin(5m)"
+          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'return=*%%' as returnPct | stats avg(returnPct) as ReturnPct by bin(5m)"
           view    = "timeSeries"
           yAxis = {
             left = { label = "%" }
@@ -395,7 +395,7 @@ resource "aws_cloudwatch_dashboard" "paper_bot" {
           title   = "Wallet vs Exchange Equity"
           region  = var.aws_region
           stacked = false
-          query   = "SOURCE '${aws_cloudwatch_log_group.paper_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* wallet=$* cash=$*' as equity, wallet, rest | stats avg(equity) as Exchange, avg(wallet) as Wallet by bin(5m)"
+          query   = "SOURCE '${aws_cloudwatch_log_group.paper_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* ' as equity | parse @message 'wallet=$* ' as wallet | stats avg(equity) as Exchange, avg(wallet) as Wallet by bin(5m)"
           view    = "timeSeries"
           yAxis = {
             left = { label = "USD" }
@@ -412,7 +412,7 @@ resource "aws_cloudwatch_dashboard" "paper_bot" {
           title   = "Return % Over Time"
           region  = var.aws_region
           stacked = false
-          query   = "SOURCE '${aws_cloudwatch_log_group.paper_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* wallet=$* cash=$* positions=* trades=* return=*%' as equity, wallet, cash, positions, trades, returnPct | stats avg(returnPct) as ReturnPct by bin(5m)"
+          query   = "SOURCE '${aws_cloudwatch_log_group.paper_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'return=*%%' as returnPct | stats avg(returnPct) as ReturnPct by bin(5m)"
           view    = "timeSeries"
           yAxis = {
             left = { label = "%" }
