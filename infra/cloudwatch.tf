@@ -309,3 +309,75 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
     ]
   })
 }
+
+resource "aws_cloudwatch_dashboard" "paper_bot" {
+  dashboard_name = "TradingBot-Paper"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type   = "log"
+        x      = 0
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          title   = "Equity Over Time"
+          region  = var.aws_region
+          stacked = false
+          query   = "SOURCE '${aws_cloudwatch_log_group.paper_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message '[PERF tick=*] equity=$* cash=$*' as tick, equity, rest | stats avg(equity) as Equity by bin(5m)"
+          view    = "timeSeries"
+          yAxis = {
+            left = { label = "USD" }
+          }
+        }
+      },
+      {
+        type   = "log"
+        x      = 12
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          title   = "Return % Over Time"
+          region  = var.aws_region
+          stacked = false
+          query   = "SOURCE '${aws_cloudwatch_log_group.paper_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* cash=$* positions=* trades=* return=*%' as equity, cash, positions, trades, returnPct | stats avg(returnPct) as ReturnPct by bin(5m)"
+          view    = "timeSeries"
+          yAxis = {
+            left = { label = "%" }
+          }
+        }
+      },
+      {
+        type   = "log"
+        x      = 0
+        y      = 6
+        width  = 12
+        height = 6
+        properties = {
+          title   = "Trade Count"
+          region  = var.aws_region
+          stacked = false
+          query   = "SOURCE '${aws_cloudwatch_log_group.paper_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'trades=* return' as trades | stats max(trades) as Trades by bin(5m)"
+          view    = "timeSeries"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 6
+        width  = 12
+        height = 6
+        properties = {
+          title  = "Log Group Activity"
+          region = var.aws_region
+          metrics = [
+            ["AWS/Logs", "IncomingLogEvents", "LogGroupName", aws_cloudwatch_log_group.paper_bot.name, { stat = "Sum", period = 300 }]
+          ]
+          view = "timeSeries"
+        }
+      }
+    ]
+  })
+}
