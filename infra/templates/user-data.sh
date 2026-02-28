@@ -82,6 +82,12 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWEOF
             "log_group_name": "/trading-tools/polymarket-bot-live",
             "log_stream_name": "{instance_id}",
             "retention_in_days": 30
+          },
+          {
+            "file_path": "/var/log/trading-tools/tick-collector.log",
+            "log_group_name": "/trading-tools/tick-collector",
+            "log_stream_name": "{instance_id}",
+            "retention_in_days": 30
           }
         ]
       }
@@ -201,13 +207,51 @@ TimeoutStopSec=120
 WantedBy=multi-user.target
 SVCEOF
 
-# ── 10. Enable and start paper bot only ──────────────────────
+# ── 10. Systemd service: tick collector ────────────────────────
+mkdir -p /var/lib/trading-tools
+cat > /etc/systemd/system/tick-collector.service <<SVCEOF
+[Unit]
+Description=Polymarket Tick Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$REPO_DIR
+
+ExecStartPre=/bin/bash $REPO_DIR/fetch-secrets.sh /run/tick-collector.env
+EnvironmentFile=-/run/tick-collector.env
+
+ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket tick-collect \
+  --series ${bot_series} \
+  --db-url sqlite+aiosqlite:///var/lib/trading-tools/tick_data.db \
+  --verbose
+
+StandardOutput=append:/var/log/trading-tools/tick-collector.log
+StandardError=append:/var/log/trading-tools/tick-collector.log
+
+CPUQuota=20%
+MemoryMax=256M
+
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGINT
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+# ── 11. Enable and start paper bot + tick collector ────────────
 systemctl daemon-reload
 systemctl enable trading-bot-paper.service
 systemctl start trading-bot-paper.service
+systemctl enable tick-collector.service
+systemctl start tick-collector.service
 
 # Live bot is installed but NOT enabled/started
-echo "Paper bot started. Live bot installed but disabled."
+echo "Paper bot and tick collector started. Live bot installed but disabled."
 echo "To start live bot: sudo systemctl start trading-bot-live"
 
 echo "=== Bootstrap completed at $(date -u) ==="
