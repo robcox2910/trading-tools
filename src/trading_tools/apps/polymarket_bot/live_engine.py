@@ -217,33 +217,33 @@ class LiveTradingEngine:
     def _log_performance(self) -> None:
         """Log performance metrics at market rotation boundaries.
 
-        Emit an INFO log line with equity, wallet balance, cash balance,
+        Emit an INFO log line with equity, portfolio value, cash balance,
         position count, trade count, and return percentage so that
         long-running bots can be monitored via log files or CloudWatch
         without stopping the engine.
 
-        The ``wallet`` value is the on-chain USDC.e balance of the proxy
-        wallet, which includes unredeemed winnings.  The return percentage
-        is computed from the wallet balance when available, since it
-        reflects total portfolio value including funds outside the CLOB.
+        The ``portfolio`` value is the total account value (USDC + all
+        position market values), matching the Polymarket UI "Portfolio"
+        figure.  The return percentage is computed from the portfolio
+        value when available, since it reflects the full account value.
         """
         equity = self._portfolio.total_equity
-        wallet = self._portfolio.wallet_balance
+        portfolio = self._portfolio.portfolio_value
         cash = self._portfolio.balance
         positions = len(self._portfolio.positions)
         trades = len(self._portfolio.trades)
-        return_base = wallet if wallet > ZERO else equity
+        return_base = portfolio if portfolio > ZERO else equity
         ret = (
             (return_base - self._initial_balance) / self._initial_balance * 100
             if self._initial_balance > ZERO
             else ZERO
         )
         logger.info(
-            "[PERF tick=%d] equity=$%.2f wallet=$%.2f cash=$%.2f "
+            "[PERF tick=%d] equity=$%.2f portfolio=$%.2f cash=$%.2f "
             "positions=%d trades=%d return=%+.2f%%",
             self._snapshots_processed,
             equity,
-            wallet,
+            portfolio,
             cash,
             positions,
             trades,

@@ -18,14 +18,14 @@ _TOKEN_NO = "tok_no_456"
 _ORDER_ID = "order_abc"
 _TIMESTAMP = 1700000000
 _INITIAL_BALANCE = Decimal("1000.00")
-_WALLET_BALANCE = Decimal("1050.00")
+_PORTFOLIO_VALUE = Decimal("1050.00")
 _MAX_POSITION_PCT = Decimal("0.1")
 
 
 def _mock_client(
     *,
     balance: Decimal = _INITIAL_BALANCE,
-    wallet_balance: Decimal = _WALLET_BALANCE,
+    portfolio_value: Decimal = _PORTFOLIO_VALUE,
     order_id: str = _ORDER_ID,
     filled: Decimal = ZERO,
 ) -> AsyncMock:
@@ -33,7 +33,7 @@ def _mock_client(
 
     Args:
         balance: USDC balance to return.
-        wallet_balance: On-chain wallet balance to return.
+        portfolio_value: Total portfolio value to return.
         order_id: Order ID to return from place_order.
         filled: Filled amount to return from place_order.
 
@@ -49,7 +49,7 @@ def _mock_client(
             allowance=Decimal(10000),
         ),
     )
-    client.get_wallet_balance = AsyncMock(return_value=wallet_balance)
+    client.get_portfolio_value = AsyncMock(return_value=portfolio_value)
     client.place_order = AsyncMock(
         return_value=OrderResponse(
             order_id=order_id,
@@ -473,37 +473,37 @@ class TestProperties:
         assert portfolio.get_token_id("unknown") is None
 
     @pytest.mark.asyncio
-    async def test_wallet_balance_after_refresh(self) -> None:
-        """Verify wallet_balance is populated after refresh."""
+    async def test_portfolio_value_after_refresh(self) -> None:
+        """Verify portfolio_value is populated after refresh."""
         client = _mock_client()
         portfolio = LivePortfolio(client, _MAX_POSITION_PCT)
         await portfolio.refresh_balance()
 
-        assert portfolio.wallet_balance == _WALLET_BALANCE
+        assert portfolio.portfolio_value == _PORTFOLIO_VALUE
 
     @pytest.mark.asyncio
-    async def test_wallet_balance_failure_keeps_last_known(self) -> None:
-        """Verify wallet balance failure preserves the last known value."""
+    async def test_portfolio_value_failure_keeps_last_known(self) -> None:
+        """Verify portfolio value failure preserves the last known value."""
         client = _mock_client()
         portfolio = LivePortfolio(client, _MAX_POSITION_PCT)
 
         # First call succeeds
         await portfolio.refresh_balance()
-        assert portfolio.wallet_balance == _WALLET_BALANCE
+        assert portfolio.portfolio_value == _PORTFOLIO_VALUE
 
-        # Second call fails — should keep the old wallet balance
-        client.get_wallet_balance = AsyncMock(side_effect=Exception("RPC down"))
+        # Second call fails — should keep the old portfolio value
+        client.get_portfolio_value = AsyncMock(side_effect=Exception("API down"))
         await portfolio.refresh_balance()
-        assert portfolio.wallet_balance == _WALLET_BALANCE
+        assert portfolio.portfolio_value == _PORTFOLIO_VALUE
 
     @pytest.mark.asyncio
-    async def test_wallet_balance_failure_does_not_affect_clob_balance(self) -> None:
-        """Verify on-chain failure does not prevent CLOB balance from updating."""
+    async def test_portfolio_value_failure_does_not_affect_clob_balance(self) -> None:
+        """Verify portfolio value failure does not prevent CLOB balance from updating."""
         client = _mock_client()
-        client.get_wallet_balance = AsyncMock(side_effect=Exception("RPC down"))
+        client.get_portfolio_value = AsyncMock(side_effect=Exception("API down"))
         portfolio = LivePortfolio(client, _MAX_POSITION_PCT)
 
         await portfolio.refresh_balance()
 
         assert portfolio.balance == _INITIAL_BALANCE
-        assert portfolio.wallet_balance == ZERO
+        assert portfolio.portfolio_value == ZERO

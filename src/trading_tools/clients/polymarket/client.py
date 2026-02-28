@@ -443,33 +443,7 @@ class PolymarketClient:
                 or the Data API request fails.
 
         """
-        if not self._funder_address:
-            raise PolymarketAPIError(
-                msg="Funder address required for position discovery. "
-                "Set POLYMARKET_FUNDER_ADDRESS.",
-                status_code=0,
-            )
-        url = f"{self.DATA_API_URL}/positions"
-        params: dict[str, str] = {
-            "user": self._funder_address,
-            "redeemable": "true",
-            "sizeThreshold": "0",
-        }
-        try:
-            response = await self._data_client.get(url, params=params)
-        except httpx.HTTPError as exc:
-            raise PolymarketAPIError(
-                msg=f"Data API request failed: {exc}",
-                status_code=0,
-            ) from exc
-
-        if response.status_code >= _HTTP_BAD_REQUEST:
-            raise PolymarketAPIError(
-                msg=f"Data API error: HTTP {response.status_code}",
-                status_code=response.status_code,
-            )
-
-        raw_positions: list[dict[str, Any]] = response.json()
+        raw_positions = await self._fetch_positions(redeemable=True)
         results: list[RedeemablePosition] = []
         for raw in raw_positions:
             size = _safe_decimal(raw.get("size", "0"))
@@ -485,6 +459,83 @@ class PolymarketClient:
                 )
             )
         return results
+
+    async def get_portfolio_value(self) -> Decimal:
+        """Compute total portfolio value: CLOB USDC balance + position market values.
+
+        Query the Data API for all active positions with current prices,
+        sum ``size * curPrice`` for each position, and add the CLOB USDC
+        balance.  This matches the "Portfolio" value shown in the Polymarket UI.
+
+        Returns:
+            Total portfolio value in USD as a ``Decimal``.
+
+        Raises:
+            PolymarketAPIError: When the funder address is not configured
+                or the API requests fail.
+
+        """
+        self._require_auth()
+        await self.sync_balance("COLLATERAL")
+        bal = await self.get_balance("COLLATERAL")
+        usdc_balance = bal.balance
+
+        raw_positions = await self._fetch_positions(redeemable=None)
+        position_value = _ZERO
+        for raw in raw_positions:
+            size = _safe_decimal(raw.get("size", "0"))
+            cur_price = _safe_decimal(raw.get("curPrice", "0"))
+            if size > _ZERO and cur_price > _ZERO:
+                position_value += size * cur_price
+
+        return usdc_balance + position_value
+
+    async def _fetch_positions(self, *, redeemable: bool | None) -> list[dict[str, Any]]:
+        """Fetch positions from the Polymarket Data API.
+
+        Query the unauthenticated ``/positions`` endpoint for all positions
+        held by the proxy wallet.  Optionally filter by redeemable status.
+
+        Args:
+            redeemable: When ``True``, only return redeemable positions.
+                When ``None``, return all positions without filtering.
+
+        Returns:
+            List of raw position dictionaries from the Data API.
+
+        Raises:
+            PolymarketAPIError: When the funder address is not configured
+                or the Data API request fails.
+
+        """
+        if not self._funder_address:
+            raise PolymarketAPIError(
+                msg="Funder address required for position discovery. "
+                "Set POLYMARKET_FUNDER_ADDRESS.",
+                status_code=0,
+            )
+        url = f"{self.DATA_API_URL}/positions"
+        params: dict[str, str] = {
+            "user": self._funder_address,
+            "sizeThreshold": "0",
+        }
+        if redeemable is not None:
+            params["redeemable"] = str(redeemable).lower()
+        try:
+            response = await self._data_client.get(url, params=params)
+        except httpx.HTTPError as exc:
+            raise PolymarketAPIError(
+                msg=f"Data API request failed: {exc}",
+                status_code=0,
+            ) from exc
+
+        if response.status_code >= _HTTP_BAD_REQUEST:
+            raise PolymarketAPIError(
+                msg=f"Data API error: HTTP {response.status_code}",
+                status_code=response.status_code,
+            )
+
+        return response.json()
 
     async def redeem_positions(
         self,
