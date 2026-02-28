@@ -502,8 +502,10 @@ class TestWindowAlignedDiscovery:
         assert _seconds_until_next_discovery(now_start, lead) == _FIVE_MINUTES - lead
 
     def test_seconds_until_next_discovery_past_fire_time(self) -> None:
-        """Return 0 when already past the fire time in the current window."""
+        """Sleep until next window's fire time when past current fire time."""
         lead = 30
-        # 4m45s into window → past 4m30s fire time → return 0
+        # 4m45s into window → past 4m30s fire time → sleep until next window
+        # fire_at=270, elapsed=285, remaining=270-285=-15, result=-15+300=285
         now = 1_000_000_000 * _FIVE_MINUTES + 285
-        assert _seconds_until_next_discovery(now, lead) == 0
+        expected_sleep = 285
+        assert _seconds_until_next_discovery(now, lead) == expected_sleep

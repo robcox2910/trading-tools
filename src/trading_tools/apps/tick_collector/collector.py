@@ -33,8 +33,8 @@ def _seconds_until_next_discovery(now: int, lead_seconds: int) -> int:
 
     Determine how long to wait so that discovery fires ``lead_seconds``
     before the next 5-minute window boundary.  If the fire time has
-    already passed within the current window, return 0 so discovery
-    runs immediately.
+    already passed within the current window, return the sleep duration
+    until the *next* window's fire time so the loop doesn't busy-spin.
 
     Args:
         now: Current Unix epoch in seconds.
@@ -47,7 +47,10 @@ def _seconds_until_next_discovery(now: int, lead_seconds: int) -> int:
     elapsed = now % _FIVE_MINUTES
     fire_at = _FIVE_MINUTES - lead_seconds
     remaining = fire_at - elapsed
-    return max(remaining, 0)
+    if remaining <= 0:
+        # Past fire time — sleep until next window's fire time
+        return remaining + _FIVE_MINUTES
+    return remaining
 
 
 class TickCollector:
@@ -241,17 +244,13 @@ class TickCollector:
             sleep_seconds = _seconds_until_next_discovery(
                 int(time.time()), self._config.discovery_lead_seconds
             )
-            if sleep_seconds > 0:
-                await asyncio.sleep(sleep_seconds)
+            await asyncio.sleep(sleep_seconds)
             if self._shutdown:
                 break
             old_count = len(self._asset_ids)
             await self._discover_and_resolve()
             if len(self._asset_ids) > old_count:
                 await self._feed.update_subscription(self._asset_ids)
-            # After firing, sleep at least 1s to avoid busy-looping
-            # when _seconds_until_next_discovery returns 0 repeatedly.
-            await asyncio.sleep(1)
 
     async def _periodic_heartbeat(self) -> None:
         """Log collection stats at regular intervals for monitoring.
