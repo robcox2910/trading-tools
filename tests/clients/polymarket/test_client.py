@@ -356,7 +356,7 @@ class TestPolymarketClient:
 
     @pytest.mark.asyncio
     async def test_discover_series_markets(self, client: PolymarketClient) -> None:
-        """Test discovering active markets from series slugs via Gamma events."""
+        """Test discovering markets from series slugs without active filtering."""
         events = [
             {
                 "slug": "btc-updown-5m",
@@ -378,8 +378,11 @@ class TestPolymarketClient:
         with patch.object(client._gamma, "get_events", new=AsyncMock(return_value=events)):
             results = await client.discover_series_markets(["btc-updown-5m"])
 
-        assert len(results) == 1
-        assert results[0] == ("cond_btc_1", "2026-02-22T12:05:00Z")
+        # Both markets returned — no per-market active filtering
+        assert len(results) == _EXPECTED_TOKEN_COUNT
+        cids = [cid for cid, _ in results]
+        assert "cond_btc_1" in cids
+        assert "cond_btc_2" in cids
 
     @pytest.mark.asyncio
     async def test_discover_series_markets_multiple_slugs(self, client: PolymarketClient) -> None:
@@ -405,6 +408,20 @@ class TestPolymarketClient:
         cids = [cid for cid, _ in results]
         assert "btc1" in cids
         assert "eth1" in cids
+
+    @pytest.mark.asyncio
+    async def test_discover_passes_include_next_to_slugs(self, client: PolymarketClient) -> None:
+        """Verify include_next is forwarded to _resolve_timestamped_slugs."""
+        with (
+            patch(
+                "trading_tools.clients.polymarket.client._resolve_timestamped_slugs",
+                return_value=["btc-updown-5m-100"],
+            ) as mock_resolve,
+            patch.object(client._gamma, "get_events", new=AsyncMock(return_value=[])),
+        ):
+            await client.discover_series_markets(["btc-updown-5m"], include_next=True)
+
+        mock_resolve.assert_called_once_with(["btc-updown-5m"], include_next=True)
 
 
 class TestSafeDecimal:
@@ -457,6 +474,73 @@ class TestResolveTimestampedSlugs:
         assert len(result) == _EXPECTED_TOKEN_COUNT
         assert result[0].startswith("btc-updown-5m-")
         assert result[1] == "custom-slug"
+
+    def test_5m_slug_include_next(self) -> None:
+        """Produce two slugs (current + next window) when include_next is True."""
+        result = _resolve_timestamped_slugs(["btc-updown-5m"], include_next=True)
+        assert len(result) == _EXPECTED_TOKEN_COUNT
+        epochs = [int(s.split("-")[-1]) for s in result]
+        five_minutes = 300
+        assert epochs[1] - epochs[0] == five_minutes
+        assert all(e % five_minutes == 0 for e in epochs)
+
+    def test_non_5m_slug_not_duplicated_with_include_next(self) -> None:
+        """Non-5m slugs appear once even when include_next is True."""
+        result = _resolve_timestamped_slugs(["some-other-event"], include_next=True)
+        assert result == ["some-other-event"]
+
+    def test_include_next_default_false(self) -> None:
+        """Verify include_next defaults to False for backward compatibility."""
+        result = _resolve_timestamped_slugs(["btc-updown-5m"])
+        assert len(result) == 1
+
+
+class TestGetMarketTokens:
+    """Tests for the lightweight get_market_tokens method."""
+
+    @pytest.fixture
+    def client(self) -> PolymarketClient:
+        """Create a PolymarketClient with mocked dependencies."""
+        with patch("trading_tools.clients.polymarket.client._clob_adapter.create_clob_client"):
+            return PolymarketClient()
+
+    @pytest.mark.asyncio
+    async def test_returns_market_without_midpoint_enrichment(
+        self, client: PolymarketClient
+    ) -> None:
+        """Return a Market using CLOB data only, without fetching midpoints."""
+        raw_market = _make_clob_market()
+
+        with (
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.fetch_market",
+                return_value=raw_market,
+            ) as mock_fetch,
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.fetch_midpoint",
+            ) as mock_midpoint,
+        ):
+            market = await client.get_market_tokens("cond1")
+
+        mock_fetch.assert_called_once()
+        mock_midpoint.assert_not_called()
+        assert market.condition_id == "cond1"
+        assert len(market.tokens) == _EXPECTED_TOKEN_COUNT
+        # Prices should be the raw CLOB prices, not enriched
+        yes_token = next(t for t in market.tokens if t.outcome == "Yes")
+        assert yes_token.price == Decimal(_PRICE_YES)
+
+    @pytest.mark.asyncio
+    async def test_raises_on_not_found(self, client: PolymarketClient) -> None:
+        """Raise PolymarketAPIError when CLOB returns None."""
+        with (
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.fetch_market",
+                return_value=None,
+            ),
+            pytest.raises(PolymarketAPIError, match="Market not found"),
+        ):
+            await client.get_market_tokens("bad_id")
 
 
 _PRIVATE_KEY = "0xdeadbeef"

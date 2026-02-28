@@ -11,6 +11,7 @@ _DEFAULT_DISCOVERY_INTERVAL = 300
 _DEFAULT_FLUSH_INTERVAL = 10
 _DEFAULT_FLUSH_BATCH_SIZE = 100
 _DEFAULT_RECONNECT_BASE_DELAY = 5.0
+_DEFAULT_DISCOVERY_LEAD_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,11 @@ class CollectorConfig:
         flush_batch_size: Maximum ticks buffered before a forced flush.
         reconnect_base_delay: Initial delay in seconds for exponential
             backoff on WebSocket reconnection.
+        discovery_lead_seconds: How many seconds before the next 5-minute
+            window boundary to trigger market discovery.  Setting this to
+            30 means the collector discovers the next window's markets at
+            4 min 30 s into the current window, giving time to subscribe
+            before the new window opens.
 
     """
 
@@ -41,3 +47,4 @@ class CollectorConfig:
     flush_interval_seconds: int = _DEFAULT_FLUSH_INTERVAL
     flush_batch_size: int = _DEFAULT_FLUSH_BATCH_SIZE
     reconnect_base_delay: float = _DEFAULT_RECONNECT_BASE_DELAY
+    discovery_lead_seconds: int = _DEFAULT_DISCOVERY_LEAD_SECONDS

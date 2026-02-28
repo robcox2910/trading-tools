@@ -25,6 +25,29 @@ logger = logging.getLogger(__name__)
 
 _HEARTBEAT_INTERVAL_SECONDS = 60
 _MS_PER_SECOND = 1000
+_FIVE_MINUTES = 300
+
+
+def _seconds_until_next_discovery(now: int, lead_seconds: int) -> int:
+    """Compute seconds to sleep before the next window-aligned discovery.
+
+    Determine how long to wait so that discovery fires ``lead_seconds``
+    before the next 5-minute window boundary.  If the fire time has
+    already passed within the current window, return 0 so discovery
+    runs immediately.
+
+    Args:
+        now: Current Unix epoch in seconds.
+        lead_seconds: How many seconds before the boundary to fire.
+
+    Returns:
+        Non-negative seconds to sleep.
+
+    """
+    elapsed = now % _FIVE_MINUTES
+    fire_at = _FIVE_MINUTES - lead_seconds
+    remaining = fire_at - elapsed
+    return max(remaining, 0)
 
 
 class TickCollector:
@@ -150,39 +173,52 @@ class TickCollector:
         """Discover markets from series slugs and resolve asset IDs.
 
         Combine static condition IDs from the config with dynamically
-        discovered ones from series slugs. For each condition ID, fetch
-        the market to extract token (asset) IDs and build the condition
-        mapping.
+        discovered ones from series slugs.  Use a single client context
+        for both discovery and resolution, fetch token IDs via the
+        lightweight ``get_market_tokens()`` (no midpoint enrichment),
+        and resolve all condition IDs concurrently with ``asyncio.gather()``.
+        Pass ``include_next=True`` so upcoming 5-minute window markets
+        are discovered before they open.
         """
-        condition_ids = list(self._config.markets)
-
-        if self._config.series_slugs:
-            try:
-                async with PolymarketClient() as client:
-                    discovered = await client.discover_series_markets(
-                        list(self._config.series_slugs)
-                    )
-                for cid, _end_date in discovered:
-                    if cid not in condition_ids:
-                        condition_ids.append(cid)
-                logger.info(
-                    "Discovered %d markets from series slugs",
-                    len(discovered),
-                )
-            except Exception:
-                logger.exception("Series discovery failed")
-
-        new_asset_ids: list[str] = []
         async with PolymarketClient() as client:
-            for cid in condition_ids:
+            condition_ids = list(self._config.markets)
+
+            if self._config.series_slugs:
                 try:
-                    market = await client.get_market(cid)
-                    for token in market.tokens:
-                        if token.token_id not in self._condition_map:
-                            new_asset_ids.append(token.token_id)
-                            self._condition_map[token.token_id] = cid
+                    discovered = await client.discover_series_markets(
+                        list(self._config.series_slugs),
+                        include_next=True,
+                    )
+                    for cid, _end_date in discovered:
+                        if cid not in condition_ids:
+                            condition_ids.append(cid)
+                    logger.info(
+                        "Discovered %d markets from series slugs",
+                        len(discovered),
+                    )
+                except Exception:
+                    logger.exception("Series discovery failed")
+
+            async def _resolve_one(cid: str) -> list[tuple[str, str]]:
+                """Resolve a single condition ID to (token_id, cid) pairs."""
+                try:
+                    market = await client.get_market_tokens(cid)
+                    return [
+                        (token.token_id, cid)
+                        for token in market.tokens
+                        if token.token_id not in self._condition_map
+                    ]
                 except Exception:
                     logger.exception("Failed to resolve market %s", cid)
+                    return []
+
+            results = await asyncio.gather(*(_resolve_one(cid) for cid in condition_ids))
+
+        new_asset_ids: list[str] = []
+        for pairs in results:
+            for token_id, cid in pairs:
+                new_asset_ids.append(token_id)
+                self._condition_map[token_id] = cid
 
         if new_asset_ids:
             added = [a for a in new_asset_ids if a not in self._asset_ids]
@@ -194,19 +230,28 @@ class TickCollector:
             )
 
     async def _periodic_discovery(self) -> None:
-        """Re-discover markets at the configured interval.
+        """Re-discover markets aligned to 5-minute window boundaries.
 
-        On each cycle, discover new markets and update the WebSocket
-        subscription if new assets are found.
+        Sleep until ``discovery_lead_seconds`` before the next 5-minute
+        boundary, then run discovery.  This ensures the collector subscribes
+        to the next window's markets before they open, capturing ticks from
+        the very start of each window.
         """
         while not self._shutdown:
-            await asyncio.sleep(self._config.discovery_interval_seconds)
+            sleep_seconds = _seconds_until_next_discovery(
+                int(time.time()), self._config.discovery_lead_seconds
+            )
+            if sleep_seconds > 0:
+                await asyncio.sleep(sleep_seconds)
             if self._shutdown:
                 break
             old_count = len(self._asset_ids)
             await self._discover_and_resolve()
             if len(self._asset_ids) > old_count:
                 await self._feed.update_subscription(self._asset_ids)
+            # After firing, sleep at least 1s to avoid busy-looping
+            # when _seconds_until_next_discovery returns 0 repeatedly.
+            await asyncio.sleep(1)
 
     async def _periodic_heartbeat(self) -> None:
         """Log collection stats at regular intervals for monitoring.

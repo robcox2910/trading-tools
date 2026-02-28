@@ -189,6 +189,35 @@ class PolymarketClient:
             active=market.active,
         )
 
+    async def get_market_tokens(self, condition_id: str) -> Market:
+        """Fetch a market without midpoint price enrichment.
+
+        Use the CLOB ``/markets/{condition_id}`` endpoint to retrieve market
+        metadata and token IDs, but skip the per-token midpoint fetch.  This
+        is faster than ``get_market()`` and sufficient when only the token
+        IDs are needed (e.g. for WebSocket subscription setup).
+
+        Args:
+            condition_id: Unique identifier for the market condition.
+
+        Returns:
+            Market with token IDs and CLOB-reported prices (no live midpoint).
+
+        Raises:
+            PolymarketAPIError: When the market is not found or API fails.
+
+        """
+        async with self._clob_lock:
+            raw = await asyncio.to_thread(
+                _clob_adapter.fetch_market, self._clob_client, condition_id
+            )
+        if raw is None:
+            raise PolymarketAPIError(
+                msg=f"Market not found: {condition_id}",
+                status_code=404,
+            )
+        return self._parse_clob_market(raw)
+
     async def get_order_book(self, token_id: str) -> OrderBook:
         """Fetch a typed order book for a token.
 
@@ -215,36 +244,42 @@ class PolymarketClient:
     async def discover_series_markets(
         self,
         series_slugs: list[str],
+        *,
+        include_next: bool = False,
     ) -> list[tuple[str, str]]:
-        """Discover active markets from event series slugs.
+        """Discover markets from event series slugs.
 
         Query the Gamma API events endpoint for each series slug and collect
-        the condition IDs and precise end dates of all active markets within
-        those events.
+        the condition IDs and precise end dates of all markets within those
+        events.  No per-market active filtering is applied — timestamped slugs
+        are window-specific so stale results are harmless (the WebSocket will
+        simply yield no ticks for expired markets).
 
         For rotating short-duration markets (e.g. ``btc-updown-5m``), the
         Gamma API slug includes an epoch timestamp suffix. This method
         automatically computes the current 5-minute window epoch and appends
-        it when the base slug matches the ``*-5m`` pattern.
+        it when the base slug matches the ``*-5m`` pattern.  When
+        ``include_next`` is ``True``, the next window slug is also resolved
+        so the collector can subscribe before the window opens.
 
         Args:
             series_slugs: Event slugs to search (e.g. ``["btc-updown-5m"]``).
+            include_next: When ``True``, also resolve the next 5-minute window
+                slug so markets can be discovered ahead of time.
 
         Returns:
-            List of ``(condition_id, end_date_iso)`` tuples for active markets
-            found in the specified series.
+            List of ``(condition_id, end_date_iso)`` tuples for markets found
+            in the specified series.
 
         """
-        resolved_slugs = _resolve_timestamped_slugs(series_slugs)
+        resolved_slugs = _resolve_timestamped_slugs(series_slugs, include_next=include_next)
         all_events = await asyncio.gather(
-            *(self._gamma.get_events(slug=slug, active=True, limit=5) for slug in resolved_slugs)
+            *(self._gamma.get_events(slug=slug, active=False, limit=5) for slug in resolved_slugs)
         )
         results: list[tuple[str, str]] = []
         for events in all_events:
             for event in events:
                 for market_raw in event.get("markets", []):
-                    if not market_raw.get("active", False):
-                        continue
                     cid = market_raw.get("conditionId", market_raw.get("condition_id", ""))
                     end_date = market_raw.get("endDate", market_raw.get("end_date", ""))
                     if cid:
@@ -774,16 +809,24 @@ def _safe_decimal(value: Any) -> Decimal:
 _FIVE_MINUTES = 300
 
 
-def _resolve_timestamped_slugs(series_slugs: list[str]) -> list[str]:
+def _resolve_timestamped_slugs(
+    series_slugs: list[str],
+    *,
+    include_next: bool = False,
+) -> list[str]:
     """Expand series slugs into timestamped slugs for rotating markets.
 
     Polymarket 5-minute markets use slugs like ``btc-updown-5m-1771758600``
     where the suffix is the Unix epoch of the current 5-minute window start.
     For slugs ending in ``-5m``, compute the current window epoch and append
-    it. Other slugs are passed through unchanged.
+    it.  When ``include_next`` is ``True``, also emit the next window slug
+    so the collector can discover upcoming markets before they open.
+    Other slugs are passed through unchanged.
 
     Args:
         series_slugs: Base series slugs (e.g. ``["btc-updown-5m"]``).
+        include_next: When ``True``, emit both the current and next 5-minute
+            window slugs for ``-5m`` series.  Non-5m slugs are not duplicated.
 
     Returns:
         Resolved slugs with epoch suffixes where applicable.
@@ -795,6 +838,8 @@ def _resolve_timestamped_slugs(series_slugs: list[str]) -> list[str]:
     for slug in series_slugs:
         if slug.endswith("-5m"):
             resolved.append(f"{slug}-{current_window}")
+            if include_next:
+                resolved.append(f"{slug}-{current_window + _FIVE_MINUTES}")
         else:
             resolved.append(slug)
     return resolved
