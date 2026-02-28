@@ -40,7 +40,7 @@ resource "aws_cloudwatch_log_metric_filter" "perf_heartbeat" {
 resource "aws_cloudwatch_log_metric_filter" "errors" {
   name           = "trading-bot-errors"
   log_group_name = aws_cloudwatch_log_group.live_bot.name
-  pattern        = "?\"Error:\" ?\"ERROR\" -\"TRADE REJECTED\""
+  pattern        = "?\"Error:\" ?\"ERROR\" -\"TRADE REJECTED\" -\"fully filled or killed\""
 
   metric_transformation {
     name          = "ErrorCount"
