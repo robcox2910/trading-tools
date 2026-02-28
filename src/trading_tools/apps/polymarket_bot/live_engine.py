@@ -599,18 +599,56 @@ class LiveTradingEngine:
         if ret <= Decimal(-20):
             logger.warning("DRAWDOWN ALERT return=%+.2f%%", ret)
 
+    async def _refresh_order_book(self, condition_id: str) -> MarketSnapshot | None:
+        """Fetch a fresh order book for a market and rebuild the snapshot.
+
+        Call immediately before executing a trade so the order book data
+        is current rather than up to ``order_book_refresh_seconds`` stale.
+
+        Args:
+            condition_id: Market condition identifier.
+
+        Returns:
+            Updated ``MarketSnapshot`` with the fresh order book,
+            or ``None`` if the refresh fails.
+
+        """
+        market = self._cached_markets.get(condition_id)
+        if market is None or len(market.tokens) < _MIN_TOKENS:
+            return None
+
+        try:
+            order_book = await self._client.get_order_book(market.tokens[0].token_id)
+            self._cached_order_books[condition_id] = order_book
+            logger.info("Refreshed order book for %s before trade", condition_id[:20])
+        except Exception:
+            logger.warning(
+                "Failed to refresh order book for %s before trade, using cached",
+                condition_id[:20],
+                exc_info=True,
+            )
+
+        return self._build_snapshot(condition_id)
+
     async def _apply_signal(self, sig: Signal, snapshot: MarketSnapshot) -> None:
         """Convert a strategy signal into a real trade.
 
-        Size the position using the Kelly criterion and execute via the
-        live portfolio. A SELL signal on a market with no open position
-        is interpreted as "buy the NO/Down token" (the complement outcome).
+        Refresh the order book before executing so position sizing and
+        price data are current. Size the position using the Kelly criterion
+        and execute via the live portfolio. A SELL signal on a market with
+        no open position is interpreted as "buy the NO/Down token"
+        (the complement outcome).
 
         Args:
             sig: Trading signal from the strategy.
             snapshot: Current market snapshot.
 
         """
+        # Refresh order book to get current bid/ask before trading
+        fresh_snapshot = await self._refresh_order_book(snapshot.condition_id)
+        if fresh_snapshot is not None:
+            snapshot = fresh_snapshot
+
         condition_id = snapshot.condition_id
         token_ids = self._token_ids.get(condition_id)
         if token_ids is None:

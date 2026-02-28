@@ -311,6 +311,27 @@ class TestPaperTradingEngine:
 
         feed.close.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_order_book_refreshed_before_trade(self) -> None:
+        """Verify the order book is refreshed immediately before executing a trade."""
+        prices = ["0.60"] * 6 + ["0.40"]
+        events = [_make_ws_event(price=p) for p in prices]
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy(period=5, z_threshold=Decimal("1.5"))
+        config = _make_config()
+        feed = _mock_feed(events)
+        engine = PaperTradingEngine(client, strategy, config, feed=feed)
+
+        await engine.run(max_ticks=len(prices))
+
+        # get_order_book is called at bootstrap + once per trade signal
+        ob_call_count = client.get_order_book.call_count
+        min_expected_calls = 2  # 1 bootstrap + 1 pre-trade refresh
+        assert ob_call_count >= min_expected_calls, (
+            f"Expected at least {min_expected_calls} get_order_book calls "
+            f"(bootstrap + pre-trade refresh), got {ob_call_count}"
+        )
+
 
 _NEW_CONDITION_ID = "cond_rotated_market"
 
