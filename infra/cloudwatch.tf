@@ -259,7 +259,7 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
           title   = "Portfolio vs Available to Trade"
           region  = var.aws_region
           stacked = false
-          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* ' as equity | parse @message 'portfolio=$* ' as portfolio | stats avg(equity) as \"Available to Trade\", avg(portfolio) as Portfolio by bin(5m)"
+          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* ' as equity | parse @message 'portfolio=$* ' as portfolio | stats avg(equity) as AvailableToTrade, avg(portfolio) as Portfolio by bin(5m)"
           view    = "timeSeries"
           yAxis = {
             left = { label = "USD" }
@@ -395,7 +395,7 @@ resource "aws_cloudwatch_dashboard" "paper_bot" {
           title   = "Portfolio vs Available to Trade"
           region  = var.aws_region
           stacked = false
-          query   = "SOURCE '${aws_cloudwatch_log_group.paper_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* ' as equity | parse @message 'portfolio=$* ' as portfolio | stats avg(equity) as \"Available to Trade\", avg(portfolio) as Portfolio by bin(5m)"
+          query   = "SOURCE '${aws_cloudwatch_log_group.paper_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* ' as equity | parse @message 'portfolio=$* ' as portfolio | stats avg(equity) as AvailableToTrade, avg(portfolio) as Portfolio by bin(5m)"
           view    = "timeSeries"
           yAxis = {
             left = { label = "USD" }
