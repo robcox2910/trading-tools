@@ -40,7 +40,7 @@ resource "aws_cloudwatch_log_metric_filter" "perf_heartbeat" {
 resource "aws_cloudwatch_log_metric_filter" "errors" {
   name           = "trading-bot-errors"
   log_group_name = aws_cloudwatch_log_group.live_bot.name
-  pattern        = "?\"Error:\" ?\"ERROR\" -\"TRADE REJECTED\""
+  pattern        = "?\"Error:\" ?\"ERROR\" -\"TRADE REJECTED\" -\"fully filled or killed\""
 
   metric_transformation {
     name          = "ErrorCount"
@@ -236,7 +236,7 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
           title   = "Return % Over Time"
           region  = var.aws_region
           stacked = false
-          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* cash=$* positions=* trades=* return=*%%' as equity, cash, positions, trades, returnPct | stats avg(returnPct) as ReturnPct by bin(5m)"
+          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* cash=$* positions=* trades=* return=*%' as equity, cash, positions, trades, returnPct | stats avg(returnPct) as ReturnPct by bin(5m)"
           view    = "timeSeries"
           yAxis = {
             left = { label = "%" }
