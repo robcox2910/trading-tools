@@ -79,8 +79,6 @@ class TestBotCommand:
                     _CONDITION_ID,
                     "--max-ticks",
                     "5",
-                    "--poll-interval",
-                    "0",
                 ],
             )
 
@@ -119,8 +117,6 @@ class TestBotCommand:
                     "pm_liquidity_imbalance",
                     "--max-ticks",
                     "1",
-                    "--poll-interval",
-                    "0",
                 ],
             )
 
@@ -154,8 +150,6 @@ class TestBotCommand:
                     "cond1,cond2,cond3",
                     "--max-ticks",
                     "1",
-                    "--poll-interval",
-                    "0",
                 ],
             )
 
@@ -210,8 +204,6 @@ class TestBotCommand:
                         "btc-updown-5m",
                         "--max-ticks",
                         "1",
-                        "--poll-interval",
-                        "0",
                     ],
                 )
 
@@ -257,8 +249,6 @@ class TestBotCommand:
                     "45",
                     "--max-ticks",
                     "1",
-                    "--poll-interval",
-                    "0",
                 ],
             )
 
@@ -305,8 +295,6 @@ class TestBotCommand:
                         "btc-updown-5m",
                         "--max-ticks",
                         "1",
-                        "--poll-interval",
-                        "0",
                     ],
                 )
 
@@ -352,8 +340,6 @@ class TestBotCommand:
                         "crypto-5m",
                         "--max-ticks",
                         "1",
-                        "--poll-interval",
-                        "0",
                     ],
                 )
 
