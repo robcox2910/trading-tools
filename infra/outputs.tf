@@ -4,13 +4,13 @@ output "instance_id" {
 }
 
 output "public_ip" {
-  description = "Public IP address of the trading bot instance"
-  value       = aws_instance.trading_bot.public_ip
+  description = "Elastic IP address of the trading bot instance"
+  value       = aws_eip.trading_bot.public_ip
 }
 
 output "ssh_command" {
   description = "SSH command to connect to the instance"
-  value       = "ssh -i ~/.ssh/trading-tools-key ubuntu@${aws_instance.trading_bot.public_ip}"
+  value       = "ssh -i ~/.ssh/trading-tools-key ubuntu@${aws_eip.trading_bot.public_ip}"
 }
 
 output "paper_bot_logs" {
