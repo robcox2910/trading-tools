@@ -1,6 +1,6 @@
 """CLI command for running the Polymarket paper trading bot.
 
-Launch the async polling engine with a configurable strategy, capital,
+Launch the WebSocket-driven engine with a configurable strategy, capital,
 and market selection. Support auto-discovery of 5-minute crypto markets
 via Gamma API series slugs. Display a summary of results when the bot stops.
 """
@@ -18,6 +18,7 @@ from trading_tools.apps.polymarket_bot.strategy_factory import (
     PM_STRATEGY_NAMES,
     build_pm_strategy,
 )
+from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 
@@ -48,7 +49,7 @@ def bot(  # noqa: PLR0913
         typer.Option(help="Comma-separated series slugs for auto-discovery (e.g. btc-updown-5m)"),
     ] = "",
     capital: Annotated[float, typer.Option(help="Initial virtual capital in USD")] = 1000.0,
-    poll_interval: Annotated[int, typer.Option(help="Seconds between market data polls")] = 30,
+    ob_refresh: Annotated[int, typer.Option(help="Seconds between order book refreshes")] = 30,
     max_ticks: Annotated[
         int | None, typer.Option(help="Stop after N ticks (None = unlimited)")
     ] = None,
@@ -75,8 +76,9 @@ def bot(  # noqa: PLR0913
 ) -> None:
     """Run the Polymarket paper trading bot.
 
-    Poll prediction markets at a configurable interval, feed snapshots to
-    a strategy, size positions with Kelly criterion, and track virtual P&L.
+    Stream real-time trade prices via WebSocket and refresh order books
+    periodically via HTTP. Feed snapshots to a strategy, size positions
+    with Kelly criterion, and track virtual P&L.
 
     Use ``--series`` to auto-discover active 5-minute crypto markets, or
     ``--markets`` to specify condition IDs directly. Both can be combined.
@@ -90,7 +92,7 @@ def bot(  # noqa: PLR0913
             markets=markets,
             series=series,
             capital=capital,
-            poll_interval=poll_interval,
+            ob_refresh=ob_refresh,
             max_ticks=max_ticks,
             max_position_pct=max_position_pct,
             kelly_frac=kelly_frac,
@@ -163,7 +165,7 @@ async def _bot(  # noqa: PLR0913
     markets: str,
     series: str,
     capital: float,
-    poll_interval: int,
+    ob_refresh: int,
     max_ticks: int | None,
     max_position_pct: float,
     kelly_frac: float,
@@ -182,7 +184,7 @@ async def _bot(  # noqa: PLR0913
         markets: Comma-separated condition IDs.
         series: Comma-separated series slugs for auto-discovery.
         capital: Initial virtual capital.
-        poll_interval: Seconds between polls.
+        ob_refresh: Seconds between order book refreshes.
         max_ticks: Maximum number of ticks.
         max_position_pct: Maximum position size as fraction of capital.
         kelly_frac: Fractional Kelly multiplier.
@@ -236,7 +238,7 @@ async def _bot(  # noqa: PLR0913
         raise typer.Exit(code=1) from exc
 
     config = BotConfig(
-        poll_interval_seconds=poll_interval,
+        order_book_refresh_seconds=ob_refresh,
         snipe_window_seconds=snipe_window,
         initial_capital=Decimal(str(capital)),
         max_position_pct=Decimal(str(max_position_pct)),
@@ -251,14 +253,15 @@ async def _bot(  # noqa: PLR0913
     for mid in market_ids:
         typer.echo(f"  {mid[:40]}...")
     typer.echo(f"Capital: ${config.initial_capital}")
-    typer.echo(f"Poll interval: {config.poll_interval_seconds}s")
+    typer.echo(f"Order book refresh: {config.order_book_refresh_seconds}s")
     if max_ticks is not None:
         typer.echo(f"Max ticks: {max_ticks}")
     typer.echo("")
 
+    feed = MarketFeed()
     try:
         async with PolymarketClient() as client:
-            engine = PaperTradingEngine(client, pm_strategy, config)
+            engine = PaperTradingEngine(client, pm_strategy, config, feed=feed)
             result = await engine.run(max_ticks=max_ticks)
     except PolymarketAPIError as exc:
         typer.echo(f"Error: {exc}", err=True)

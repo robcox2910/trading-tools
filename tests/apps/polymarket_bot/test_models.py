@@ -106,7 +106,8 @@ class TestBotConfig:
     def test_defaults(self) -> None:
         """Test that BotConfig has sensible defaults."""
         config = BotConfig()
-        assert config.poll_interval_seconds == 30  # noqa: PLR2004
+        assert config.order_book_refresh_seconds == 30  # noqa: PLR2004
+        assert config.balance_refresh_seconds == 60  # noqa: PLR2004
         assert config.initial_capital == Decimal(1000)
         assert config.max_position_pct == Decimal("0.1")
         assert config.kelly_fraction == Decimal("0.25")
@@ -117,11 +118,11 @@ class TestBotConfig:
     def test_custom_values(self) -> None:
         """Test creating BotConfig with custom values."""
         config = BotConfig(
-            poll_interval_seconds=60,
+            order_book_refresh_seconds=15,
             initial_capital=Decimal(5000),
             markets=("cond1", "cond2"),
         )
-        assert config.poll_interval_seconds == 60  # noqa: PLR2004
+        assert config.order_book_refresh_seconds == 15  # noqa: PLR2004
         assert config.initial_capital == Decimal(5000)
         assert len(config.markets) == 2  # noqa: PLR2004
 
