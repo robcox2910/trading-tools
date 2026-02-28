@@ -225,7 +225,7 @@ EnvironmentFile=-/run/tick-collector.env
 
 ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket tick-collect \
   --series ${bot_series} \
-  --db-url sqlite+aiosqlite:///var/lib/trading-tools/tick_data.db \
+  --db-url sqlite+aiosqlite:////var/lib/trading-tools/tick_data.db \
   --verbose
 
 StandardOutput=append:/var/log/trading-tools/tick-collector.log
