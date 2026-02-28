@@ -40,6 +40,10 @@ def tick_collect(
     discovery_interval: Annotated[
         int, typer.Option(help="Seconds between market re-discovery")
     ] = 300,
+    discovery_lead: Annotated[
+        int,
+        typer.Option(help="Seconds before next 5-min boundary to trigger discovery"),
+    ] = 30,
     verbose: Annotated[  # noqa: FBT002
         bool, typer.Option("--verbose", "-v", help="Enable debug logging")
     ] = False,
@@ -75,6 +79,7 @@ def tick_collect(
         discovery_interval_seconds=discovery_interval,
         flush_interval_seconds=flush_interval,
         flush_batch_size=flush_batch_size,
+        discovery_lead_seconds=discovery_lead,
     )
 
     typer.echo(f"Starting tick collector (db: {db_url})")
