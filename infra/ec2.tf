@@ -31,3 +31,13 @@ resource "aws_instance" "trading_bot" {
     Project = "trading-tools"
   }
 }
+
+# Elastic IP for stable public address across reboots
+resource "aws_eip" "trading_bot" {
+  instance = aws_instance.trading_bot.id
+
+  tags = {
+    Name    = "trading-bot"
+    Project = "trading-tools"
+  }
+}
