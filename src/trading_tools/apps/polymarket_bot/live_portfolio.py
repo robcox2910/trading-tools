@@ -70,6 +70,7 @@ class LivePortfolio:
 
         """
         try:
+            await self._client.sync_balance("COLLATERAL")
             bal = await self._client.get_balance("COLLATERAL")
             self._balance = bal.balance
         except Exception:

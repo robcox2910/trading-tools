@@ -463,6 +463,31 @@ def get_balance(client: Any, asset_type: str = "COLLATERAL") -> dict[str, Any]:
     return _safe_clob_call("fetch balance", _fetch)
 
 
+def update_balance(client: Any, asset_type: str = "COLLATERAL") -> None:
+    """Tell the CLOB to re-sync its cached balance from on-chain state.
+
+    Call this before ``get_balance`` so the CLOB returns the latest on-chain
+    USDC balance rather than a stale cached value.
+
+    Args:
+        client: A Level 2 ``ClobClient`` instance.
+        asset_type: ``"COLLATERAL"`` for USDC or ``"CONDITIONAL"`` for tokens.
+
+    Raises:
+        PolymarketAPIError: When the update call fails.
+
+    """
+    resolved_type: str = (
+        AssetType.COLLATERAL if asset_type == "COLLATERAL" else AssetType.CONDITIONAL
+    )
+    params = BalanceAllowanceParams(asset_type=resolved_type)  # type: ignore[reportArgumentType]
+
+    def _update() -> dict[str, Any]:
+        return client.update_balance_allowance(params=params)  # type: ignore[no-any-return]
+
+    _safe_clob_call("update balance", _update)
+
+
 def cancel_order(client: Any, order_id: str) -> dict[str, Any]:
     """Cancel an open order by its ID.
 
