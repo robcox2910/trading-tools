@@ -725,6 +725,16 @@ class LiveTradingEngine:
             sig: Strategy signal that triggered the trade.
 
         """
+        max_clob_price = Decimal("0.99")
+        if buy_price > max_clob_price:
+            logger.info(
+                "[tick %d] Capping price from %.4f to %.4f (CLOB max)",
+                self._snapshots_processed,
+                buy_price,
+                max_clob_price,
+            )
+            buy_price = max_clob_price
+
         min_edge = Decimal("0.005")
         estimated_prob = max(
             buy_price + sig.strength * (Decimal(1) - buy_price),
