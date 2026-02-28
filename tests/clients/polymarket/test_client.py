@@ -736,3 +736,91 @@ class TestGetRedeemablePositions:
             pytest.raises(PolymarketAPIError, match="Data API error"),
         ):
             await client_with_funder.get_redeemable_positions()
+
+
+_EXPECTED_PORTFOLIO_VALUE = (
+    Decimal("108.86") + Decimal(10) * Decimal("0.65") + Decimal(5) * Decimal("0.80")
+)
+_PRIVATE_KEY_WITH_FUNDER = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+
+class TestGetPortfolioValue:
+    """Test suite for get_portfolio_value total account value calculation."""
+
+    @pytest.fixture
+    def auth_client_with_funder(self) -> PolymarketClient:
+        """Create an authenticated PolymarketClient with funder address."""
+        with patch(
+            "trading_tools.clients.polymarket.client._clob_adapter.create_authenticated_clob_client"
+        ):
+            return PolymarketClient(
+                private_key=_PRIVATE_KEY_WITH_FUNDER,
+                funder_address=_FUNDER_ADDRESS,
+            )
+
+    @pytest.mark.asyncio
+    async def test_sums_usdc_and_positions(self, auth_client_with_funder: PolymarketClient) -> None:
+        """Compute total portfolio value as USDC balance + sum(size * curPrice)."""
+        usdc_balance = Decimal("108.86")
+        raw_positions = [
+            {"size": 10.0, "curPrice": 0.65, "conditionId": "c1", "asset": "t1"},
+            {"size": 5.0, "curPrice": 0.80, "conditionId": "c2", "asset": "t2"},
+        ]
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = raw_positions
+
+        with (
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.update_balance",
+            ),
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.get_balance",
+                return_value={"balance": str(int(usdc_balance * Decimal("1e6"))), "allowance": "0"},
+            ),
+            patch.object(
+                auth_client_with_funder._data_client,
+                "get",
+                new=AsyncMock(return_value=mock_response),
+            ),
+        ):
+            result = await auth_client_with_funder.get_portfolio_value()
+
+        assert result == _EXPECTED_PORTFOLIO_VALUE
+
+    @pytest.mark.asyncio
+    async def test_returns_usdc_only_when_no_positions(
+        self, auth_client_with_funder: PolymarketClient
+    ) -> None:
+        """Return USDC balance when there are no open positions."""
+        usdc_balance = Decimal("100.00")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = []
+
+        with (
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.update_balance",
+            ),
+            patch(
+                "trading_tools.clients.polymarket.client._clob_adapter.get_balance",
+                return_value={"balance": str(int(usdc_balance * Decimal("1e6"))), "allowance": "0"},
+            ),
+            patch.object(
+                auth_client_with_funder._data_client,
+                "get",
+                new=AsyncMock(return_value=mock_response),
+            ),
+        ):
+            result = await auth_client_with_funder.get_portfolio_value()
+
+        assert result == usdc_balance
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self) -> None:
+        """Raise PolymarketAPIError when called without authentication."""
+        with patch("trading_tools.clients.polymarket.client._clob_adapter.create_clob_client"):
+            client = PolymarketClient(funder_address=_FUNDER_ADDRESS)
+
+        with pytest.raises(PolymarketAPIError, match="Authentication required"):
+            await client.get_portfolio_value()
