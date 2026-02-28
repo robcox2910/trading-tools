@@ -319,6 +319,23 @@ class PolymarketClient:
                 )
         return _parse_order_response(raw, request)
 
+    async def sync_balance(self, asset_type: str = "COLLATERAL") -> None:
+        """Tell the CLOB to re-sync its cached balance from on-chain state.
+
+        Call this before ``get_balance`` so the returned value reflects the
+        latest on-chain USDC balance rather than a stale cached value.
+
+        Args:
+            asset_type: ``"COLLATERAL"`` for USDC or ``"CONDITIONAL"`` for tokens.
+
+        Raises:
+            PolymarketAPIError: When not authenticated or the sync fails.
+
+        """
+        self._require_auth()
+        async with self._clob_lock:
+            await asyncio.to_thread(_clob_adapter.update_balance, self._clob_client, asset_type)
+
     async def get_balance(self, asset_type: str = "COLLATERAL") -> Balance:
         """Fetch the balance and allowance for an asset.
 
