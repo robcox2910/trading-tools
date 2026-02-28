@@ -19,6 +19,16 @@ resource "aws_cloudwatch_log_group" "live_bot" {
   }
 }
 
+resource "aws_cloudwatch_log_group" "tick_collector" {
+  name              = "/trading-tools/tick-collector"
+  retention_in_days = 30
+
+  tags = {
+    Project = "trading-tools"
+    Service = "tick-collector"
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Metric Filters — count log line patterns
 # ---------------------------------------------------------------------------
@@ -96,6 +106,36 @@ resource "aws_cloudwatch_log_metric_filter" "drawdown_alert" {
 
   metric_transformation {
     name          = "DrawdownAlert"
+    namespace     = "TradingBot"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Tick Collector Metric Filters
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_log_metric_filter" "tick_collector_heartbeat" {
+  name           = "tick-collector-heartbeat"
+  log_group_name = aws_cloudwatch_log_group.tick_collector.name
+  pattern        = "\"[TICK-COLLECTOR]\""
+
+  metric_transformation {
+    name          = "TickCollectorHeartbeat"
+    namespace     = "TradingBot"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "tick_collector_errors" {
+  name           = "tick-collector-errors"
+  log_group_name = aws_cloudwatch_log_group.tick_collector.name
+  pattern        = "?\"Error:\" ?\"ERROR\""
+
+  metric_transformation {
+    name          = "TickCollectorErrorCount"
     namespace     = "TradingBot"
     value         = "1"
     default_value = "0"
@@ -301,9 +341,39 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
           region = var.aws_region
           metrics = [
             ["AWS/Logs", "IncomingLogEvents", "LogGroupName", aws_cloudwatch_log_group.live_bot.name, { stat = "Sum", period = 300 }],
-            ["AWS/Logs", "IncomingLogEvents", "LogGroupName", aws_cloudwatch_log_group.paper_bot.name, { stat = "Sum", period = 300 }]
+            ["AWS/Logs", "IncomingLogEvents", "LogGroupName", aws_cloudwatch_log_group.paper_bot.name, { stat = "Sum", period = 300 }],
+            ["AWS/Logs", "IncomingLogEvents", "LogGroupName", aws_cloudwatch_log_group.tick_collector.name, { stat = "Sum", period = 300 }]
           ]
           view = "timeSeries"
+        }
+      },
+      {
+        type   = "log"
+        x      = 0
+        y      = 18
+        width  = 12
+        height = 6
+        properties = {
+          title   = "Tick Collector Throughput"
+          region  = var.aws_region
+          stacked = false
+          query   = "SOURCE '${aws_cloudwatch_log_group.tick_collector.name}' | fields @timestamp | filter @message like /\\[TICK-COLLECTOR\\]/ | parse @message 'ticks_last_min=* total_stored=* assets=*' as ticks_min, total, assets | stats avg(ticks_min) as TicksPerMin, max(total) as TotalStored by bin(5m)"
+          view    = "timeSeries"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 18
+        width  = 12
+        height = 6
+        properties = {
+          title  = "Tick Collector Errors"
+          region = var.aws_region
+          metrics = [
+            ["TradingBot", "TickCollectorErrorCount", { stat = "Sum", period = 300 }]
+          ]
+          view = "bar"
         }
       }
     ]

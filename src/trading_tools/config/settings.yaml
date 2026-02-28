@@ -35,6 +35,10 @@ polymarket:
   api_secret: ${POLYMARKET_API_SECRET:}
   api_passphrase: ${POLYMARKET_API_PASSPHRASE:}
 
+# Tick Collector Settings
+tick_collector:
+  db_url: ${TICK_DB_URL:sqlite+aiosqlite:///var/lib/trading-tools/tick_data.db}
+
 # Database Settings (future use)
 database:
   host: ${DB_HOST:localhost}
