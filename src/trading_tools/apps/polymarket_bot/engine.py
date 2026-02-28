@@ -1,8 +1,10 @@
 """Async paper trading engine for prediction markets.
 
-Implement the core polling loop that fetches market data, builds snapshots,
-feeds them to a strategy, sizes positions with Kelly criterion, and tracks
-virtual P&L through a paper portfolio.
+Implement a WebSocket-driven event loop that receives real-time trade prices
+from ``MarketFeed``, builds market snapshots, feeds them to a strategy, sizes
+positions with Kelly criterion, and tracks virtual P&L through a paper
+portfolio. Order books are refreshed periodically in the background since
+the WebSocket only provides last trade prices.
 """
 
 import asyncio
@@ -10,7 +12,7 @@ import logging
 import time
 from collections import deque
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from trading_tools.apps.polymarket_bot.kelly import kelly_fraction
 from trading_tools.apps.polymarket_bot.models import (
@@ -19,32 +21,35 @@ from trading_tools.apps.polymarket_bot.models import (
     PaperTradingResult,
 )
 from trading_tools.apps.polymarket_bot.portfolio import PaperPortfolio
+from trading_tools.apps.polymarket_bot.price_tracker import PriceTracker
 from trading_tools.apps.polymarket_bot.protocols import PredictionMarketStrategy
+from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.core.models import ZERO, Side, Signal
 
 if TYPE_CHECKING:
-    from trading_tools.clients.polymarket.models import Market
+    from trading_tools.clients.polymarket.models import Market, OrderBook
 
 logger = logging.getLogger(__name__)
 
-_TIMESTAMP_PLACEHOLDER = 0
 _MIN_TOKENS = 2
 _FIVE_MINUTES = 300
 
 
 class PaperTradingEngine:
-    """Async polling engine that wires strategy, Kelly sizer, and portfolio.
+    """WebSocket-driven engine that wires strategy, Kelly sizer, and portfolio.
 
-    Fetch market data at a configurable interval, build ``MarketSnapshot``
-    objects, feed them to the configured strategy, and execute virtual trades
-    sized by the Kelly criterion. Track all positions and trades through a
+    Receive real-time trade prices from ``MarketFeed``, maintain cached order
+    books via periodic HTTP refresh, build ``MarketSnapshot`` objects, feed
+    them to the configured strategy, and execute virtual trades sized by the
+    Kelly criterion. Track all positions and trades through a
     ``PaperPortfolio``.
 
     Args:
         client: Async Polymarket API client for fetching market data.
         strategy: Prediction market strategy that generates trading signals.
-        config: Bot configuration (poll interval, capital, markets, etc.).
+        config: Bot configuration (refresh intervals, capital, markets, etc.).
+        feed: WebSocket market feed for streaming trade events.
 
     """
 
@@ -53,6 +58,7 @@ class PaperTradingEngine:
         client: PolymarketClient,
         strategy: PredictionMarketStrategy,
         config: BotConfig,
+        feed: MarketFeed | None = None,
     ) -> None:
         """Initialize the paper trading engine.
 
@@ -60,12 +66,16 @@ class PaperTradingEngine:
             client: Async Polymarket API client.
             strategy: Prediction market strategy instance.
             config: Bot configuration.
+            feed: Optional ``MarketFeed`` instance. Created automatically
+                if not provided.
 
         """
         self._client = client
         self._strategy = strategy
         self._config = config
+        self._feed = feed or MarketFeed()
         self._portfolio = PaperPortfolio(config.initial_capital, config.max_position_pct)
+        self._price_tracker = PriceTracker()
         self._active_markets: list[str] = list(config.markets)
         self._history: dict[str, deque[MarketSnapshot]] = {
             cid: deque(maxlen=config.max_history) for cid in self._active_markets
@@ -73,86 +83,172 @@ class PaperTradingEngine:
         self._snapshots_processed = 0
         self._position_outcomes: dict[str, str] = {}
         self._end_time_overrides: dict[str, str] = dict(config.market_end_times)
+        self._cached_order_books: dict[str, OrderBook] = {}
+        self._cached_markets: dict[str, Market] = {}
         now = int(time.time())
         self._current_window: int = (now // _FIVE_MINUTES) * _FIVE_MINUTES
+        self._asset_ids: list[str] = []
 
     async def run(self, *, max_ticks: int | None = None) -> PaperTradingResult:
-        """Execute the polling loop until stopped or max_ticks reached.
+        """Execute the WebSocket event loop until stopped or max_ticks reached.
 
-        Each tick fetches market data, builds snapshots, feeds them to the
-        strategy, and processes any resulting signals.
+        Bootstrap initial state via HTTP (fetch markets and order books),
+        then stream trade events from ``MarketFeed``. Background tasks
+        refresh order books and rotate markets periodically.
 
         Args:
-            max_ticks: Stop after this many ticks (``None`` for unlimited).
+            max_ticks: Stop after this many price events (``None`` for unlimited).
 
         Returns:
             Summary of the paper trading run including trades and metrics.
 
         """
+        await self._bootstrap()
+
+        if not self._asset_ids:
+            return self._build_result()
+
+        ob_task = asyncio.create_task(self._refresh_order_books_loop())
+        rotation_task = asyncio.create_task(self._rotation_loop())
+
         tick_count = 0
-        while max_ticks is None or tick_count < max_ticks:
-            await self._tick()
-            tick_count += 1
-            if max_ticks is not None and tick_count >= max_ticks:
-                break
-            await asyncio.sleep(self._config.poll_interval_seconds)
+        try:
+            async for event in self._feed.stream(self._asset_ids):
+                self._on_price_update(event)
+                tick_count += 1
+                if max_ticks is not None and tick_count >= max_ticks:
+                    break
+        finally:
+            ob_task.cancel()
+            rotation_task.cancel()
+            await self._feed.close()
 
         return self._build_result()
 
-    def _log_performance(self) -> None:
-        """Log performance metrics at market rotation boundaries.
+    async def _bootstrap(self) -> None:
+        """Fetch initial market data and order books via HTTP.
 
-        Emit an INFO log line with equity, cash, position count, trade count,
-        and return percentage so that long-running bots can be monitored via
-        log files or CloudWatch without stopping the engine.
+        Register all markets with the price tracker and populate the
+        cached order books and market data.
         """
-        equity = self._portfolio.total_equity
-        cash = self._portfolio.capital
-        positions = len(self._portfolio.positions)
-        trades = len(self._portfolio.trades)
-        ret = (
-            (equity - self._config.initial_capital) / self._config.initial_capital * 100
-            if self._config.initial_capital > ZERO
-            else ZERO
-        )
+        for condition_id in self._active_markets:
+            try:
+                market: Market = await self._client.get_market(condition_id)
+            except Exception:
+                logger.warning("Failed to fetch market %s", condition_id, exc_info=True)
+                continue
+
+            if len(market.tokens) < _MIN_TOKENS:
+                logger.warning("Market %s has fewer than 2 tokens", condition_id)
+                continue
+
+            yes_token = market.tokens[0]
+            no_token = market.tokens[1]
+
+            self._cached_markets[condition_id] = market
+            self._price_tracker.register_market(condition_id, yes_token.token_id, no_token.token_id)
+            self._asset_ids.extend([yes_token.token_id, no_token.token_id])
+
+            # Set initial prices from HTTP
+            self._price_tracker.update(yes_token.token_id, yes_token.price)
+            self._price_tracker.update(no_token.token_id, no_token.price)
+
+            try:
+                order_book = await self._client.get_order_book(yes_token.token_id)
+                self._cached_order_books[condition_id] = order_book
+            except Exception:
+                logger.warning("Failed to fetch order book for %s", condition_id, exc_info=True)
+
         logger.info(
-            "[PERF tick=%d] equity=$%.2f cash=$%.2f positions=%d trades=%d return=%+.2f%%",
-            self._snapshots_processed,
-            equity,
-            cash,
-            positions,
-            trades,
-            ret,
+            "Bootstrapped %d markets with %d asset IDs",
+            len(self._cached_markets),
+            len(self._asset_ids),
         )
 
-    async def _fetch_snapshot(self, condition_id: str) -> MarketSnapshot | None:
-        """Fetch market data and build a MarketSnapshot.
+    def _on_price_update(self, event: dict[str, Any]) -> None:
+        """Handle a WebSocket trade event.
+
+        Update the price tracker, build a snapshot from cached data, and
+        feed it to the strategy.
+
+        Args:
+            event: Parsed ``last_trade_price`` event from the WebSocket.
+
+        """
+        asset_id = str(event.get("asset_id", ""))
+        try:
+            price = Decimal(str(event.get("price", "0")))
+        except Exception:
+            logger.debug("Skipping event with invalid price: %s", event)
+            return
+
+        condition_id = self._price_tracker.update(asset_id, price)
+        if condition_id is None:
+            return
+
+        snapshot = self._build_snapshot(condition_id)
+        if snapshot is None:
+            return
+
+        self._snapshots_processed += 1
+        market_history = self._history.setdefault(
+            condition_id, deque(maxlen=self._config.max_history)
+        )
+        history = list(market_history)
+        market_history.append(snapshot)
+
+        logger.info(
+            "[tick %d] %s YES=%.4f NO=%.4f bids=%d asks=%d",
+            self._snapshots_processed,
+            snapshot.question[:50],
+            snapshot.yes_price,
+            snapshot.no_price,
+            len(snapshot.order_book.bids),
+            len(snapshot.order_book.asks),
+        )
+
+        signal = self._strategy.on_snapshot(snapshot, history)
+        if signal is not None:
+            logger.info(
+                "[tick %d] SIGNAL: %s %s strength=%.4f reason=%s",
+                self._snapshots_processed,
+                signal.side.name,
+                signal.symbol[:20],
+                signal.strength,
+                signal.reason,
+            )
+            self._apply_signal(signal, snapshot)
+        else:
+            logger.info("[tick %d] No signal", self._snapshots_processed)
+
+        outcome = self._position_outcomes.get(condition_id, "Yes")
+        mtm_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
+        self._portfolio.mark_to_market(condition_id, mtm_price)
+
+    def _build_snapshot(self, condition_id: str) -> MarketSnapshot | None:
+        """Build a MarketSnapshot from cached prices and order book.
 
         Args:
             condition_id: Market condition identifier.
 
         Returns:
-            A ``MarketSnapshot`` or ``None`` if the fetch fails.
+            A ``MarketSnapshot`` or ``None`` if required data is missing.
 
         """
-        try:
-            market: Market = await self._client.get_market(condition_id)
-        except Exception:
-            logger.warning("Failed to fetch market %s", condition_id, exc_info=True)
+        prices = self._price_tracker.get_prices(condition_id)
+        if prices is None:
             return None
 
-        # Polymarket markets use "Yes"/"No" or "Up"/"Down" outcome names.
-        # The first token is the primary outcome (YES/Up), second is the complement.
-        if len(market.tokens) < _MIN_TOKENS:
-            logger.warning("Market %s has fewer than 2 tokens", condition_id)
+        yes_price, no_price = prices
+        if yes_price is None or no_price is None:
             return None
-        yes_token = market.tokens[0]
-        no_token = market.tokens[1]
 
-        try:
-            order_book = await self._client.get_order_book(yes_token.token_id)
-        except Exception:
-            logger.warning("Failed to fetch order book for %s", condition_id, exc_info=True)
+        order_book = self._cached_order_books.get(condition_id)
+        if order_book is None:
+            return None
+
+        market = self._cached_markets.get(condition_id)
+        if market is None:
             return None
 
         end_date = self._end_time_overrides.get(condition_id, market.end_date)
@@ -161,24 +257,53 @@ class PaperTradingEngine:
             condition_id=condition_id,
             question=market.question,
             timestamp=int(time.time()),
-            yes_price=yes_token.price,
-            no_price=no_token.price,
+            yes_price=yes_price,
+            no_price=no_price,
             order_book=order_book,
             volume=market.volume,
             liquidity=market.liquidity,
             end_date=end_date,
         )
 
+    async def _refresh_order_books_loop(self) -> None:
+        """Periodically refresh order books via HTTP in the background."""
+        while True:
+            await asyncio.sleep(self._config.order_book_refresh_seconds)
+            for condition_id in self._active_markets:
+                market = self._cached_markets.get(condition_id)
+                if market is None or len(market.tokens) < _MIN_TOKENS:
+                    continue
+                try:
+                    order_book = await self._client.get_order_book(market.tokens[0].token_id)
+                    self._cached_order_books[condition_id] = order_book
+                except Exception:
+                    logger.warning(
+                        "Failed to refresh order book for %s",
+                        condition_id,
+                        exc_info=True,
+                    )
+
+    async def _rotation_loop(self) -> None:
+        """Check for 5-minute window rotation periodically."""
+        if not self._config.series_slugs:
+            return
+        while True:
+            await asyncio.sleep(1)
+            now = int(time.time())
+            new_window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
+            if new_window != self._current_window:
+                self._current_window = new_window
+                await self._rotate_markets()
+
     async def _rotate_markets(self) -> None:
         """Re-discover active markets when the 5-minute window rotates.
 
         Close all open positions at current mark-to-market prices (the
         previous window's markets have resolved), then call the client
-        to discover new condition IDs for the current window. Update
-        ``_active_markets``, ``_end_time_overrides``, and initialize
-        fresh history deques for the new markets.
+        to discover new condition IDs. Update the price tracker, cached
+        data, and WebSocket subscription.
         """
-        # Close all open positions — previous window resolved
+        # Close all open positions
         for cid in list(self._portfolio.positions):
             outcome = self._position_outcomes.get(cid, "Yes")
             last_snap = self._history.get(cid)
@@ -214,9 +339,34 @@ class PaperTradingEngine:
         new_ids = [cid for cid, _ in discovered]
         self._active_markets = new_ids
         self._end_time_overrides = dict(discovered)
+
+        # Clear price tracker and re-bootstrap for new markets
+        self._price_tracker.clear()
+        self._asset_ids.clear()
+        self._cached_markets.clear()
+        self._cached_order_books.clear()
+
         for cid in new_ids:
             if cid not in self._history:
                 self._history[cid] = deque(maxlen=self._config.max_history)
+            try:
+                market = await self._client.get_market(cid)
+                if len(market.tokens) < _MIN_TOKENS:
+                    continue
+                self._cached_markets[cid] = market
+                yes_tok = market.tokens[0]
+                no_tok = market.tokens[1]
+                self._price_tracker.register_market(cid, yes_tok.token_id, no_tok.token_id)
+                self._asset_ids.extend([yes_tok.token_id, no_tok.token_id])
+                self._price_tracker.update(yes_tok.token_id, yes_tok.price)
+                self._price_tracker.update(no_tok.token_id, no_tok.price)
+
+                order_book = await self._client.get_order_book(yes_tok.token_id)
+                self._cached_order_books[cid] = order_book
+            except Exception:
+                logger.warning("Failed to bootstrap rotated market %s", cid, exc_info=True)
+
+        await self._feed.update_subscription(self._asset_ids)
 
         logger.info(
             "Rotating markets: %d new condition IDs for window %d",
@@ -225,57 +375,31 @@ class PaperTradingEngine:
         )
         self._log_performance()
 
-    async def _tick(self) -> None:
-        """Execute one polling cycle across all tracked markets."""
-        # Check for 5-minute window rotation when series slugs are configured
-        if self._config.series_slugs:
-            now = int(time.time())
-            new_window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
-            if new_window != self._current_window:
-                self._current_window = new_window
-                await self._rotate_markets()
+    def _log_performance(self) -> None:
+        """Log performance metrics at market rotation boundaries.
 
-        for condition_id in self._active_markets:
-            snapshot = await self._fetch_snapshot(condition_id)
-            if snapshot is None:
-                continue
-
-            self._snapshots_processed += 1
-            market_history = self._history.setdefault(
-                condition_id, deque(maxlen=self._config.max_history)
-            )
-            history = list(market_history)
-            market_history.append(snapshot)
-
-            logger.info(
-                "[tick %d] %s YES=%.4f NO=%.4f vol=%s liq=%s bids=%d asks=%d",
-                self._snapshots_processed,
-                snapshot.question[:50],
-                snapshot.yes_price,
-                snapshot.no_price,
-                snapshot.volume,
-                snapshot.liquidity,
-                len(snapshot.order_book.bids),
-                len(snapshot.order_book.asks),
-            )
-
-            signal = self._strategy.on_snapshot(snapshot, history)
-            if signal is not None:
-                logger.info(
-                    "[tick %d] SIGNAL: %s %s strength=%.4f reason=%s",
-                    self._snapshots_processed,
-                    signal.side.name,
-                    signal.symbol[:20],
-                    signal.strength,
-                    signal.reason,
-                )
-                self._apply_signal(signal, snapshot)
-            else:
-                logger.info("[tick %d] No signal", self._snapshots_processed)
-
-            outcome = self._position_outcomes.get(condition_id, "Yes")
-            mtm_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
-            self._portfolio.mark_to_market(condition_id, mtm_price)
+        Emit an INFO log line with equity, cash, position count, trade count,
+        and return percentage so that long-running bots can be monitored via
+        log files or CloudWatch without stopping the engine.
+        """
+        equity = self._portfolio.total_equity
+        cash = self._portfolio.capital
+        positions = len(self._portfolio.positions)
+        trades = len(self._portfolio.trades)
+        ret = (
+            (equity - self._config.initial_capital) / self._config.initial_capital * 100
+            if self._config.initial_capital > ZERO
+            else ZERO
+        )
+        logger.info(
+            "[PERF tick=%d] equity=$%.2f cash=$%.2f positions=%d trades=%d return=%+.2f%%",
+            self._snapshots_processed,
+            equity,
+            cash,
+            positions,
+            trades,
+            ret,
+        )
 
     def _apply_signal(self, signal: Signal, snapshot: MarketSnapshot) -> None:
         """Convert a strategy signal into a portfolio action.

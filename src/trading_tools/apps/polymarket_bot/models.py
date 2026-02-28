@@ -15,7 +15,8 @@ from trading_tools.core.models import ONE, ZERO, Side
 _DEFAULT_INITIAL_CAPITAL = Decimal(1000)
 _DEFAULT_MAX_POSITION_PCT = Decimal("0.1")
 _DEFAULT_KELLY_FRACTION = Decimal("0.25")
-_DEFAULT_POLL_INTERVAL = 30
+_DEFAULT_ORDER_BOOK_REFRESH = 30
+_DEFAULT_BALANCE_REFRESH = 60
 _DEFAULT_SNIPE_POLL_INTERVAL = 1
 _DEFAULT_SNIPE_WINDOW = 60
 _DEFAULT_MAX_HISTORY = 500
@@ -67,14 +68,17 @@ class MarketSnapshot:
 
 @dataclass(frozen=True)
 class BotConfig:
-    """Configuration for the paper trading bot.
+    """Configuration for the trading bot (paper and live).
 
-    Control polling frequency, capital allocation, Kelly sizing, and
-    which markets to track. All monetary values use ``Decimal`` for
-    precision.
+    Control WebSocket-driven event loop behaviour, background refresh
+    intervals, capital allocation, Kelly sizing, and which markets to
+    track. All monetary values use ``Decimal`` for precision.
 
     Args:
-        poll_interval_seconds: Seconds between market data polls.
+        order_book_refresh_seconds: Seconds between background HTTP order
+            book refreshes (WebSocket only provides trade prices).
+        balance_refresh_seconds: Seconds between balance refreshes from the
+            CLOB API (live engine only).
         snipe_poll_seconds: Seconds between polls inside the snipe window.
         snipe_window_seconds: Seconds before market end that define the
             snipe window. Outside this window the engine sleeps; inside it
@@ -92,7 +96,8 @@ class BotConfig:
 
     """
 
-    poll_interval_seconds: int = _DEFAULT_POLL_INTERVAL
+    order_book_refresh_seconds: int = _DEFAULT_ORDER_BOOK_REFRESH
+    balance_refresh_seconds: int = _DEFAULT_BALANCE_REFRESH
     snipe_poll_seconds: int = _DEFAULT_SNIPE_POLL_INTERVAL
     snipe_window_seconds: int = _DEFAULT_SNIPE_WINDOW
     initial_capital: Decimal = _DEFAULT_INITIAL_CAPITAL

@@ -1,11 +1,12 @@
-"""Tests for LiveTradingEngine async polling loop."""
+"""Tests for LiveTradingEngine WebSocket-driven event loop."""
 
 import asyncio
 import logging
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import AsyncMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -91,7 +92,7 @@ def _make_config() -> BotConfig:
 
     """
     return BotConfig(
-        poll_interval_seconds=0,
+        order_book_refresh_seconds=30,
         max_position_pct=Decimal("0.1"),
         kelly_fraction=Decimal("0.25"),
         max_history=100,
@@ -152,16 +153,54 @@ def _mock_client(
     return client
 
 
+def _make_ws_event(asset_id: str = _YES_TOKEN_ID, price: str = "0.60") -> dict[str, Any]:
+    """Create a WebSocket trade event.
+
+    Args:
+        asset_id: Token ID for the event.
+        price: Trade price as string.
+
+    Returns:
+        Event dictionary mimicking a ``last_trade_price`` WS message.
+
+    """
+    return {"asset_id": asset_id, "price": price}
+
+
+def _mock_feed(events: list[dict[str, Any]]) -> MagicMock:
+    """Create a mock MarketFeed that yields the given events.
+
+    Args:
+        events: List of event dicts to yield from stream().
+
+    Returns:
+        MagicMock configured as a MarketFeed.
+
+    """
+    feed = MagicMock()
+
+    async def mock_stream(asset_ids: list[str]) -> Any:  # noqa: ARG001
+        for event in events:
+            yield event
+
+    feed.stream = mock_stream
+    feed.close = AsyncMock()
+    feed.update_subscription = AsyncMock()
+    return feed
+
+
 class TestLiveTradingEngine:
     """Tests for LiveTradingEngine."""
 
     @pytest.mark.asyncio
     async def test_run_returns_result(self) -> None:
         """Verify run() returns a LiveTradingResult."""
+        events = [_make_ws_event(price=p) for p in ["0.60", "0.60", "0.60"]]
         client = _mock_client()
         strategy = PMMeanReversionStrategy(period=3, z_threshold=Decimal("1.5"))
         config = _make_config()
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed(events)
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         result = await engine.run(max_ticks=3)
 
@@ -172,10 +211,12 @@ class TestLiveTradingEngine:
     @pytest.mark.asyncio
     async def test_snapshots_counted(self) -> None:
         """Verify snapshots_processed is incremented correctly."""
+        events = [_make_ws_event(price=p) for p in ["0.60", "0.60", "0.60"]]
         client = _mock_client()
         strategy = PMMeanReversionStrategy(period=3, z_threshold=Decimal("1.5"))
         config = _make_config()
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed(events)
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         result = await engine.run(max_ticks=3)
 
@@ -183,8 +224,8 @@ class TestLiveTradingEngine:
         assert result.snapshots_processed == expected_snapshots
 
     @pytest.mark.asyncio
-    async def test_fetch_failure_skips_market(self) -> None:
-        """Verify a fetch failure skips the market gracefully."""
+    async def test_bootstrap_failure_returns_empty_result(self) -> None:
+        """Verify bootstrap failure with no assets returns clean result."""
         client = AsyncMock()
         client.get_market = AsyncMock(side_effect=Exception("API down"))
         client.get_balance = AsyncMock(
@@ -197,7 +238,8 @@ class TestLiveTradingEngine:
         client.place_order = AsyncMock(return_value=_make_order_response())
         strategy = PMMeanReversionStrategy(period=3, z_threshold=Decimal("1.5"))
         config = _make_config()
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed([])
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         result = await engine.run(max_ticks=2)
 
@@ -206,23 +248,13 @@ class TestLiveTradingEngine:
     @pytest.mark.asyncio
     async def test_signal_triggers_trade(self) -> None:
         """Verify a strategy signal results in a live trade."""
+        prices = ["0.60"] * 6 + ["0.40"]
+        events = [_make_ws_event(price=p) for p in prices]
         client = _mock_client()
-        prices = ["0.60", "0.60", "0.60", "0.60", "0.60", "0.60", "0.40"]
-        call_count = 0
-
-        async def varying_market(condition_id: str) -> Market:  # noqa: ARG001
-            nonlocal call_count
-            idx = min(call_count, len(prices) - 1)
-            call_count += 1
-            return _make_market(
-                yes_price=prices[idx],
-                no_price=str(Decimal(1) - Decimal(prices[idx])),
-            )
-
-        client.get_market = varying_market  # type: ignore[assignment]
         strategy = PMMeanReversionStrategy(period=5, z_threshold=Decimal("1.5"))
         config = _make_config()
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed(events)
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         result = await engine.run(max_ticks=len(prices))
 
@@ -230,88 +262,76 @@ class TestLiveTradingEngine:
         assert len(buy_trades) > 0
 
     @pytest.mark.asyncio
-    async def test_opened_position_stops_polling(self) -> None:
-        """Verify that once a position is opened, the market is no longer polled."""
+    async def test_opened_position_stops_processing(self) -> None:
+        """Verify that once a position is opened, events for that market are skipped."""
+        prices = ["0.60"] * 6 + ["0.40", "0.60", "0.60"]
+        events = [_make_ws_event(price=p) for p in prices]
         client = _mock_client()
-        prices = [
-            "0.60",
-            "0.60",
-            "0.60",
-            "0.60",
-            "0.60",
-            "0.60",
-            "0.40",  # triggers BUY on tick 7
-            "0.60",  # should never be fetched
-            "0.60",
-        ]
-        call_count = 0
-
-        async def varying_market(condition_id: str) -> Market:  # noqa: ARG001
-            nonlocal call_count
-            idx = min(call_count, len(prices) - 1)
-            call_count += 1
-            return _make_market(
-                yes_price=prices[idx],
-                no_price=str(Decimal(1) - Decimal(prices[idx])),
-            )
-
-        client.get_market = varying_market  # type: ignore[assignment]
         strategy = PMMeanReversionStrategy(period=5, z_threshold=Decimal("1.5"))
         config = _make_config()
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed(events)
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         result = await engine.run(max_ticks=len(prices))
 
         buy_trades = [t for t in result.trades if t.side == Side.BUY]
         assert len(buy_trades) > 0
-        # After the BUY on tick 7, ticks 8-9 should not fetch the market
+        # After the BUY, subsequent events should not increment snapshots
         buy_tick = 7
-        assert call_count < len(prices), (
-            f"Expected fewer than {len(prices)} fetches, got {call_count} "
-            f"(market should stop being polled after BUY on tick {buy_tick})"
+        assert result.snapshots_processed < len(prices), (
+            f"Expected fewer than {len(prices)} snapshots, got {result.snapshots_processed} "
+            f"(market should stop being processed after BUY on tick {buy_tick})"
         )
 
     @pytest.mark.asyncio
     async def test_loss_limit_stops_engine(self) -> None:
         """Verify the engine stops when loss limit is breached."""
+        events = [_make_ws_event(price="0.60")] * 10
         client = _mock_client()
-        # Start with $1000, lose 15% → equity $850
-        # Set max_loss_pct=0.10, so limit at $900
-        low_balance = Decimal("850.00")
-
-        balance_calls = [_INITIAL_BALANCE, low_balance]
-        call_idx = 0
-
-        async def varying_balance(asset_type: str) -> Balance:  # noqa: ARG001
-            nonlocal call_idx
-            bal = balance_calls[min(call_idx, len(balance_calls) - 1)]
-            call_idx += 1
-            return Balance(asset_type="COLLATERAL", balance=bal, allowance=Decimal(10000))
-
-        client.get_balance = varying_balance  # type: ignore[assignment]
-
         strategy = PMMeanReversionStrategy(period=3, z_threshold=Decimal("1.5"))
         config = _make_config()
+
+        # Yield one event, then simulate balance drop before subsequent events
+        event_count = 0
+        low_balance = Decimal("850.00")
+
+        async def feed_with_loss(asset_ids: list[str]) -> Any:  # noqa: ARG001
+            nonlocal event_count
+            for event in events:
+                event_count += 1
+                if event_count == 2:  # noqa: PLR2004
+                    # Simulate balance drop after first event
+                    engine._portfolio._balance = low_balance
+                yield event
+
+        feed = MagicMock()
+        feed.stream = feed_with_loss
+        feed.close = AsyncMock()
+        feed.update_subscription = AsyncMock()
+
         engine = LiveTradingEngine(
             client,
             strategy,
             config,
+            feed=feed,
             max_loss_pct=Decimal("0.10"),
         )
 
         result = await engine.run(max_ticks=10)
 
-        # Should stop early due to loss limit
+        # Should stop early due to loss limit after balance dropped
         max_expected_ticks = 3
         assert result.snapshots_processed <= max_expected_ticks
 
     @pytest.mark.asyncio
     async def test_shutdown_flag_stops_engine(self) -> None:
         """Verify setting _shutdown flag stops the engine."""
+        events = [_make_ws_event(price="0.60")] * 100
         client = _mock_client()
         strategy = PMMeanReversionStrategy(period=3, z_threshold=Decimal("1.5"))
         config = _make_config()
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed(events)
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         # Set shutdown before running
         engine._shutdown = True
@@ -323,23 +343,13 @@ class TestLiveTradingEngine:
     @pytest.mark.asyncio
     async def test_trade_opened_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         """Verify a successful trade open is logged with order details."""
+        prices = ["0.60"] * 6 + ["0.40"]
+        events = [_make_ws_event(price=p) for p in prices]
         client = _mock_client()
-        prices = ["0.60", "0.60", "0.60", "0.60", "0.60", "0.60", "0.40"]
-        call_count = 0
-
-        async def varying_market(condition_id: str) -> Market:  # noqa: ARG001
-            nonlocal call_count
-            idx = min(call_count, len(prices) - 1)
-            call_count += 1
-            return _make_market(
-                yes_price=prices[idx],
-                no_price=str(Decimal(1) - Decimal(prices[idx])),
-            )
-
-        client.get_market = varying_market  # type: ignore[assignment]
         strategy = PMMeanReversionStrategy(period=5, z_threshold=Decimal("1.5"))
         config = _make_config()
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed(events)
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         with caplog.at_level(
             logging.INFO,
@@ -356,8 +366,9 @@ class TestLiveTradingEngine:
         """Verify engine with no markets returns clean result."""
         client = _mock_client()
         strategy = PMMeanReversionStrategy()
-        config = BotConfig(poll_interval_seconds=0, markets=())
-        engine = LiveTradingEngine(client, strategy, config)
+        config = BotConfig(markets=())
+        feed = _mock_feed([])
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         result = await engine.run(max_ticks=3)
 
@@ -365,17 +376,33 @@ class TestLiveTradingEngine:
         assert result.trades == ()
 
     @pytest.mark.asyncio
-    async def test_token_ids_cached_from_market(self) -> None:
-        """Verify token IDs are cached after fetching market data."""
+    async def test_token_ids_cached_from_bootstrap(self) -> None:
+        """Verify token IDs are cached during bootstrap."""
+        events = [_make_ws_event(price="0.60")]
         client = _mock_client()
         strategy = PMMeanReversionStrategy(period=3, z_threshold=Decimal("1.5"))
         config = _make_config()
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed(events)
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         await engine.run(max_ticks=1)
 
         assert _CONDITION_ID in engine._token_ids
         assert engine._token_ids[_CONDITION_ID] == (_YES_TOKEN_ID, _NO_TOKEN_ID)
+
+    @pytest.mark.asyncio
+    async def test_feed_close_called_on_exit(self) -> None:
+        """Verify MarketFeed.close() is called when the engine stops."""
+        events = [_make_ws_event(price="0.60")]
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy()
+        config = _make_config()
+        feed = _mock_feed(events)
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
+
+        await engine.run(max_ticks=1)
+
+        feed.close.assert_called_once()
 
 
 _NEW_CONDITION_ID = "cond_rotated_live_market"
@@ -388,7 +415,6 @@ class TestLiveMarketRotation:
     async def test_rotation_discovers_new_markets(self) -> None:
         """Verify window change triggers market re-discovery."""
         start_time = 1700000000
-        tick_time = start_time + 300
 
         client = _mock_client()
         client.discover_series_markets = AsyncMock(
@@ -396,7 +422,6 @@ class TestLiveMarketRotation:
         )
 
         config = BotConfig(
-            poll_interval_seconds=0,
             max_position_pct=Decimal("0.1"),
             kelly_fraction=Decimal("0.25"),
             max_history=100,
@@ -404,34 +429,38 @@ class TestLiveMarketRotation:
             series_slugs=("btc-updown-5m",),
         )
 
-        time_calls = iter([float(start_time), float(tick_time), float(tick_time)])
+        feed = _mock_feed([])
 
         with patch("trading_tools.apps.polymarket_bot.live_engine.time") as mock_time:
-            mock_time.time.side_effect = time_calls
+            mock_time.time.return_value = float(start_time)
 
             engine = LiveTradingEngine(
                 client,
                 strategy=PMMeanReversionStrategy(),
                 config=config,
+                feed=feed,
             )
             engine._current_window = (start_time // 300) * 300
 
-            await engine._tick()
+            await engine._rotate_markets()
 
         client.discover_series_markets.assert_called_once_with(["btc-updown-5m"])
         assert _NEW_CONDITION_ID in engine._active_markets
 
     @pytest.mark.asyncio
     async def test_no_rotation_without_series_slugs(self) -> None:
-        """Verify rotation is skipped when series_slugs is empty."""
+        """Verify rotation loop exits immediately when series_slugs is empty."""
+        events = [_make_ws_event(price="0.60")] * 2
         client = _mock_client()
         client.discover_series_markets = AsyncMock()
 
         config = _make_config()
+        feed = _mock_feed(events)
         engine = LiveTradingEngine(
             client,
             strategy=PMMeanReversionStrategy(),
             config=config,
+            feed=feed,
         )
 
         await engine.run(max_ticks=2)
@@ -442,7 +471,6 @@ class TestLiveMarketRotation:
     async def test_rotation_emits_perf_log(self, caplog: pytest.LogCaptureFixture) -> None:
         """Verify performance metrics are logged after market rotation."""
         start_time = 1700000000
-        tick_time = start_time + 300
 
         client = _mock_client()
         client.discover_series_markets = AsyncMock(
@@ -450,7 +478,6 @@ class TestLiveMarketRotation:
         )
 
         config = BotConfig(
-            poll_interval_seconds=0,
             max_position_pct=Decimal("0.1"),
             kelly_fraction=Decimal("0.25"),
             max_history=100,
@@ -458,15 +485,16 @@ class TestLiveMarketRotation:
             series_slugs=("btc-updown-5m",),
         )
 
-        time_calls = iter([float(start_time), float(tick_time), float(tick_time)])
+        feed = _mock_feed([])
 
         with patch("trading_tools.apps.polymarket_bot.live_engine.time") as mock_time:
-            mock_time.time.side_effect = time_calls
+            mock_time.time.return_value = float(start_time)
 
             engine = LiveTradingEngine(
                 client,
                 strategy=PMMeanReversionStrategy(),
                 config=config,
+                feed=feed,
             )
             engine._current_window = (start_time // 300) * 300
 
@@ -474,11 +502,46 @@ class TestLiveMarketRotation:
                 logging.INFO,
                 logger="trading_tools.apps.polymarket_bot.live_engine",
             ):
-                await engine._tick()
+                await engine._rotate_markets()
 
         perf_messages = [msg for msg in caplog.messages if "[PERF" in msg]
         assert len(perf_messages) == 1
         assert "portfolio=$" in perf_messages[0]
+
+    @pytest.mark.asyncio
+    async def test_rotation_updates_feed_subscription(self) -> None:
+        """Verify rotation calls update_subscription on the feed."""
+        start_time = 1700000000
+
+        client = _mock_client()
+        client.discover_series_markets = AsyncMock(
+            return_value=[(_NEW_CONDITION_ID, "2026-02-22T12:10:00Z")],
+        )
+
+        config = BotConfig(
+            max_position_pct=Decimal("0.1"),
+            kelly_fraction=Decimal("0.25"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+            series_slugs=("btc-updown-5m",),
+        )
+
+        feed = _mock_feed([])
+
+        with patch("trading_tools.apps.polymarket_bot.live_engine.time") as mock_time:
+            mock_time.time.return_value = float(start_time)
+
+            engine = LiveTradingEngine(
+                client,
+                strategy=PMMeanReversionStrategy(),
+                config=config,
+                feed=feed,
+            )
+            engine._current_window = (start_time // 300) * 300
+
+            await engine._rotate_markets()
+
+        feed.update_subscription.assert_called_once()
 
 
 class TestAutoRedeem:
@@ -488,7 +551,6 @@ class TestAutoRedeem:
     async def test_redeem_calls_ctf_redemption(self, caplog: pytest.LogCaptureFixture) -> None:
         """Verify auto-redeem calls on-chain CTF redemption with condition IDs."""
         start_time = 1700000000
-        tick_time = start_time + 300
 
         client = _mock_client()
         client.discover_series_markets = AsyncMock(
@@ -508,7 +570,6 @@ class TestAutoRedeem:
         client.redeem_positions = AsyncMock(return_value=1)
 
         config = BotConfig(
-            poll_interval_seconds=0,
             max_position_pct=Decimal("0.1"),
             kelly_fraction=Decimal("0.25"),
             max_history=100,
@@ -516,15 +577,16 @@ class TestAutoRedeem:
             series_slugs=("btc-updown-5m",),
         )
 
-        time_calls = iter([float(start_time), float(tick_time), float(tick_time)])
+        feed = _mock_feed([])
 
         with patch("trading_tools.apps.polymarket_bot.live_engine.time") as mock_time:
-            mock_time.time.side_effect = time_calls
+            mock_time.time.return_value = float(start_time)
 
             engine = LiveTradingEngine(
                 client,
                 strategy=PMMeanReversionStrategy(),
                 config=config,
+                feed=feed,
                 auto_redeem=True,
             )
             engine._current_window = (start_time // 300) * 300
@@ -533,7 +595,7 @@ class TestAutoRedeem:
                 logging.INFO,
                 logger="trading_tools.apps.polymarket_bot.live_engine",
             ):
-                await engine._tick()
+                await engine._rotate_markets()
                 # Let the background redeem task complete
                 assert engine._redeem_task is not None
                 await engine._redeem_task
@@ -546,7 +608,6 @@ class TestAutoRedeem:
     async def test_redeem_skips_small_positions(self, caplog: pytest.LogCaptureFixture) -> None:
         """Verify auto-redeem skips positions below minimum order size."""
         start_time = 1700000000
-        tick_time = start_time + 300
 
         client = _mock_client()
         client.discover_series_markets = AsyncMock(
@@ -566,7 +627,6 @@ class TestAutoRedeem:
         client.redeem_positions = AsyncMock(return_value=0)
 
         config = BotConfig(
-            poll_interval_seconds=0,
             max_position_pct=Decimal("0.1"),
             kelly_fraction=Decimal("0.25"),
             max_history=100,
@@ -574,15 +634,16 @@ class TestAutoRedeem:
             series_slugs=("btc-updown-5m",),
         )
 
-        time_calls = iter([float(start_time), float(tick_time), float(tick_time)])
+        feed = _mock_feed([])
 
         with patch("trading_tools.apps.polymarket_bot.live_engine.time") as mock_time:
-            mock_time.time.side_effect = time_calls
+            mock_time.time.return_value = float(start_time)
 
             engine = LiveTradingEngine(
                 client,
                 strategy=PMMeanReversionStrategy(),
                 config=config,
+                feed=feed,
                 auto_redeem=True,
             )
             engine._current_window = (start_time // 300) * 300
@@ -591,7 +652,7 @@ class TestAutoRedeem:
                 logging.INFO,
                 logger="trading_tools.apps.polymarket_bot.live_engine",
             ):
-                await engine._tick()
+                await engine._rotate_markets()
                 # No background task should be created for undersized positions
                 assert engine._redeem_task is None
 
@@ -602,7 +663,6 @@ class TestAutoRedeem:
     async def test_redeem_disabled_skips_discovery(self) -> None:
         """Verify auto-redeem is skipped when disabled."""
         start_time = 1700000000
-        tick_time = start_time + 300
 
         client = _mock_client()
         client.discover_series_markets = AsyncMock(
@@ -611,7 +671,6 @@ class TestAutoRedeem:
         client.get_redeemable_positions = AsyncMock()
 
         config = BotConfig(
-            poll_interval_seconds=0,
             max_position_pct=Decimal("0.1"),
             kelly_fraction=Decimal("0.25"),
             max_history=100,
@@ -619,20 +678,21 @@ class TestAutoRedeem:
             series_slugs=("btc-updown-5m",),
         )
 
-        time_calls = iter([float(start_time), float(tick_time), float(tick_time)])
+        feed = _mock_feed([])
 
         with patch("trading_tools.apps.polymarket_bot.live_engine.time") as mock_time:
-            mock_time.time.side_effect = time_calls
+            mock_time.time.return_value = float(start_time)
 
             engine = LiveTradingEngine(
                 client,
                 strategy=PMMeanReversionStrategy(),
                 config=config,
+                feed=feed,
                 auto_redeem=False,
             )
             engine._current_window = (start_time // 300) * 300
 
-            await engine._tick()
+            await engine._rotate_markets()
 
         client.get_redeemable_positions.assert_not_called()
 
@@ -642,7 +702,6 @@ class TestAutoRedeem:
     ) -> None:
         """Verify CTF redemption failure is logged without crashing the engine."""
         start_time = 1700000000
-        tick_time = start_time + 300
 
         client = _mock_client()
         client.discover_series_markets = AsyncMock(
@@ -662,7 +721,6 @@ class TestAutoRedeem:
         client.redeem_positions = AsyncMock(side_effect=Exception("RPC timeout"))
 
         config = BotConfig(
-            poll_interval_seconds=0,
             max_position_pct=Decimal("0.1"),
             kelly_fraction=Decimal("0.25"),
             max_history=100,
@@ -670,15 +728,16 @@ class TestAutoRedeem:
             series_slugs=("btc-updown-5m",),
         )
 
-        time_calls = iter([float(start_time), float(tick_time), float(tick_time)])
+        feed = _mock_feed([])
 
         with patch("trading_tools.apps.polymarket_bot.live_engine.time") as mock_time:
-            mock_time.time.side_effect = time_calls
+            mock_time.time.return_value = float(start_time)
 
             engine = LiveTradingEngine(
                 client,
                 strategy=PMMeanReversionStrategy(),
                 config=config,
+                feed=feed,
                 auto_redeem=True,
             )
             engine._current_window = (start_time // 300) * 300
@@ -687,7 +746,7 @@ class TestAutoRedeem:
                 logging.WARNING,
                 logger="trading_tools.apps.polymarket_bot.live_engine",
             ):
-                await engine._tick()
+                await engine._rotate_markets()
                 # Let the background redeem task complete
                 assert engine._redeem_task is not None
                 await engine._redeem_task
@@ -714,10 +773,12 @@ class TestAutoRedeem:
         )
 
         config = _make_config()
+        feed = _mock_feed([])
         engine = LiveTradingEngine(
             client,
             strategy=PMMeanReversionStrategy(),
             config=config,
+            feed=feed,
             auto_redeem=True,
         )
         # Simulate a still-running redeem task
@@ -737,17 +798,18 @@ class TestAutoRedeem:
 class TestComputeSleep:
     """Tests for adaptive sleep timing via _compute_sleep()."""
 
-    def test_returns_poll_interval_without_end_times(self) -> None:
-        """Verify fallback to poll_interval_seconds when no end times are set."""
-        poll_interval = 30
+    def test_returns_ob_refresh_without_end_times(self) -> None:
+        """Verify fallback to order_book_refresh_seconds when no end times are set."""
+        ob_refresh = 30
         client = _mock_client()
         strategy = PMMeanReversionStrategy()
-        config = BotConfig(poll_interval_seconds=poll_interval, markets=(_CONDITION_ID,))
-        engine = LiveTradingEngine(client, strategy, config)
+        config = BotConfig(order_book_refresh_seconds=ob_refresh, markets=(_CONDITION_ID,))
+        feed = _mock_feed([])
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         result = engine._compute_sleep()
 
-        assert result == float(poll_interval)
+        assert result == float(ob_refresh)
 
     def test_returns_large_sleep_far_from_window(self) -> None:
         """Verify long sleep when market end is far away."""
@@ -755,12 +817,13 @@ class TestComputeSleep:
         strategy = PMMeanReversionStrategy()
         snipe_window = 60
         config = BotConfig(
-            poll_interval_seconds=30,
+            order_book_refresh_seconds=30,
             snipe_window_seconds=snipe_window,
             markets=(_CONDITION_ID,),
             market_end_times=((_CONDITION_ID, "2026-12-31T00:00:00Z"),),
         )
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed([])
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         result = engine._compute_sleep()
 
@@ -779,13 +842,14 @@ class TestComputeSleep:
         end_iso = datetime.fromtimestamp(end_time, tz=UTC).isoformat()
 
         config = BotConfig(
-            poll_interval_seconds=30,
+            order_book_refresh_seconds=30,
             snipe_poll_seconds=snipe_poll,
             snipe_window_seconds=snipe_window,
             markets=(_CONDITION_ID,),
             market_end_times=((_CONDITION_ID, end_iso),),
         )
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed([])
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         result = engine._compute_sleep()
 
@@ -803,12 +867,13 @@ class TestComputeSleep:
         end_iso = datetime.fromtimestamp(end_time, tz=UTC).isoformat()
 
         config = BotConfig(
-            poll_interval_seconds=30,
+            order_book_refresh_seconds=30,
             snipe_window_seconds=snipe_window,
             markets=(_CONDITION_ID,),
             market_end_times=((_CONDITION_ID, end_iso),),
         )
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed([])
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         result = engine._compute_sleep()
 
@@ -825,55 +890,32 @@ class TestComputeSleep:
         late_iso = datetime.fromtimestamp(now + 200, tz=UTC).isoformat()
 
         config = BotConfig(
-            poll_interval_seconds=30,
+            order_book_refresh_seconds=30,
             snipe_window_seconds=60,
             markets=(_CONDITION_ID, second_cid),
             market_end_times=((_CONDITION_ID, late_iso), (second_cid, early_iso)),
         )
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed([])
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         result = engine._compute_sleep()
 
         # Earliest end is 20s away, inside snipe window → fast poll
         assert result == float(config.snipe_poll_seconds)
 
-    def test_invalid_end_time_falls_back_to_poll_interval(self) -> None:
-        """Verify invalid ISO end times fall back to poll_interval_seconds."""
-        poll_interval = 30
+    def test_invalid_end_time_falls_back_to_ob_refresh(self) -> None:
+        """Verify invalid ISO end times fall back to order_book_refresh_seconds."""
+        ob_refresh = 30
         client = _mock_client()
         strategy = PMMeanReversionStrategy()
         config = BotConfig(
-            poll_interval_seconds=poll_interval,
+            order_book_refresh_seconds=ob_refresh,
             markets=(_CONDITION_ID,),
             market_end_times=((_CONDITION_ID, "not-a-date"),),
         )
-        engine = LiveTradingEngine(client, strategy, config)
+        feed = _mock_feed([])
+        engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         result = engine._compute_sleep()
 
-        assert result == float(poll_interval)
-
-
-class TestAdaptivePollingIntegration:
-    """Integration test verifying adaptive polling in the run loop."""
-
-    @pytest.mark.asyncio
-    async def test_run_uses_compute_sleep(self) -> None:
-        """Verify run() calls _compute_sleep() instead of fixed interval."""
-        client = _mock_client()
-        strategy = PMMeanReversionStrategy(period=3, z_threshold=Decimal("1.5"))
-        end_iso = datetime.fromtimestamp(time.time() + 20, tz=UTC).isoformat()
-        config = BotConfig(
-            poll_interval_seconds=30,
-            snipe_poll_seconds=1,
-            snipe_window_seconds=60,
-            markets=(_CONDITION_ID,),
-            market_end_times=((_CONDITION_ID, end_iso),),
-        )
-        engine = LiveTradingEngine(client, strategy, config)
-
-        with patch.object(engine, "_compute_sleep", return_value=0) as mock_sleep:
-            await engine.run(max_ticks=2)
-
-        # _compute_sleep is called once between ticks (not after the last tick)
-        assert mock_sleep.call_count == 1
+        assert result == float(ob_refresh)

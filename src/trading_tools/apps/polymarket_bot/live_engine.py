@@ -1,8 +1,9 @@
 """Async live trading engine for prediction markets.
 
-Implement the core polling loop that fetches market data, builds snapshots,
-feeds them to a strategy, sizes positions with Kelly criterion, and executes
-real trades through the Polymarket CLOB API via a ``LivePortfolio``.
+Implement a WebSocket-driven event loop that receives real-time trade prices
+from ``MarketFeed``, builds market snapshots, feeds them to a strategy, sizes
+positions with Kelly criterion, and executes real trades through the
+Polymarket CLOB API via a ``LivePortfolio``.
 
 Safety guardrails include a configurable loss limit, balance checks before
 every trade, graceful shutdown on SIGINT, and automatic position closing
@@ -16,7 +17,7 @@ import time
 from collections import deque
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from trading_tools.apps.polymarket_bot.kelly import kelly_fraction
 from trading_tools.apps.polymarket_bot.live_portfolio import LivePortfolio
@@ -25,12 +26,14 @@ from trading_tools.apps.polymarket_bot.models import (
     LiveTradingResult,
     MarketSnapshot,
 )
+from trading_tools.apps.polymarket_bot.price_tracker import PriceTracker
 from trading_tools.apps.polymarket_bot.protocols import PredictionMarketStrategy
+from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.core.models import ZERO, Side, Signal
 
 if TYPE_CHECKING:
-    from trading_tools.clients.polymarket.models import Market
+    from trading_tools.clients.polymarket.models import Market, OrderBook
 
 logger = logging.getLogger(__name__)
 
@@ -42,25 +45,27 @@ _DEFAULT_MAX_LOSS_PCT = Decimal("0.10")
 
 
 class LiveTradingEngine:
-    """Async polling engine that executes real trades on Polymarket.
+    """WebSocket-driven engine that executes real trades on Polymarket.
 
-    Fetch market data at a configurable interval, build ``MarketSnapshot``
-    objects, feed them to the configured strategy, size positions with the
-    Kelly criterion, and execute trades via the CLOB API through a
-    ``LivePortfolio``.
+    Receive real-time trade prices from ``MarketFeed``, maintain cached order
+    books via periodic HTTP refresh, build ``MarketSnapshot`` objects, feed
+    them to the configured strategy, size positions with the Kelly criterion,
+    and execute trades via the CLOB API through a ``LivePortfolio``.
 
     Safety guardrails:
     - Loss limit stops the engine when equity drops below threshold
-    - Balance refreshed from CLOB before every trade
+    - Balance refreshed from CLOB periodically in the background
     - SIGINT handler for graceful shutdown with position closing
     - All open positions closed on exit
 
     Args:
         client: Authenticated async Polymarket API client.
         strategy: Prediction market strategy that generates trading signals.
-        config: Bot configuration (poll interval, capital, markets, etc.).
+        config: Bot configuration (refresh intervals, capital, markets, etc.).
+        feed: WebSocket market feed for streaming trade events.
         max_loss_pct: Maximum drawdown fraction before auto-stop (default 10%).
         use_market_orders: Use FOK market orders (default) or GTC limit.
+        auto_redeem: Attempt to redeem resolved positions on rotation.
 
     """
 
@@ -70,6 +75,7 @@ class LiveTradingEngine:
         strategy: PredictionMarketStrategy,
         config: BotConfig,
         *,
+        feed: MarketFeed | None = None,
         max_loss_pct: Decimal = _DEFAULT_MAX_LOSS_PCT,
         use_market_orders: bool = True,
         auto_redeem: bool = False,
@@ -80,6 +86,8 @@ class LiveTradingEngine:
             client: Authenticated async Polymarket API client.
             strategy: Prediction market strategy instance.
             config: Bot configuration.
+            feed: Optional ``MarketFeed`` instance. Created automatically
+                if not provided.
             max_loss_pct: Maximum allowed loss fraction (0-1).
             use_market_orders: Use FOK market orders or GTC limit orders.
             auto_redeem: Attempt to redeem resolved positions on rotation.
@@ -89,6 +97,7 @@ class LiveTradingEngine:
         self._client = client
         self._strategy = strategy
         self._config = config
+        self._feed = feed or MarketFeed()
         self._max_loss_pct = max_loss_pct
         self._auto_redeem = auto_redeem
         self._portfolio = LivePortfolio(
@@ -96,6 +105,7 @@ class LiveTradingEngine:
             config.max_position_pct,
             use_market_orders=use_market_orders,
         )
+        self._price_tracker = PriceTracker()
         self._active_markets: list[str] = list(config.markets)
         self._history: dict[str, deque[MarketSnapshot]] = {
             cid: deque(maxlen=config.max_history) for cid in self._active_markets
@@ -104,20 +114,23 @@ class LiveTradingEngine:
         self._position_outcomes: dict[str, str] = {}
         self._token_ids: dict[str, tuple[str, str]] = {}
         self._end_time_overrides: dict[str, str] = dict(config.market_end_times)
+        self._cached_order_books: dict[str, OrderBook] = {}
+        self._cached_markets: dict[str, Market] = {}
         now = int(time.time())
         self._current_window: int = (now // _FIVE_MINUTES) * _FIVE_MINUTES
         self._initial_balance = ZERO
         self._shutdown = False
         self._redeem_task: asyncio.Task[None] | None = None
+        self._asset_ids: list[str] = []
 
     async def run(self, *, max_ticks: int | None = None) -> LiveTradingResult:
-        """Execute the polling loop until stopped, loss limit hit, or max_ticks reached.
+        """Execute the WebSocket event loop until stopped, loss limit hit, or max_ticks reached.
 
         Install a SIGINT handler for graceful shutdown. On exit, close all
         open positions before returning the result.
 
         Args:
-            max_ticks: Stop after this many ticks (``None`` for unlimited).
+            max_ticks: Stop after this many price events (``None`` for unlimited).
 
         Returns:
             Summary of the live trading run including trades and metrics.
@@ -129,25 +142,39 @@ class LiveTradingEngine:
         self._initial_balance = await self._portfolio.refresh_balance()
         logger.info("Initial USDC balance: %s", self._initial_balance)
 
+        await self._bootstrap()
+
+        if not self._asset_ids:
+            await self._close_all_positions()
+            return await self._build_result()
+
+        ob_task = asyncio.create_task(self._refresh_order_books_loop())
+        balance_task = asyncio.create_task(self._refresh_balance_loop())
+        rotation_task = asyncio.create_task(self._rotation_loop())
+
         tick_count = 0
-        while max_ticks is None or tick_count < max_ticks:
-            if self._shutdown:
-                logger.info("Shutdown signal received, closing positions...")
-                break
+        try:
+            async for event in self._feed.stream(self._asset_ids):
+                if self._shutdown:
+                    logger.info("Shutdown signal received, closing positions...")
+                    break
 
-            if self._check_loss_limit():
-                logger.warning(
-                    "Loss limit reached (%.1f%%), stopping engine",
-                    float(self._max_loss_pct * Decimal(100)),
-                )
-                break
+                if self._check_loss_limit():
+                    logger.warning(
+                        "Loss limit reached (%.1f%%), stopping engine",
+                        float(self._max_loss_pct * Decimal(100)),
+                    )
+                    break
 
-            await self._tick()
-            tick_count += 1
-            if max_ticks is not None and tick_count >= max_ticks:
-                break
-            sleep_seconds = self._compute_sleep()
-            await asyncio.sleep(sleep_seconds)
+                await self._on_price_update(event)
+                tick_count += 1
+                if max_ticks is not None and tick_count >= max_ticks:
+                    break
+        finally:
+            ob_task.cancel()
+            balance_task.cancel()
+            rotation_task.cancel()
+            await self._feed.close()
 
         await self._close_all_positions()
         return await self._build_result()
@@ -168,121 +195,135 @@ class LiveTradingEngine:
         equity = self._portfolio.total_equity
         return equity / self._initial_balance < (Decimal(1) - self._max_loss_pct)
 
-    def _compute_sleep(self) -> float:
-        """Compute seconds to sleep before the next tick.
+    async def _bootstrap(self) -> None:
+        """Fetch initial market data and order books via HTTP.
 
-        When end-time overrides are available, sleep until the snipe window
-        opens (minus a small buffer) instead of polling at the default
-        interval.  Inside the snipe window, fast-poll at
-        ``snipe_poll_seconds``.  Fall back to ``poll_interval_seconds``
-        when no end times are configured.
-
-        Returns:
-            Number of seconds to sleep before the next polling cycle.
-
+        Register all markets with the price tracker and populate the
+        cached order books and market data.
         """
-        if not self._end_time_overrides:
-            return float(self._config.poll_interval_seconds)
-
-        now = time.time()
-        earliest_end: float | None = None
-        for end_iso in self._end_time_overrides.values():
+        for condition_id in self._active_markets:
             try:
-                end_dt = datetime.fromisoformat(end_iso)
-                if end_dt.tzinfo is None:
-                    end_dt = end_dt.replace(tzinfo=UTC)
-                end_ts = end_dt.timestamp()
-            except (ValueError, OSError):
+                market: Market = await self._client.get_market(condition_id)
+            except Exception:
+                logger.warning("Failed to fetch market %s", condition_id, exc_info=True)
                 continue
-            if earliest_end is None or end_ts < earliest_end:
-                earliest_end = end_ts
 
-        if earliest_end is None:
-            return float(self._config.poll_interval_seconds)
+            if len(market.tokens) < _MIN_TOKENS:
+                logger.warning("Market %s has fewer than 2 tokens", condition_id)
+                continue
 
-        seconds_remaining = earliest_end - now
-        snipe_window = self._config.snipe_window_seconds
+            yes_token = market.tokens[0]
+            no_token = market.tokens[1]
 
-        if seconds_remaining > snipe_window + _SLEEP_BUFFER_SECONDS:
-            sleep = seconds_remaining - snipe_window - _SLEEP_BUFFER_SECONDS
-            logger.info(
-                "Sleeping %.0fs until snipe window (%.0fs remaining)",
-                sleep,
-                seconds_remaining,
-            )
-            return sleep
+            self._cached_markets[condition_id] = market
+            self._token_ids[condition_id] = (yes_token.token_id, no_token.token_id)
+            self._price_tracker.register_market(condition_id, yes_token.token_id, no_token.token_id)
+            self._asset_ids.extend([yes_token.token_id, no_token.token_id])
 
-        return float(self._config.snipe_poll_seconds)
+            # Set initial prices from HTTP
+            self._price_tracker.update(yes_token.token_id, yes_token.price)
+            self._price_tracker.update(no_token.token_id, no_token.price)
 
-    def _log_performance(self) -> None:
-        """Log performance metrics at market rotation boundaries.
+            try:
+                order_book = await self._client.get_order_book(yes_token.token_id)
+                self._cached_order_books[condition_id] = order_book
+            except Exception:
+                logger.warning("Failed to fetch order book for %s", condition_id, exc_info=True)
 
-        Emit an INFO log line with equity, portfolio value, cash balance,
-        position count, trade count, and return percentage so that
-        long-running bots can be monitored via log files or CloudWatch
-        without stopping the engine.
-
-        The ``portfolio`` value is the total account value (USDC + all
-        position market values), matching the Polymarket UI "Portfolio"
-        figure.  The return percentage is computed from the portfolio
-        value when available, since it reflects the full account value.
-        """
-        equity = self._portfolio.total_equity
-        portfolio = self._portfolio.portfolio_value
-        cash = self._portfolio.balance
-        positions = len(self._portfolio.positions)
-        trades = len(self._portfolio.trades)
-        return_base = portfolio if portfolio > ZERO else equity
-        ret = (
-            (return_base - self._initial_balance) / self._initial_balance * 100
-            if self._initial_balance > ZERO
-            else ZERO
-        )
         logger.info(
-            "[PERF tick=%d] equity=$%.2f portfolio=$%.2f cash=$%.2f "
-            "positions=%d trades=%d return=%+.2f%%",
-            self._snapshots_processed,
-            equity,
-            portfolio,
-            cash,
-            positions,
-            trades,
-            ret,
+            "Bootstrapped %d markets with %d asset IDs",
+            len(self._cached_markets),
+            len(self._asset_ids),
         )
-        if ret <= Decimal(-20):
-            logger.warning("DRAWDOWN ALERT return=%+.2f%%", ret)
 
-    async def _fetch_snapshot(self, condition_id: str) -> MarketSnapshot | None:
-        """Fetch market data and build a MarketSnapshot.
+    async def _on_price_update(self, event: dict[str, Any]) -> None:
+        """Handle a WebSocket trade event.
 
-        Cache token IDs from the market response for order placement.
+        Update the price tracker, build a snapshot from cached data, and
+        feed it to the strategy.
+
+        Args:
+            event: Parsed ``last_trade_price`` event from the WebSocket.
+
+        """
+        asset_id = str(event.get("asset_id", ""))
+        try:
+            price = Decimal(str(event.get("price", "0")))
+        except Exception:
+            logger.debug("Skipping event with invalid price: %s", event)
+            return
+
+        condition_id = self._price_tracker.update(asset_id, price)
+        if condition_id is None:
+            return
+
+        # Skip markets where we already have a position
+        if condition_id in self._position_outcomes:
+            return
+
+        snapshot = self._build_snapshot(condition_id)
+        if snapshot is None:
+            return
+
+        self._snapshots_processed += 1
+        market_history = self._history.setdefault(
+            condition_id, deque(maxlen=self._config.max_history)
+        )
+        history = list(market_history)
+        market_history.append(snapshot)
+
+        logger.info(
+            "[tick %d] %s YES=%.4f NO=%.4f bids=%d asks=%d",
+            self._snapshots_processed,
+            snapshot.question[:50],
+            snapshot.yes_price,
+            snapshot.no_price,
+            len(snapshot.order_book.bids),
+            len(snapshot.order_book.asks),
+        )
+
+        sig = self._strategy.on_snapshot(snapshot, history)
+        if sig is not None:
+            logger.info(
+                "[tick %d] SIGNAL: %s %s strength=%.4f reason=%s",
+                self._snapshots_processed,
+                sig.side.name,
+                sig.symbol[:20],
+                sig.strength,
+                sig.reason,
+            )
+            await self._apply_signal(sig, snapshot)
+        else:
+            logger.info("[tick %d] No signal", self._snapshots_processed)
+
+        outcome = self._position_outcomes.get(condition_id, "Yes")
+        mtm_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
+        self._portfolio.mark_to_market(condition_id, mtm_price)
+
+    def _build_snapshot(self, condition_id: str) -> MarketSnapshot | None:
+        """Build a MarketSnapshot from cached prices and order book.
 
         Args:
             condition_id: Market condition identifier.
 
         Returns:
-            A ``MarketSnapshot`` or ``None`` if the fetch fails.
+            A ``MarketSnapshot`` or ``None`` if required data is missing.
 
         """
-        try:
-            market: Market = await self._client.get_market(condition_id)
-        except Exception:
-            logger.warning("Failed to fetch market %s", condition_id, exc_info=True)
+        prices = self._price_tracker.get_prices(condition_id)
+        if prices is None:
             return None
 
-        if len(market.tokens) < _MIN_TOKENS:
-            logger.warning("Market %s has fewer than 2 tokens", condition_id)
+        yes_price, no_price = prices
+        if yes_price is None or no_price is None:
             return None
-        yes_token = market.tokens[0]
-        no_token = market.tokens[1]
 
-        # Cache token IDs for order placement
-        self._token_ids[condition_id] = (yes_token.token_id, no_token.token_id)
+        order_book = self._cached_order_books.get(condition_id)
+        if order_book is None:
+            return None
 
-        try:
-            order_book = await self._client.get_order_book(yes_token.token_id)
-        except Exception:
-            logger.warning("Failed to fetch order book for %s", condition_id, exc_info=True)
+        market = self._cached_markets.get(condition_id)
+        if market is None:
             return None
 
         end_date = self._end_time_overrides.get(condition_id, market.end_date)
@@ -291,13 +332,52 @@ class LiveTradingEngine:
             condition_id=condition_id,
             question=market.question,
             timestamp=int(time.time()),
-            yes_price=yes_token.price,
-            no_price=no_token.price,
+            yes_price=yes_price,
+            no_price=no_price,
             order_book=order_book,
             volume=market.volume,
             liquidity=market.liquidity,
             end_date=end_date,
         )
+
+    async def _refresh_order_books_loop(self) -> None:
+        """Periodically refresh order books via HTTP in the background."""
+        while True:
+            await asyncio.sleep(self._config.order_book_refresh_seconds)
+            for condition_id in self._active_markets:
+                market = self._cached_markets.get(condition_id)
+                if market is None or len(market.tokens) < _MIN_TOKENS:
+                    continue
+                try:
+                    order_book = await self._client.get_order_book(market.tokens[0].token_id)
+                    self._cached_order_books[condition_id] = order_book
+                except Exception:
+                    logger.warning(
+                        "Failed to refresh order book for %s",
+                        condition_id,
+                        exc_info=True,
+                    )
+
+    async def _refresh_balance_loop(self) -> None:
+        """Periodically refresh USDC balance from the CLOB API."""
+        while True:
+            await asyncio.sleep(self._config.balance_refresh_seconds)
+            try:
+                await self._portfolio.refresh_balance()
+            except Exception:
+                logger.warning("Failed to refresh balance", exc_info=True)
+
+    async def _rotation_loop(self) -> None:
+        """Check for 5-minute window rotation periodically."""
+        if not self._config.series_slugs:
+            return
+        while True:
+            await asyncio.sleep(1)
+            now = int(time.time())
+            new_window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
+            if new_window != self._current_window:
+                self._current_window = new_window
+                await self._rotate_markets()
 
     async def _rotate_markets(self) -> None:
         """Re-discover active markets when the 5-minute window rotates.
@@ -333,9 +413,36 @@ class LiveTradingEngine:
         new_ids = [cid for cid, _ in discovered]
         self._active_markets = new_ids
         self._end_time_overrides = dict(discovered)
+
+        # Clear price tracker and re-bootstrap for new markets
+        self._price_tracker.clear()
+        self._asset_ids.clear()
+        self._cached_markets.clear()
+        self._cached_order_books.clear()
+        self._token_ids.clear()
+
         for cid in new_ids:
             if cid not in self._history:
                 self._history[cid] = deque(maxlen=self._config.max_history)
+            try:
+                market = await self._client.get_market(cid)
+                if len(market.tokens) < _MIN_TOKENS:
+                    continue
+                self._cached_markets[cid] = market
+                yes_tok = market.tokens[0]
+                no_tok = market.tokens[1]
+                self._token_ids[cid] = (yes_tok.token_id, no_tok.token_id)
+                self._price_tracker.register_market(cid, yes_tok.token_id, no_tok.token_id)
+                self._asset_ids.extend([yes_tok.token_id, no_tok.token_id])
+                self._price_tracker.update(yes_tok.token_id, yes_tok.price)
+                self._price_tracker.update(no_tok.token_id, no_tok.price)
+
+                order_book = await self._client.get_order_book(yes_tok.token_id)
+                self._cached_order_books[cid] = order_book
+            except Exception:
+                logger.warning("Failed to bootstrap rotated market %s", cid, exc_info=True)
+
+        await self._feed.update_subscription(self._asset_ids)
 
         logger.info(
             "Rotating markets: %d new condition IDs for window %d",
@@ -408,62 +515,89 @@ class LiveTradingEngine:
         except Exception:
             logger.warning("CTF redemption failed", exc_info=True)
 
-    async def _tick(self) -> None:
-        """Execute one polling cycle across all tracked markets."""
-        if self._config.series_slugs:
-            now = int(time.time())
-            new_window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
-            if new_window != self._current_window:
-                self._current_window = new_window
-                await self._rotate_markets()
+    def _compute_sleep(self) -> float:
+        """Compute seconds to sleep before the next tick.
 
-        await self._portfolio.refresh_balance()
+        When end-time overrides are available, sleep until the snipe window
+        opens (minus a small buffer) instead of polling at the default
+        interval.  Inside the snipe window, fast-poll at
+        ``snipe_poll_seconds``.  Fall back to ``order_book_refresh_seconds``
+        when no end times are configured.
 
-        for condition_id in self._active_markets:
-            if condition_id in self._position_outcomes:
+        Returns:
+            Number of seconds to sleep before the next polling cycle.
+
+        """
+        if not self._end_time_overrides:
+            return float(self._config.order_book_refresh_seconds)
+
+        now = time.time()
+        earliest_end: float | None = None
+        for end_iso in self._end_time_overrides.values():
+            try:
+                end_dt = datetime.fromisoformat(end_iso)
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=UTC)
+                end_ts = end_dt.timestamp()
+            except (ValueError, OSError):
                 continue
+            if earliest_end is None or end_ts < earliest_end:
+                earliest_end = end_ts
 
-            snapshot = await self._fetch_snapshot(condition_id)
-            if snapshot is None:
-                continue
+        if earliest_end is None:
+            return float(self._config.order_book_refresh_seconds)
 
-            self._snapshots_processed += 1
-            market_history = self._history.setdefault(
-                condition_id,
-                deque(maxlen=self._config.max_history),
-            )
-            history = list(market_history)
-            market_history.append(snapshot)
+        seconds_remaining = earliest_end - now
+        snipe_window = self._config.snipe_window_seconds
 
+        if seconds_remaining > snipe_window + _SLEEP_BUFFER_SECONDS:
+            sleep = seconds_remaining - snipe_window - _SLEEP_BUFFER_SECONDS
             logger.info(
-                "[tick %d] %s YES=%.4f NO=%.4f vol=%s liq=%s bids=%d asks=%d",
-                self._snapshots_processed,
-                snapshot.question[:50],
-                snapshot.yes_price,
-                snapshot.no_price,
-                snapshot.volume,
-                snapshot.liquidity,
-                len(snapshot.order_book.bids),
-                len(snapshot.order_book.asks),
+                "Sleeping %.0fs until snipe window (%.0fs remaining)",
+                sleep,
+                seconds_remaining,
             )
+            return sleep
 
-            sig = self._strategy.on_snapshot(snapshot, history)
-            if sig is not None:
-                logger.info(
-                    "[tick %d] SIGNAL: %s %s strength=%.4f reason=%s",
-                    self._snapshots_processed,
-                    sig.side.name,
-                    sig.symbol[:20],
-                    sig.strength,
-                    sig.reason,
-                )
-                await self._apply_signal(sig, snapshot)
-            else:
-                logger.info("[tick %d] No signal", self._snapshots_processed)
+        return float(self._config.snipe_poll_seconds)
 
-            outcome = self._position_outcomes.get(condition_id, "Yes")
-            mtm_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
-            self._portfolio.mark_to_market(condition_id, mtm_price)
+    def _log_performance(self) -> None:
+        """Log performance metrics at market rotation boundaries.
+
+        Emit an INFO log line with equity, portfolio value, cash balance,
+        position count, trade count, and return percentage so that
+        long-running bots can be monitored via log files or CloudWatch
+        without stopping the engine.
+
+        The ``portfolio`` value is the total account value (USDC + all
+        position market values), matching the Polymarket UI "Portfolio"
+        figure.  The return percentage is computed from the portfolio
+        value when available, since it reflects the full account value.
+        """
+        equity = self._portfolio.total_equity
+        portfolio = self._portfolio.portfolio_value
+        cash = self._portfolio.balance
+        positions = len(self._portfolio.positions)
+        trades = len(self._portfolio.trades)
+        return_base = portfolio if portfolio > ZERO else equity
+        ret = (
+            (return_base - self._initial_balance) / self._initial_balance * 100
+            if self._initial_balance > ZERO
+            else ZERO
+        )
+        logger.info(
+            "[PERF tick=%d] equity=$%.2f portfolio=$%.2f cash=$%.2f "
+            "positions=%d trades=%d return=%+.2f%%",
+            self._snapshots_processed,
+            equity,
+            portfolio,
+            cash,
+            positions,
+            trades,
+            ret,
+        )
+        if ret <= Decimal(-20):
+            logger.warning("DRAWDOWN ALERT return=%+.2f%%", ret)
 
     async def _apply_signal(self, sig: Signal, snapshot: MarketSnapshot) -> None:
         """Convert a strategy signal into a real trade.

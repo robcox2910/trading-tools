@@ -1,7 +1,7 @@
 """CLI command for running the Polymarket live trading bot.
 
-Launch the async live trading engine with a configurable strategy, market
-selection, and safety guardrails. Require ``--confirm-live`` to prevent
+Launch the WebSocket-driven live trading engine with a configurable strategy,
+market selection, and safety guardrails. Require ``--confirm-live`` to prevent
 accidental live trading. Display a warning banner and initial USDC balance
 before starting.
 """
@@ -20,6 +20,7 @@ from trading_tools.apps.polymarket_bot.strategy_factory import (
     PM_STRATEGY_NAMES,
     build_pm_strategy,
 )
+from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 
@@ -130,7 +131,7 @@ def bot_live(  # noqa: PLR0913
         str,
         typer.Option(help="Comma-separated series slugs for auto-discovery (e.g. btc-updown-5m)"),
     ] = "",
-    poll_interval: Annotated[int, typer.Option(help="Seconds between market data polls")] = 30,
+    ob_refresh: Annotated[int, typer.Option(help="Seconds between order book refreshes")] = 30,
     max_ticks: Annotated[
         int | None, typer.Option(help="Stop after N ticks (None = unlimited)")
     ] = None,
@@ -191,7 +192,7 @@ def bot_live(  # noqa: PLR0913
             strategy=strategy,
             markets=markets,
             series=series,
-            poll_interval=poll_interval,
+            ob_refresh=ob_refresh,
             max_ticks=max_ticks,
             max_position_pct=max_position_pct,
             kelly_frac=kelly_frac,
@@ -215,7 +216,7 @@ def _display_banner(
     *,
     market_orders: bool,
     max_loss_pct: float,
-    poll_interval: int,
+    ob_refresh: int,
     max_ticks: int | None,
 ) -> None:
     """Display the live trading warning banner and configuration.
@@ -225,7 +226,7 @@ def _display_banner(
         market_ids: Condition IDs being tracked.
         market_orders: Whether FOK market orders are used.
         max_loss_pct: Maximum loss percentage.
-        poll_interval: Poll interval in seconds.
+        ob_refresh: Order book refresh interval in seconds.
         max_ticks: Maximum ticks or None.
 
     """
@@ -240,7 +241,7 @@ def _display_banner(
         typer.echo(f"  {mid[:40]}...")
     typer.echo(f"Order type: {'market (FOK)' if market_orders else 'limit (GTC)'}")
     typer.echo(f"Max loss: {max_loss_pct:.0%}")
-    typer.echo(f"Poll interval: {poll_interval}s")
+    typer.echo(f"Order book refresh: {ob_refresh}s")
     if max_ticks is not None:
         typer.echo(f"Max ticks: {max_ticks}")
 
@@ -270,7 +271,7 @@ async def _bot_live(  # noqa: PLR0913
     strategy: str,
     markets: str,
     series: str,
-    poll_interval: int,
+    ob_refresh: int,
     max_ticks: int | None,
     max_position_pct: float,
     kelly_frac: float,
@@ -291,7 +292,7 @@ async def _bot_live(  # noqa: PLR0913
         strategy: Strategy name to use.
         markets: Comma-separated condition IDs.
         series: Comma-separated series slugs for auto-discovery.
-        poll_interval: Seconds between polls.
+        ob_refresh: Seconds between order book refreshes.
         max_ticks: Maximum number of ticks.
         max_position_pct: Maximum position size as fraction of balance.
         kelly_frac: Fractional Kelly multiplier.
@@ -352,7 +353,7 @@ async def _bot_live(  # noqa: PLR0913
         raise typer.Exit(code=1) from exc
 
     config = BotConfig(
-        poll_interval_seconds=poll_interval,
+        order_book_refresh_seconds=ob_refresh,
         snipe_window_seconds=snipe_window,
         max_position_pct=Decimal(str(max_position_pct)),
         kelly_fraction=Decimal(str(kelly_frac)),
@@ -366,10 +367,11 @@ async def _bot_live(  # noqa: PLR0913
         market_ids,
         market_orders=market_orders,
         max_loss_pct=max_loss_pct,
-        poll_interval=poll_interval,
+        ob_refresh=ob_refresh,
         max_ticks=max_ticks,
     )
 
+    feed = MarketFeed()
     try:
         async with client:
             bal = await client.get_balance("COLLATERAL")
@@ -380,6 +382,7 @@ async def _bot_live(  # noqa: PLR0913
                 client,
                 pm_strategy,
                 config,
+                feed=feed,
                 max_loss_pct=Decimal(str(max_loss_pct)),
                 use_market_orders=market_orders,
                 auto_redeem=auto_redeem,
