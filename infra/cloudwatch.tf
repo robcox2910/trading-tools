@@ -40,7 +40,7 @@ resource "aws_cloudwatch_log_metric_filter" "perf_heartbeat" {
 resource "aws_cloudwatch_log_metric_filter" "errors" {
   name           = "trading-bot-errors"
   log_group_name = aws_cloudwatch_log_group.live_bot.name
-  pattern        = "?\"Error:\" ?\"ERROR\" ?\"TRADE REJECTED\""
+  pattern        = "?\"Error:\" ?\"ERROR\" -\"TRADE REJECTED\""
 
   metric_transformation {
     name          = "ErrorCount"
@@ -70,6 +70,19 @@ resource "aws_cloudwatch_log_metric_filter" "trades_opened" {
 
   metric_transformation {
     name          = "TradesOpened"
+    namespace     = "TradingBot"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "trades_rejected" {
+  name           = "trading-bot-trades-rejected"
+  log_group_name = aws_cloudwatch_log_group.live_bot.name
+  pattern        = "\"TRADE REJECTED\""
+
+  metric_transformation {
+    name          = "TradesRejected"
     namespace     = "TradingBot"
     value         = "1"
     default_value = "0"
@@ -223,7 +236,7 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
           title   = "Return % Over Time"
           region  = var.aws_region
           stacked = false
-          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'return=*%%' as returnPct | stats avg(returnPct) as ReturnPct by bin(5m)"
+          query   = "SOURCE '${aws_cloudwatch_log_group.live_bot.name}' | fields @timestamp | filter @message like /\\[PERF/ | parse @message 'equity=$* cash=$* positions=* trades=* return=*%%' as equity, cash, positions, trades, returnPct | stats avg(returnPct) as ReturnPct by bin(5m)"
           view    = "timeSeries"
           yAxis = {
             left = { label = "%" }
@@ -266,11 +279,12 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
         width  = 12
         height = 6
         properties = {
-          title  = "Signals vs Trades Opened"
+          title  = "Signals / Trades / Rejects"
           region = var.aws_region
           metrics = [
             ["TradingBot", "SignalCount", { stat = "Sum", period = 300 }],
-            ["TradingBot", "TradesOpened", { stat = "Sum", period = 300 }]
+            ["TradingBot", "TradesOpened", { stat = "Sum", period = 300 }],
+            ["TradingBot", "TradesRejected", { stat = "Sum", period = 300 }]
           ]
           view    = "timeSeries"
           stacked = true
