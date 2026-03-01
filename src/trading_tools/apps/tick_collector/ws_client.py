@@ -174,7 +174,11 @@ class MarketFeed:
         ) as ws:
             self._ws = ws
             subscribe_msg = _build_subscribe_message(asset_ids)
-            await ws.send(json.dumps(subscribe_msg))
+            try:
+                await ws.send(json.dumps(subscribe_msg))
+            except (ConnectionClosed, AttributeError):
+                logger.warning("WebSocket closed before subscribe message could be sent")
+                return
             logger.info("Connected and subscribed to %d assets", len(asset_ids))
 
             async for raw in ws:

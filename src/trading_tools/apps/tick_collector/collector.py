@@ -128,6 +128,12 @@ class TickCollector:
             discovery_task.cancel()
             heartbeat_task.cancel()
             flush_task.cancel()
+            await asyncio.gather(
+                discovery_task,
+                heartbeat_task,
+                flush_task,
+                return_exceptions=True,
+            )
             await self._flush_buffer()
             await self._feed.close()
             await self._repo.close()
@@ -240,6 +246,13 @@ class TickCollector:
         to the next window's markets before they open, capturing ticks from
         the very start of each window.
         """
+        try:
+            await self._periodic_discovery_inner()
+        except asyncio.CancelledError:
+            return
+
+    async def _periodic_discovery_inner(self) -> None:
+        """Execute the discovery loop body (separated for CancelledError handling)."""
         while not self._shutdown:
             sleep_seconds = _seconds_until_next_discovery(
                 int(time.time()), self._config.discovery_lead_seconds
@@ -259,6 +272,13 @@ class TickCollector:
         filters containing ticks-per-minute, total stored, and asset
         count.
         """
+        try:
+            await self._periodic_heartbeat_inner()
+        except asyncio.CancelledError:
+            return
+
+    async def _periodic_heartbeat_inner(self) -> None:
+        """Execute the heartbeat loop body (separated for CancelledError handling)."""
         while not self._shutdown:
             await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
             if self._shutdown:
@@ -278,6 +298,13 @@ class TickCollector:
         Ensure ticks are written even during low-volume periods when
         the batch size threshold is not reached.
         """
+        try:
+            await self._periodic_flush_inner()
+        except asyncio.CancelledError:
+            return
+
+    async def _periodic_flush_inner(self) -> None:
+        """Execute the flush loop body (separated for CancelledError handling)."""
         while not self._shutdown:
             await asyncio.sleep(self._config.flush_interval_seconds)
             if self._shutdown:
