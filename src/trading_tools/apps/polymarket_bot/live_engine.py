@@ -44,6 +44,26 @@ _SLEEP_BUFFER_SECONDS = 5
 _DEFAULT_MAX_LOSS_PCT = Decimal("0.10")
 
 
+def _log_task_exception(task: asyncio.Task[Any]) -> None:
+    """Log unhandled exceptions from background tasks.
+
+    Attach as a ``done_callback`` so that a crashed background task
+    (order-book refresh, balance refresh, rotation) is surfaced in
+    the logs rather than silently swallowed.
+
+    Args:
+        task: The completed asyncio task.
+
+    """
+    if not task.cancelled() and task.exception() is not None:
+        logger.error(
+            "Background task %s failed: %s",
+            task.get_name(),
+            task.exception(),
+            exc_info=task.exception(),
+        )
+
+
 class LiveTradingEngine:
     """WebSocket-driven engine that executes real trades on Polymarket.
 
@@ -151,6 +171,8 @@ class LiveTradingEngine:
         ob_task = asyncio.create_task(self._refresh_order_books_loop())
         balance_task = asyncio.create_task(self._refresh_balance_loop())
         rotation_task = asyncio.create_task(self._rotation_loop())
+        for task in (ob_task, balance_task, rotation_task):
+            task.add_done_callback(_log_task_exception)
 
         tick_count = 0
         try:
@@ -388,10 +410,12 @@ class LiveTradingEngine:
         if self._auto_redeem:
             await self._redeem_resolved()
 
+        # Clear all position tracking atomically before refreshing balance
         remaining = len(self._portfolio.positions)
+        self._position_outcomes.clear()
+        self._token_ids.clear()
         if remaining > 0:
             self._portfolio.clear_positions()
-        self._position_outcomes.clear()
         await self._portfolio.refresh_balance()
         logger.info(
             "ROTATION: balance now $%.4f",
@@ -465,8 +489,8 @@ class LiveTradingEngine:
         EOA for gas.
         """
         if self._redeem_task is not None and not self._redeem_task.done():
-            logger.info("AUTO-REDEEM: previous redemption still in progress, skipping")
-            return
+            logger.info("AUTO-REDEEM: cancelling previous redemption task")
+            self._redeem_task.cancel()
 
         try:
             redeemable = await self._client.get_redeemable_positions()

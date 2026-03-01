@@ -777,10 +777,10 @@ class TestAutoRedeem:
         assert any("CTF redemption failed" in msg for msg in caplog.messages)
 
     @pytest.mark.asyncio
-    async def test_redeem_skips_when_previous_still_running(
+    async def test_redeem_cancels_previous_running_task(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Verify auto-redeem skips if a previous redemption task is in progress."""
+        """Verify auto-redeem cancels previous task and starts a new one."""
         client = _mock_client()
         client.get_redeemable_positions = AsyncMock(
             return_value=[
@@ -793,6 +793,7 @@ class TestAutoRedeem:
                 ),
             ],
         )
+        client.redeem_positions = AsyncMock(return_value=1)
 
         config = _make_config()
         feed = _mock_feed([])
@@ -804,7 +805,8 @@ class TestAutoRedeem:
             auto_redeem=True,
         )
         # Simulate a still-running redeem task
-        engine._redeem_task = asyncio.create_task(asyncio.sleep(10))
+        old_task = asyncio.create_task(asyncio.sleep(10))
+        engine._redeem_task = old_task
 
         with caplog.at_level(
             logging.INFO,
@@ -812,9 +814,11 @@ class TestAutoRedeem:
         ):
             await engine._redeem_resolved()
 
-        client.get_redeemable_positions.assert_not_called()
-        assert any("still in progress" in msg for msg in caplog.messages)
-        engine._redeem_task.cancel()
+        assert old_task.cancelling()
+        assert any("cancelling previous" in msg for msg in caplog.messages)
+        # New task should have been created
+        assert engine._redeem_task is not None
+        assert engine._redeem_task is not old_task
 
 
 class TestComputeSleep:
