@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from trading_tools.core.config import ConfigError, ConfigLoader
+import trading_tools.core.config as config_module
+from trading_tools.core.config import ConfigError, ConfigLoader, get_config
 
 EXPECTED_TIMEOUT = 30
 EXPECTED_MAX_ATTEMPTS = 5
@@ -135,16 +136,16 @@ revolut_x:
         key_data = loader.get_private_key()
         assert key_data == test_key_data
 
-    def test_full_string_unresolved_env_var_kept_as_literal(self, tmp_path: Path) -> None:
-        """Keep the literal ${VAR} string when env var is unset and has no default."""
+    def test_full_string_unresolved_env_var_raises_config_error(self, tmp_path: Path) -> None:
+        """Raise ConfigError when env var is unset and has no default."""
         config_file = tmp_path / "settings.yaml"
         config_file.write_text("""
 revolut_x:
   api_key: ${NONEXISTENT_TRADING_TOOLS_VAR}
 """)
 
-        loader = ConfigLoader(config_dir=tmp_path)
-        assert loader.get("revolut_x.api_key") == "${NONEXISTENT_TRADING_TOOLS_VAR}"
+        with pytest.raises(ConfigError, match="Required environment variable"):
+            ConfigLoader(config_dir=tmp_path)
 
     def test_embedded_env_var_reference_raises_config_error(self, tmp_path: Path) -> None:
         """Raise ConfigError when an env var reference is embedded in a larger string."""
@@ -193,3 +194,26 @@ revolut_x:
         assert loader.get("revolut_x.timeout") == EXPECTED_TIMEOUT
         assert loader.get("revolut_x.retry.max_attempts") == EXPECTED_MAX_ATTEMPTS
         assert loader.get("revolut_x.retry.backoff") == EXPECTED_BACKOFF
+
+
+class TestGetConfig:
+    """Test suite for the lazy singleton get_config() function."""
+
+    def test_returns_config_loader_instance(self) -> None:
+        """Return a ConfigLoader instance on first call."""
+        config_module._config = None
+        try:
+            result = get_config()
+            assert isinstance(result, ConfigLoader)
+        finally:
+            config_module._config = None
+
+    def test_returns_same_instance(self) -> None:
+        """Return the same ConfigLoader on subsequent calls."""
+        config_module._config = None
+        try:
+            first = get_config()
+            second = get_config()
+            assert first is second
+        finally:
+            config_module._config = None

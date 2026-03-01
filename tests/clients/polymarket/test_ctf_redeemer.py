@@ -88,3 +88,35 @@ class TestRedeemPositions:
                 [_CONDITION_ID],
             )
             assert result == []
+
+
+class TestEncodeRedeemCalldataValidation:
+    """Test hex validation in _encode_redeem_calldata."""
+
+    def test_raises_on_invalid_hex(self) -> None:
+        """Raise PolymarketAPIError for non-hex condition IDs."""
+        with pytest.raises(PolymarketAPIError, match="Invalid hex condition ID"):
+            _ctf_redeemer._encode_redeem_calldata("not_valid_hex_zzz")
+
+
+class TestPrivateKeySafety:
+    """Test that invalid private keys don't leak key material."""
+
+    def test_raises_sanitized_error_for_bad_key(self) -> None:
+        """Raise PolymarketAPIError without the key in the message."""
+        bad_key = "0xinvalid_key_material"
+        with patch("trading_tools.clients.polymarket._ctf_redeemer.Web3") as mock_web3:
+            mock_instance = MagicMock()
+            mock_instance.is_connected.return_value = True
+            mock_web3.return_value = mock_instance
+            mock_web3.HTTPProvider = MagicMock()
+            mock_instance.eth.account.from_key.side_effect = ValueError("bad key")
+
+            with pytest.raises(PolymarketAPIError, match="Invalid private key") as exc_info:
+                _ctf_redeemer.redeem_positions(
+                    _RPC_URL,
+                    bad_key,
+                    [_CONDITION_ID],
+                )
+            # Ensure key material is NOT in the error message
+            assert bad_key not in str(exc_info.value)

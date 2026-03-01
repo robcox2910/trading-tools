@@ -1,6 +1,5 @@
 """Configuration management for trading tools."""
 
-import logging
 import os
 import re
 from pathlib import Path
@@ -8,9 +7,6 @@ from typing import Any, cast
 
 import yaml
 from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
 
 
 class ConfigError(Exception):
@@ -23,10 +19,14 @@ class ConfigLoader:
     def __init__(self, config_dir: Path | None = None) -> None:
         """Initialize the config loader.
 
+        Load environment variables from a ``.env`` file (if present) and
+        then read YAML configuration from the given directory.
+
         Args:
             config_dir: Directory containing config files. Defaults to src/trading_tools/config.
 
         """
+        load_dotenv()
         if config_dir is None:
             # Default to config directory relative to this file
             config_dir = Path(__file__).parent.parent / "config"
@@ -98,11 +98,8 @@ class ConfigLoader:
 
             value = os.getenv(var_name, default)
             if value is None:
-                logging.getLogger(__name__).warning(
-                    "Unresolved env var ${%s} with no default — returning raw placeholder",
-                    var_name,
-                )
-                return config  # Return original if no env var and no default
+                msg = f"Required environment variable ${{{var_name}}} is not set and has no default"
+                raise ConfigError(msg)
             return value
 
         if isinstance(config, str) and re.search(r"\$\{[^}]+\}", config):
@@ -167,5 +164,20 @@ class ConfigLoader:
         return path.read_bytes()
 
 
-# Global config instance
-config = ConfigLoader()
+_config: ConfigLoader | None = None
+
+
+def get_config() -> ConfigLoader:
+    """Return the global ``ConfigLoader`` singleton, creating it on first use.
+
+    Lazy initialisation avoids side effects (file I/O, ``load_dotenv``)
+    at import time and makes testing easier.
+
+    Returns:
+        The shared ``ConfigLoader`` instance.
+
+    """
+    global _config  # noqa: PLW0603
+    if _config is None:
+        _config = ConfigLoader()
+    return _config

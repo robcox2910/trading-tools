@@ -86,7 +86,13 @@ def _encode_redeem_calldata(condition_id: str) -> bytes:
     w3 = Web3()
     ctf = w3.eth.contract(abi=_CTF_REDEEM_ABI)
     cid_hex = condition_id if condition_id.startswith("0x") else f"0x{condition_id}"
-    cid_bytes = bytes.fromhex(cid_hex[2:].zfill(64))
+    try:
+        cid_bytes = bytes.fromhex(cid_hex[2:].zfill(64))
+    except ValueError as exc:
+        raise PolymarketAPIError(
+            msg=f"Invalid hex condition ID: {condition_id}",
+            status_code=0,
+        ) from exc
 
     return ctf.encode_abi(  # type: ignore[no-any-return]
         "redeemPositions",
@@ -141,7 +147,13 @@ def redeem_positions(
             status_code=0,
         )
 
-    account = w3.eth.account.from_key(private_key)
+    try:
+        account = w3.eth.account.from_key(private_key)
+    except Exception as exc:
+        raise PolymarketAPIError(
+            msg="Invalid private key for CTF redemption",
+            status_code=0,
+        ) from exc
     factory = w3.eth.contract(
         address=Web3.to_checksum_address(_PROXY_WALLET_FACTORY),
         abi=_FACTORY_PROXY_ABI,

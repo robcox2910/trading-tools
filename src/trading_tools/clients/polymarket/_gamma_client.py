@@ -16,9 +16,8 @@ from typing import Any
 
 import httpx
 
+from trading_tools.clients.polymarket._constants import HTTP_BAD_REQUEST
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
-
-_HTTP_BAD_REQUEST = 400
 
 
 class GammaClient:
@@ -162,10 +161,10 @@ class GammaClient:
         except httpx.HTTPError as exc:
             raise PolymarketAPIError(
                 msg=f"HTTP request failed: {exc}",
-                status_code=_HTTP_BAD_REQUEST,
+                status_code=HTTP_BAD_REQUEST,
             ) from exc
 
-        if response.status_code >= _HTTP_BAD_REQUEST:
+        if response.status_code >= HTTP_BAD_REQUEST:
             self._handle_error(response)
 
         result: Any = response.json()

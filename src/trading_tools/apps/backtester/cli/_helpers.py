@@ -14,7 +14,7 @@ import typer
 from trading_tools.apps.backtester.strategy_factory import STRATEGY_NAMES
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.clients.revolut_x.client import RevolutXClient
-from trading_tools.core.config import config
+from trading_tools.core.config import get_config
 from trading_tools.core.models import ExecutionConfig, Interval, RiskConfig
 from trading_tools.core.protocols import CandleProvider
 from trading_tools.data.providers.binance import BinanceCandleProvider
@@ -40,7 +40,7 @@ def resolve_interval(raw: str | None) -> Interval:
     Fall back to ``1h`` when neither the CLI option nor the config key
     ``backtester.default_interval`` is set.
     """
-    value = raw or config.get("backtester.default_interval", "1h")
+    value = raw or get_config().get("backtester.default_interval", "1h")
     return Interval(str(value))
 
 
@@ -53,7 +53,7 @@ def resolve_capital(capital: float | None) -> Decimal:
     """
     if capital is not None:
         return Decimal(str(capital))
-    raw: object = config.get("backtester.initial_capital", 10000)
+    raw: object = get_config().get("backtester.initial_capital", 10000)
     return Decimal(str(raw))
 
 
