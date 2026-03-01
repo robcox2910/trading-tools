@@ -20,6 +20,7 @@ _DEFAULT_BALANCE_REFRESH = 60
 _DEFAULT_SNIPE_POLL_INTERVAL = 1
 _DEFAULT_SNIPE_WINDOW = 60
 _DEFAULT_MAX_HISTORY = 500
+_DEFAULT_MIN_EDGE = Decimal("0.005")
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,9 @@ class BotConfig:
         markets: Tuple of condition IDs to track.
         market_end_times: Pairs of (condition_id, ISO end time) for precise
             resolution time overrides (CLOB API only provides the date).
+        min_edge: Minimum probability edge over market price required
+            to open a position. Ensures the Kelly-estimated probability
+            exceeds the buy price by at least this amount.
         series_slugs: Series slugs for periodic market re-discovery
             (e.g. ``("btc-updown-5m",)``). When set, the engine rotates
             markets each time the 5-minute window changes.
@@ -104,6 +108,7 @@ class BotConfig:
     max_position_pct: Decimal = _DEFAULT_MAX_POSITION_PCT
     kelly_fraction: Decimal = _DEFAULT_KELLY_FRACTION
     max_history: int = _DEFAULT_MAX_HISTORY
+    min_edge: Decimal = _DEFAULT_MIN_EDGE
     markets: tuple[str, ...] = ()
     market_end_times: tuple[tuple[str, str], ...] = ()
     series_slugs: tuple[str, ...] = ()

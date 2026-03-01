@@ -11,8 +11,10 @@ import asyncio
 import logging
 import time
 from collections import deque
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
+
+import httpx
 
 from trading_tools.apps.polymarket_bot.kelly import kelly_fraction
 from trading_tools.apps.polymarket_bot.models import (
@@ -25,6 +27,7 @@ from trading_tools.apps.polymarket_bot.price_tracker import PriceTracker
 from trading_tools.apps.polymarket_bot.protocols import PredictionMarketStrategy
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
+from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.core.models import ZERO, Side, Signal
 
 if TYPE_CHECKING:
@@ -33,6 +36,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MIN_TOKENS = 2
+_MIN_ORDER_SIZE = Decimal(5)
 _FIVE_MINUTES = 300
 
 
@@ -134,7 +138,7 @@ class PaperTradingEngine:
         for condition_id in self._active_markets:
             try:
                 market: Market = await self._client.get_market(condition_id)
-            except Exception:
+            except (PolymarketAPIError, httpx.HTTPError):
                 logger.warning("Failed to fetch market %s", condition_id, exc_info=True)
                 continue
 
@@ -156,7 +160,7 @@ class PaperTradingEngine:
             try:
                 order_book = await self._client.get_order_book(yes_token.token_id)
                 self._cached_order_books[condition_id] = order_book
-            except Exception:
+            except (PolymarketAPIError, httpx.HTTPError):
                 logger.warning("Failed to fetch order book for %s", condition_id, exc_info=True)
 
         logger.info(
@@ -178,7 +182,7 @@ class PaperTradingEngine:
         asset_id = str(event.get("asset_id", ""))
         try:
             price = Decimal(str(event.get("price", "0")))
-        except Exception:
+        except (ValueError, InvalidOperation):
             logger.debug("Skipping event with invalid price: %s", event)
             return
 
@@ -221,9 +225,10 @@ class PaperTradingEngine:
         else:
             logger.info("[tick %d] No signal", self._snapshots_processed)
 
-        outcome = self._position_outcomes.get(condition_id, "Yes")
-        mtm_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
-        self._portfolio.mark_to_market(condition_id, mtm_price)
+        outcome = self._position_outcomes.get(condition_id)
+        if outcome is not None:
+            mtm_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
+            self._portfolio.mark_to_market(condition_id, mtm_price)
 
     def _build_snapshot(self, condition_id: str) -> MarketSnapshot | None:
         """Build a MarketSnapshot from cached prices and order book.
@@ -276,7 +281,7 @@ class PaperTradingEngine:
                 try:
                     order_book = await self._client.get_order_book(market.tokens[0].token_id)
                     self._cached_order_books[condition_id] = order_book
-                except Exception:
+                except (PolymarketAPIError, httpx.HTTPError):
                     logger.warning(
                         "Failed to refresh order book for %s",
                         condition_id,
@@ -305,7 +310,7 @@ class PaperTradingEngine:
         """
         # Close all open positions
         for cid in list(self._portfolio.positions):
-            outcome = self._position_outcomes.get(cid, "Yes")
+            outcome = self._position_outcomes.get(cid, "Yes")  # safe: only open positions tracked
             last_snap = self._history.get(cid)
             if last_snap:
                 latest = last_snap[-1]
@@ -328,7 +333,7 @@ class PaperTradingEngine:
         # Discover new markets
         try:
             discovered = await self._client.discover_series_markets(list(self._config.series_slugs))
-        except Exception:
+        except (PolymarketAPIError, httpx.HTTPError):
             logger.warning("Market rotation discovery failed", exc_info=True)
             return
 
@@ -363,7 +368,7 @@ class PaperTradingEngine:
 
                 order_book = await self._client.get_order_book(yes_tok.token_id)
                 self._cached_order_books[cid] = order_book
-            except Exception:
+            except (PolymarketAPIError, httpx.HTTPError):
                 logger.warning("Failed to bootstrap rotated market %s", cid, exc_info=True)
 
         await self._feed.update_subscription(self._asset_ids)
@@ -423,7 +428,7 @@ class PaperTradingEngine:
             order_book = await self._client.get_order_book(market.tokens[0].token_id)
             self._cached_order_books[condition_id] = order_book
             logger.info("Refreshed order book for %s before trade", condition_id[:20])
-        except Exception:
+        except (PolymarketAPIError, httpx.HTTPError):
             logger.warning(
                 "Failed to refresh order book for %s before trade, using cached",
                 condition_id[:20],
@@ -455,7 +460,7 @@ class PaperTradingEngine:
 
         # Close existing position
         if signal.side == Side.SELL and condition_id in self._portfolio.positions:
-            outcome = self._position_outcomes.get(condition_id, "Yes")
+            outcome = self._position_outcomes.get(condition_id, "Yes")  # safe: checked above
             close_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
             trade = self._portfolio.close_position(condition_id, close_price, snapshot.timestamp)
             if trade is not None:
@@ -502,7 +507,10 @@ class PaperTradingEngine:
             signal: Strategy signal that triggered the trade.
 
         """
-        estimated_prob = buy_price + signal.strength * (Decimal(1) - buy_price)
+        estimated_prob = max(
+            buy_price + signal.strength * (Decimal(1) - buy_price),
+            buy_price + self._config.min_edge,
+        )
         estimated_prob = min(estimated_prob, Decimal("0.99"))
 
         fraction = kelly_fraction(
@@ -515,7 +523,7 @@ class PaperTradingEngine:
             return
 
         max_qty = self._portfolio.max_quantity_for(buy_price)
-        quantity = max(Decimal(1), (max_qty * fraction).quantize(Decimal(1)))
+        quantity = max(_MIN_ORDER_SIZE, (max_qty * fraction).quantize(Decimal(1)))
 
         edge = estimated_prob - buy_price
         trade = self._portfolio.open_position(
