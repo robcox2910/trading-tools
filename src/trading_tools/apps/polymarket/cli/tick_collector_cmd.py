@@ -11,15 +11,9 @@ from typing import Annotated
 
 import typer
 
+from trading_tools.apps.polymarket.cli._helpers import parse_series_slugs
 from trading_tools.apps.tick_collector.collector import TickCollector
 from trading_tools.apps.tick_collector.config import CollectorConfig
-
-_CRYPTO_5M_SERIES = (
-    "btc-updown-5m",
-    "eth-updown-5m",
-    "sol-updown-5m",
-    "xrp-updown-5m",
-)
 
 _DEFAULT_DB_URL = "sqlite+aiosqlite:///tick_data.db"
 
@@ -63,7 +57,7 @@ def tick_collect(
     )
 
     market_ids = tuple(m.strip() for m in markets.split(",") if m.strip())
-    series_slugs = _parse_series_slugs(series)
+    series_slugs = parse_series_slugs(series)
 
     if not market_ids and not series_slugs:
         typer.echo(
@@ -90,28 +84,3 @@ def tick_collect(
 
     collector = TickCollector(config)
     asyncio.run(collector.run())
-
-
-def _parse_series_slugs(series: str) -> tuple[str, ...]:
-    """Parse a comma-separated series string into expanded slug tuples.
-
-    Expand the special value ``"crypto-5m"`` into all four crypto
-    Up/Down 5-minute series slugs.
-
-    Args:
-        series: Comma-separated series slugs or ``"crypto-5m"`` shortcut.
-
-    Returns:
-        Tuple of expanded series slug strings.
-
-    """
-    slugs: list[str] = []
-    for s in series.split(","):
-        s = s.strip()  # noqa: PLW2901
-        if not s:
-            continue
-        if s == "crypto-5m":
-            slugs.extend(_CRYPTO_5M_SERIES)
-        else:
-            slugs.append(s)
-    return tuple(slugs)

@@ -152,7 +152,7 @@ class TestTradeCommand:
         """Place a limit order with user confirmation."""
         mock = _mock_client()
         with patch(
-            "trading_tools.apps.polymarket.cli.trade_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.trade_cmd.build_authenticated_client",
             return_value=mock,
         ):
             result = runner.invoke(
@@ -184,7 +184,7 @@ class TestTradeCommand:
         """Abort trade when user declines confirmation."""
         mock = _mock_client()
         with patch(
-            "trading_tools.apps.polymarket.cli.trade_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.trade_cmd.build_authenticated_client",
             return_value=mock,
         ):
             result = runner.invoke(
@@ -214,7 +214,7 @@ class TestTradeCommand:
         """Place order without confirmation when --no-confirm is set."""
         mock = _mock_client()
         with patch(
-            "trading_tools.apps.polymarket.cli.trade_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.trade_cmd.build_authenticated_client",
             return_value=mock,
         ):
             result = runner.invoke(
@@ -246,7 +246,7 @@ class TestTradeCommand:
         """Place a market (FOK) order."""
         mock = _mock_client()
         with patch(
-            "trading_tools.apps.polymarket.cli.trade_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.trade_cmd.build_authenticated_client",
             return_value=mock,
         ):
             result = runner.invoke(
@@ -388,7 +388,7 @@ class TestTradeCommand:
             side_effect=PolymarketAPIError(msg="Insufficient funds", status_code=400),
         )
         with patch(
-            "trading_tools.apps.polymarket.cli.trade_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.trade_cmd.build_authenticated_client",
             return_value=mock,
         ):
             result = runner.invoke(
@@ -419,7 +419,7 @@ class TestBalanceCommand:
         """Display USDC balance and allowance."""
         mock = _mock_client()
         with patch(
-            "trading_tools.apps.polymarket.cli.trade_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.trade_cmd.build_authenticated_client",
             return_value=mock,
         ):
             result = runner.invoke(app, ["balance"])
@@ -435,7 +435,7 @@ class TestBalanceCommand:
             side_effect=PolymarketAPIError(msg="Auth failed", status_code=401),
         )
         with patch(
-            "trading_tools.apps.polymarket.cli.trade_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.trade_cmd.build_authenticated_client",
             return_value=mock,
         ):
             result = runner.invoke(app, ["balance"])
@@ -455,7 +455,7 @@ class TestOrdersCommand:
         ]
         mock = _mock_client(open_orders=open_orders)
         with patch(
-            "trading_tools.apps.polymarket.cli.trade_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.trade_cmd.build_authenticated_client",
             return_value=mock,
         ):
             result = runner.invoke(app, ["orders"])
@@ -469,7 +469,7 @@ class TestOrdersCommand:
         """Display message when no open orders exist."""
         mock = _mock_client(open_orders=[])
         with patch(
-            "trading_tools.apps.polymarket.cli.trade_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.trade_cmd.build_authenticated_client",
             return_value=mock,
         ):
             result = runner.invoke(app, ["orders"])
@@ -485,7 +485,7 @@ class TestCancelCommand:
         """Cancel an order and display result."""
         mock = _mock_client(cancel_result={"status": "cancelled"})
         with patch(
-            "trading_tools.apps.polymarket.cli.trade_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.trade_cmd.build_authenticated_client",
             return_value=mock,
         ):
             result = runner.invoke(app, ["cancel", "--order-id", _ORDER_ID])
@@ -501,7 +501,7 @@ class TestCancelCommand:
             side_effect=PolymarketAPIError(msg="Order not found", status_code=404),
         )
         with patch(
-            "trading_tools.apps.polymarket.cli.trade_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.trade_cmd.build_authenticated_client",
             return_value=mock,
         ):
             result = runner.invoke(app, ["cancel", "--order-id", "bad_id"])

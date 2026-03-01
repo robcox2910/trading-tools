@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 from typer.testing import CliRunner
 
 from trading_tools.apps.polymarket.cli import app
-from trading_tools.apps.polymarket.cli.tick_collector_cmd import _parse_series_slugs
+from trading_tools.apps.polymarket.cli._helpers import parse_series_slugs
 
 _CONDITION_ID = "cond_cli_test_tick"
 _CRYPTO_5M_SLUG_COUNT = 4
@@ -102,19 +102,19 @@ class TestParseSeriesSlugs:
 
     def test_parse_single_slug(self) -> None:
         """Parse a single series slug."""
-        result = _parse_series_slugs("btc-updown-5m")
+        result = parse_series_slugs("btc-updown-5m")
 
         assert result == ("btc-updown-5m",)
 
     def test_parse_multiple_slugs(self) -> None:
         """Parse comma-separated slugs."""
-        result = _parse_series_slugs("btc-updown-5m,eth-updown-5m")
+        result = parse_series_slugs("btc-updown-5m,eth-updown-5m")
 
         assert result == ("btc-updown-5m", "eth-updown-5m")
 
     def test_expand_crypto_5m_shortcut(self) -> None:
         """Expand the crypto-5m shortcut into all four series."""
-        result = _parse_series_slugs("crypto-5m")
+        result = parse_series_slugs("crypto-5m")
 
         assert len(result) == _CRYPTO_5M_SLUG_COUNT
         assert "btc-updown-5m" in result
@@ -124,12 +124,12 @@ class TestParseSeriesSlugs:
 
     def test_empty_string(self) -> None:
         """Parse an empty string returns empty tuple."""
-        result = _parse_series_slugs("")
+        result = parse_series_slugs("")
 
         assert result == ()
 
     def test_strips_whitespace(self) -> None:
         """Strip whitespace around slug values."""
-        result = _parse_series_slugs("  btc-updown-5m , eth-updown-5m  ")
+        result = parse_series_slugs("  btc-updown-5m , eth-updown-5m  ")
 
         assert result == ("btc-updown-5m", "eth-updown-5m")

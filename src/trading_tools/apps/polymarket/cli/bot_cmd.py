@@ -6,12 +6,15 @@ via Gamma API series slugs. Display a summary of results when the bot stops.
 """
 
 import asyncio
-import logging
 from decimal import Decimal
 from typing import Annotated
 
 import typer
 
+from trading_tools.apps.polymarket.cli._helpers import (
+    configure_verbose_logging,
+    parse_series_slugs,
+)
 from trading_tools.apps.polymarket_bot.engine import PaperTradingEngine
 from trading_tools.apps.polymarket_bot.models import BotConfig
 from trading_tools.apps.polymarket_bot.strategy_factory import (
@@ -21,22 +24,6 @@ from trading_tools.apps.polymarket_bot.strategy_factory import (
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
-
-_CRYPTO_5M_SERIES = (
-    "btc-updown-5m",
-    "eth-updown-5m",
-    "sol-updown-5m",
-    "xrp-updown-5m",
-)
-
-
-def _configure_verbose_logging() -> None:
-    """Enable INFO-level logging for tick-by-tick engine output."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
 
 
 def bot(  # noqa: PLR0913
@@ -84,7 +71,7 @@ def bot(  # noqa: PLR0913
     ``--markets`` to specify condition IDs directly. Both can be combined.
     """
     if verbose:
-        _configure_verbose_logging()
+        configure_verbose_logging()
 
     asyncio.run(
         _bot(
@@ -105,31 +92,6 @@ def bot(  # noqa: PLR0913
             snipe_window=snipe_window,
         )
     )
-
-
-def _parse_series_slugs(series: str) -> tuple[str, ...]:
-    """Parse a comma-separated series string into expanded slug tuples.
-
-    Expand the special value ``"crypto-5m"`` into all four crypto
-    Up/Down 5-minute series slugs.
-
-    Args:
-        series: Comma-separated series slugs or ``"crypto-5m"`` shortcut.
-
-    Returns:
-        Tuple of expanded series slug strings.
-
-    """
-    slugs: list[str] = []
-    for s in series.split(","):
-        s = s.strip()  # noqa: PLW2901
-        if not s:
-            continue
-        if s == "crypto-5m":
-            slugs.extend(_CRYPTO_5M_SERIES)
-        else:
-            slugs.append(s)
-    return tuple(slugs)
 
 
 async def _discover_markets(
@@ -199,7 +161,7 @@ async def _bot(  # noqa: PLR0913
     """
     market_ids = tuple(m.strip() for m in markets.split(",") if m.strip())
     market_end_times: tuple[tuple[str, str], ...] = ()
-    series_slugs = _parse_series_slugs(series)
+    series_slugs = parse_series_slugs(series)
 
     # Discover markets from series slugs
     if series_slugs:

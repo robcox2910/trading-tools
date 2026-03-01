@@ -55,7 +55,7 @@ class TestBotLiveCommand:
         """Verify bot-live exits with error when no markets or series specified."""
         runner = CliRunner()
         with patch(
-            "trading_tools.apps.polymarket.cli.bot_live_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.bot_live_cmd.build_authenticated_client",
             return_value=AsyncMock(),
         ):
             result = runner.invoke(
@@ -69,7 +69,7 @@ class TestBotLiveCommand:
         """Verify bot-live exits with error for unknown strategy."""
         runner = CliRunner()
         with patch(
-            "trading_tools.apps.polymarket.cli.bot_live_cmd._build_authenticated_client",
+            "trading_tools.apps.polymarket.cli.bot_live_cmd.build_authenticated_client",
             return_value=AsyncMock(),
         ):
             result = runner.invoke(
@@ -104,7 +104,7 @@ class TestBotLiveCommand:
 
         with (
             patch(
-                "trading_tools.apps.polymarket.cli.bot_live_cmd._build_authenticated_client",
+                "trading_tools.apps.polymarket.cli.bot_live_cmd.build_authenticated_client",
                 return_value=mock_client,
             ),
             patch(
@@ -151,7 +151,7 @@ class TestBotLiveCommand:
 
         with (
             patch(
-                "trading_tools.apps.polymarket.cli.bot_live_cmd._build_authenticated_client",
+                "trading_tools.apps.polymarket.cli.bot_live_cmd.build_authenticated_client",
                 return_value=mock_client,
             ),
             patch(
