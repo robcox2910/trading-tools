@@ -21,6 +21,7 @@ _DEFAULT_SNIPE_POLL_INTERVAL = 1
 _DEFAULT_SNIPE_WINDOW = 60
 _DEFAULT_MAX_HISTORY = 500
 _DEFAULT_MIN_EDGE = Decimal("0.005")
+_DEFAULT_DRAWDOWN_ALERT_PCT = Decimal(-20)
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,7 @@ class BotConfig:
     kelly_fraction: Decimal = _DEFAULT_KELLY_FRACTION
     max_history: int = _DEFAULT_MAX_HISTORY
     min_edge: Decimal = _DEFAULT_MIN_EDGE
+    drawdown_alert_pct: Decimal = _DEFAULT_DRAWDOWN_ALERT_PCT
     markets: tuple[str, ...] = ()
     market_end_times: tuple[tuple[str, str], ...] = ()
     series_slugs: tuple[str, ...] = ()

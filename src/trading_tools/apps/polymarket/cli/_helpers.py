@@ -1,8 +1,8 @@
 """Shared helpers for Polymarket CLI commands.
 
 Centralise constants and utility functions that are reused across multiple
-CLI command modules: series slug parsing, verbose logging setup, and
-authenticated client construction.
+CLI command modules: series slug parsing, verbose logging setup, authenticated
+client construction, and market discovery.
 """
 
 import logging
@@ -81,3 +81,30 @@ def build_authenticated_client() -> PolymarketClient:
         api_passphrase=api_passphrase,
         funder_address=funder_address,
     )
+
+
+async def discover_markets(
+    client: PolymarketClient,
+    slugs: tuple[str, ...],
+) -> list[tuple[str, str]]:
+    """Discover active markets from series slugs.
+
+    Query the Gamma API for each slug and return the condition IDs
+    and end dates of all active markets found.
+
+    Args:
+        client: Polymarket API client for Gamma lookups.
+        slugs: Expanded series slug tuple.
+
+    Returns:
+        List of ``(condition_id, end_date)`` tuples.
+
+    """
+    if not slugs:
+        return []
+
+    typer.echo(f"Discovering markets for series: {', '.join(slugs)}...")
+    discovered = await client.discover_series_markets(list(slugs))
+    for cid, end_date in discovered:
+        typer.echo(f"  Found: {cid[:20]}... ends {end_date}")
+    return discovered

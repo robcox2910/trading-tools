@@ -11,6 +11,7 @@ on exit.
 """
 
 import asyncio
+import contextlib
 import logging
 import signal
 import time
@@ -465,6 +466,8 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
         if self._redeem_task is not None and not self._redeem_task.done():
             logger.info("AUTO-REDEEM: cancelling previous redemption task")
             self._redeem_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._redeem_task
 
         try:
             redeemable = await self._client.get_redeemable_positions()
@@ -598,7 +601,7 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
             trades,
             ret,
         )
-        if ret <= Decimal(-20):
+        if ret <= self._config.drawdown_alert_pct:
             logger.warning("DRAWDOWN ALERT return=%+.2f%%", ret)
 
     async def _build_result(self) -> LiveTradingResult:

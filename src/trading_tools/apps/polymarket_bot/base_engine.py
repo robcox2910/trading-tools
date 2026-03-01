@@ -126,11 +126,12 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
 
         self._cached_markets[condition_id] = market
         self._price_tracker.register_market(condition_id, yes_token.token_id, no_token.token_id)
-        self._asset_ids.extend([yes_token.token_id, no_token.token_id])
         self._price_tracker.update(yes_token.token_id, yes_token.price)
         self._price_tracker.update(no_token.token_id, no_token.price)
 
         self._on_bootstrap_market(condition_id, market)
+        # Append asset IDs after the hook succeeds to avoid orphaned entries
+        self._asset_ids.extend([yes_token.token_id, no_token.token_id])
         return market
 
     async def _bootstrap(self) -> None:
@@ -222,7 +223,7 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
             )
             await self._apply_signal(signal, snapshot)
         else:
-            logger.info("[tick %d] No signal", self._snapshots_processed)
+            logger.debug("[tick %d] No signal", self._snapshots_processed)
 
         outcome = self._position_outcomes.get(condition_id)
         if outcome is not None:

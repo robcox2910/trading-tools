@@ -38,6 +38,10 @@ def build_equity_series(result: BacktestResult) -> tuple[list[int], list[float]]
         A tuple of (timestamps, equity_values) lists.
 
     """
+    if not result.trades:
+        msg = "Cannot build equity series: no trades in result"
+        raise ValueError(msg)
+
     capital = float(result.initial_capital)
     timestamps: list[int] = [result.trades[0].entry_time]
     equity: list[float] = [capital]

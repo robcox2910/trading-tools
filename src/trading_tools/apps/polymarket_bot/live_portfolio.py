@@ -170,10 +170,11 @@ class LivePortfolio(BasePortfolio):
             )
             return None
 
+        filled_qty = response.filled if response.filled > ZERO else quantity
         self._positions[condition_id] = Position(
             symbol=condition_id,
             side=side,
-            quantity=quantity,
+            quantity=filled_qty,
             entry_price=price,
             entry_time=timestamp,
         )

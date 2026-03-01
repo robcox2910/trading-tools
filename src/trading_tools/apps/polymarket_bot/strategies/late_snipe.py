@@ -14,6 +14,7 @@ from trading_tools.core.models import ONE, Side, Signal
 
 _DEFAULT_THRESHOLD = Decimal("0.80")
 _DEFAULT_WINDOW_SECONDS = 60
+_MAX_BOUGHT_TRACKING = 10_000
 
 
 class PMLateSnipeStrategy:
@@ -83,6 +84,10 @@ class PMLateSnipeStrategy:
         if snapshot.condition_id in self._bought:
             return None
 
+        # Prevent unbounded memory growth over long-running sessions
+        if len(self._bought) > _MAX_BOUGHT_TRACKING:
+            self._bought.clear()
+
         seconds_remaining = self._seconds_until_end(snapshot)
         if seconds_remaining is None or seconds_remaining > self._window_seconds:
             return None
@@ -137,6 +142,9 @@ class PMLateSnipeStrategy:
                 snapshot.condition_id[:20],
             )
             return None
+
+        if end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=UTC)
 
         now_dt = datetime.fromtimestamp(snapshot.timestamp, tz=UTC)
         remaining = (end_dt - now_dt).total_seconds()

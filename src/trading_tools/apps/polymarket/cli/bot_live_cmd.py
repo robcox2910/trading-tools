@@ -15,6 +15,7 @@ import typer
 from trading_tools.apps.polymarket.cli._helpers import (
     build_authenticated_client,
     configure_verbose_logging,
+    discover_markets,
     parse_series_slugs,
 )
 from trading_tools.apps.polymarket_bot.live_engine import LiveTradingEngine
@@ -24,35 +25,7 @@ from trading_tools.apps.polymarket_bot.strategy_factory import (
     build_pm_strategy,
 )
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
-from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
-
-
-async def _discover_markets(
-    client: PolymarketClient,
-    slugs: tuple[str, ...],
-) -> list[tuple[str, str]]:
-    """Discover active markets from series slugs.
-
-    Query the Gamma API for each slug and return the condition IDs
-    and end dates of all active markets found.
-
-    Args:
-        client: Polymarket API client for Gamma lookups.
-        slugs: Expanded series slug tuple.
-
-    Returns:
-        List of ``(condition_id, end_date)`` tuples.
-
-    """
-    if not slugs:
-        return []
-
-    typer.echo(f"Discovering markets for series: {', '.join(slugs)}...")
-    discovered = await client.discover_series_markets(list(slugs))
-    for cid, end_date in discovered:
-        typer.echo(f"  Found: {cid[:20]}... ends {end_date}")
-    return discovered
 
 
 def bot_live(  # noqa: PLR0913
@@ -245,12 +218,12 @@ async def _bot_live(  # noqa: PLR0913
     market_end_times: tuple[tuple[str, str], ...] = ()
     series_slugs = parse_series_slugs(series)
 
-    # Discover markets from series slugs
+    # Discover markets from series slugs — create the client once and
+    # keep it open for both discovery and subsequent trading.
     client = build_authenticated_client()
     if series_slugs:
         try:
-            async with client:
-                discovered = await _discover_markets(client, series_slugs)
+            discovered = await discover_markets(client, series_slugs)
         except PolymarketAPIError as exc:
             typer.echo(f"Warning: Series discovery failed: {exc}", err=True)
             discovered = []
@@ -259,9 +232,6 @@ async def _bot_live(  # noqa: PLR0913
             discovered_ids = tuple(cid for cid, _ in discovered)
             market_end_times = tuple(discovered)
             market_ids = (*market_ids, *discovered_ids)
-
-        # Rebuild client since the context manager closed it
-        client = build_authenticated_client()
 
     if not market_ids:
         typer.echo(

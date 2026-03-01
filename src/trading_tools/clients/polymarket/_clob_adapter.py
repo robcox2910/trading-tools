@@ -48,8 +48,6 @@ _POLYGON_PROXY_WALLET = 1
 
 _logger = logging.getLogger(__name__)
 
-_R = Any  # Generic return alias for _safe_clob_call
-
 
 def _safe_clob_call(
     action: str,

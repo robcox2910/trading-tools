@@ -13,6 +13,7 @@ import typer
 
 from trading_tools.apps.polymarket.cli._helpers import (
     configure_verbose_logging,
+    discover_markets,
     parse_series_slugs,
 )
 from trading_tools.apps.polymarket_bot.engine import PaperTradingEngine
@@ -94,33 +95,6 @@ def bot(  # noqa: PLR0913
     )
 
 
-async def _discover_markets(
-    client: PolymarketClient,
-    slugs: tuple[str, ...],
-) -> list[tuple[str, str]]:
-    """Discover active markets from series slugs.
-
-    Query the Gamma API for each slug and return the condition IDs
-    and end dates of all active markets found.
-
-    Args:
-        client: Polymarket API client for Gamma lookups.
-        slugs: Expanded series slug tuple.
-
-    Returns:
-        List of ``(condition_id, end_date)`` tuples.
-
-    """
-    if not slugs:
-        return []
-
-    typer.echo(f"Discovering markets for series: {', '.join(slugs)}...")
-    discovered = await client.discover_series_markets(list(slugs))
-    for cid, end_date in discovered:
-        typer.echo(f"  Found: {cid[:20]}... ends {end_date}")
-    return discovered
-
-
 async def _bot(  # noqa: PLR0913
     *,
     strategy: str,
@@ -167,7 +141,7 @@ async def _bot(  # noqa: PLR0913
     if series_slugs:
         try:
             async with PolymarketClient() as client:
-                discovered = await _discover_markets(client, series_slugs)
+                discovered = await discover_markets(client, series_slugs)
         except PolymarketAPIError as exc:
             typer.echo(f"Warning: Series discovery failed: {exc}", err=True)
             discovered = []

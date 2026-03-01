@@ -183,6 +183,9 @@ def redeem_positions(
             tx = factory.functions.proxy([proxy_call]).build_transaction(tx_params)
             signed = w3.eth.account.sign_transaction(tx, private_key=private_key)
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            # Increment nonce immediately after broadcast — the tx is
+            # on-chain regardless of whether we receive the receipt.
+            nonce = Nonce(nonce + 1)
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=_TX_RECEIPT_TIMEOUT)
             receipts.append(receipt)
 
@@ -194,7 +197,6 @@ def redeem_positions(
                 receipt["gasUsed"],
                 tx_hash.hex(),
             )
-            nonce = Nonce(nonce + 1)
         except Exception:
             logger.warning("Failed to redeem %s", cid[:20], exc_info=True)
 
