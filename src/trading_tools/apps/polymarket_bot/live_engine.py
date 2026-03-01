@@ -14,13 +14,12 @@ import asyncio
 import logging
 import signal
 import time
-from collections import deque
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING, Any
+from decimal import Decimal
 
 import httpx
 
+from trading_tools.apps.polymarket_bot.base_engine import BaseTradingEngine
 from trading_tools.apps.polymarket_bot.kelly import kelly_fraction
 from trading_tools.apps.polymarket_bot.live_portfolio import LivePortfolio
 from trading_tools.apps.polymarket_bot.models import (
@@ -28,26 +27,21 @@ from trading_tools.apps.polymarket_bot.models import (
     LiveTradingResult,
     MarketSnapshot,
 )
-from trading_tools.apps.polymarket_bot.price_tracker import PriceTracker
 from trading_tools.apps.polymarket_bot.protocols import PredictionMarketStrategy
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
+from trading_tools.clients.polymarket.models import Market
 from trading_tools.core.models import ZERO, Side, Signal
-
-if TYPE_CHECKING:
-    from trading_tools.clients.polymarket.models import Market, OrderBook
 
 logger = logging.getLogger(__name__)
 
-_MIN_TOKENS = 2
 _MIN_ORDER_SIZE = Decimal(5)
-_FIVE_MINUTES = 300
 _SLEEP_BUFFER_SECONDS = 5
 _DEFAULT_MAX_LOSS_PCT = Decimal("0.10")
 
 
-class LiveTradingEngine:
+class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
     """WebSocket-driven engine that executes real trades on Polymarket.
 
     Receive real-time trade prices from ``MarketFeed``, maintain cached order
@@ -97,34 +91,55 @@ class LiveTradingEngine:
                 Require POL in the signing EOA for gas.
 
         """
-        self._client = client
-        self._strategy = strategy
-        self._config = config
-        self._feed = feed or MarketFeed()
-        self._max_loss_pct = max_loss_pct
-        self._auto_redeem = auto_redeem
-        self._portfolio = LivePortfolio(
+        portfolio = LivePortfolio(
             client,
             config.max_position_pct,
             use_market_orders=use_market_orders,
         )
-        self._price_tracker = PriceTracker()
-        self._active_markets: list[str] = list(config.markets)
-        self._history: dict[str, deque[MarketSnapshot]] = {
-            cid: deque(maxlen=config.max_history) for cid in self._active_markets
-        }
-        self._snapshots_processed = 0
-        self._position_outcomes: dict[str, str] = {}
-        self._token_ids: dict[str, tuple[str, str]] = {}
-        self._end_time_overrides: dict[str, str] = dict(config.market_end_times)
-        self._cached_order_books: dict[str, OrderBook] = {}
-        self._cached_markets: dict[str, Market] = {}
-        now = int(time.time())
-        self._current_window: int = (now // _FIVE_MINUTES) * _FIVE_MINUTES
+        super().__init__(client, strategy, config, portfolio, feed)
+        self._max_loss_pct = max_loss_pct
+        self._auto_redeem = auto_redeem
         self._initial_balance = ZERO
         self._shutdown = False
         self._redeem_task: asyncio.Task[None] | None = None
-        self._asset_ids: list[str] = []
+        self._token_ids: dict[str, tuple[str, str]] = {}
+
+    # ------------------------------------------------------------------
+    # Hook overrides
+    # ------------------------------------------------------------------
+
+    def _on_bootstrap_market(self, condition_id: str, market: Market) -> None:
+        """Store token IDs for each bootstrapped market.
+
+        Args:
+            condition_id: Market condition identifier.
+            market: The fetched ``Market`` object.
+
+        """
+        self._token_ids[condition_id] = (
+            market.tokens[0].token_id,
+            market.tokens[1].token_id,
+        )
+
+    def _should_skip_market(self, condition_id: str) -> bool:
+        """Skip markets where a position is already open.
+
+        Args:
+            condition_id: Market condition identifier.
+
+        Returns:
+            ``True`` if a position is already open for this market.
+
+        """
+        return condition_id in self._position_outcomes
+
+    def _clear_market_state(self) -> None:
+        """Clear token ID cache during market rotation."""
+        self._token_ids.clear()
+
+    # ------------------------------------------------------------------
+    # Engine lifecycle
+    # ------------------------------------------------------------------
 
     async def run(self, *, max_ticks: int | None = None) -> LiveTradingResult:
         """Execute the WebSocket event loop until stopped, loss limit hit, or max_ticks reached.
@@ -182,6 +197,194 @@ class LiveTradingEngine:
         await self._close_all_positions()
         return await self._build_result()
 
+    # ------------------------------------------------------------------
+    # Rotation and position management
+    # ------------------------------------------------------------------
+
+    async def _on_rotation_close(self) -> None:
+        """Redeem resolved positions, clear tracking, and refresh balance."""
+        if self._auto_redeem:
+            await self._redeem_resolved()
+
+        remaining = len(self._portfolio.positions)
+        if remaining > 0:
+            self._portfolio.clear_positions()
+        self._position_outcomes.clear()
+        await self._portfolio.refresh_balance()
+        logger.info(
+            "ROTATION: balance now $%.4f",
+            self._portfolio.balance,
+        )
+
+    async def _apply_signal(self, signal: Signal, snapshot: MarketSnapshot) -> None:
+        """Convert a strategy signal into a real trade.
+
+        Refresh the order book before executing so position sizing and
+        price data are current. Size the position using the Kelly criterion
+        and execute via the live portfolio. A SELL signal on a market with
+        no open position is interpreted as "buy the NO/Down token"
+        (the complement outcome).
+
+        Args:
+            signal: Trading signal from the strategy.
+            snapshot: Current market snapshot.
+
+        """
+        # Refresh order book to get current bid/ask before trading
+        fresh_snapshot = await self._refresh_order_book(snapshot.condition_id)
+        if fresh_snapshot is not None:
+            snapshot = fresh_snapshot
+
+        condition_id = snapshot.condition_id
+        token_ids = self._token_ids.get(condition_id)
+        if token_ids is None:
+            logger.warning("No cached token IDs for %s, skipping signal", condition_id[:20])
+            return
+
+        # Close existing position
+        if signal.side == Side.SELL and condition_id in self._portfolio.positions:
+            outcome = self._position_outcomes.get(condition_id, "Yes")
+            close_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
+            token_id = token_ids[0] if outcome == "Yes" else token_ids[1]
+            pos = self._portfolio.positions[condition_id]
+            trade = await self._portfolio.close_position(
+                condition_id,
+                token_id,
+                close_price,
+                pos.quantity,
+                snapshot.timestamp,
+            )
+            if trade is not None:
+                logger.info(
+                    "[tick %d] POSITION CLOSED: %s @ %.4f order=%s filled=%s",
+                    self._snapshots_processed,
+                    condition_id[:20],
+                    close_price,
+                    trade.order_id,
+                    trade.filled,
+                )
+            self._position_outcomes.pop(condition_id, None)
+            return
+
+        # Open new position
+        if condition_id not in self._portfolio.positions:
+            if signal.side == Side.BUY:
+                buy_price = snapshot.yes_price
+                outcome = "Yes"
+                token_id = token_ids[0]
+            elif signal.side == Side.SELL:
+                buy_price = snapshot.no_price
+                outcome = "No"
+                token_id = token_ids[1]
+            else:
+                return
+
+            await self._open_position(
+                condition_id,
+                token_id,
+                outcome,
+                buy_price,
+                snapshot,
+                signal,
+            )
+
+    async def _open_position(
+        self,
+        condition_id: str,
+        token_id: str,
+        outcome: str,
+        buy_price: Decimal,
+        snapshot: MarketSnapshot,
+        sig: Signal,
+    ) -> None:
+        """Open a new live position on the given outcome token.
+
+        Size the position with Kelly criterion, refresh balance, and
+        place the order via the live portfolio.
+
+        Args:
+            condition_id: Market condition identifier.
+            token_id: CLOB token identifier for the outcome.
+            outcome: Token outcome ("Yes" or "No").
+            buy_price: Price at which to buy the token.
+            snapshot: Current market snapshot.
+            sig: Strategy signal that triggered the trade.
+
+        """
+        max_clob_price = Decimal("0.99")
+        if buy_price > max_clob_price:
+            logger.info(
+                "[tick %d] Capping price from %.4f to %.4f (CLOB max)",
+                self._snapshots_processed,
+                buy_price,
+                max_clob_price,
+            )
+            buy_price = max_clob_price
+
+        estimated_prob = max(
+            buy_price + sig.strength * (Decimal(1) - buy_price),
+            buy_price + self._config.min_edge,
+        )
+        estimated_prob = min(estimated_prob, Decimal("0.999"))
+
+        fraction = kelly_fraction(
+            estimated_prob,
+            buy_price,
+            fractional=self._config.kelly_fraction,
+        )
+
+        if fraction <= ZERO:
+            return
+
+        max_qty = self._portfolio.max_quantity_for(buy_price)
+        quantity = max(_MIN_ORDER_SIZE, (max_qty * fraction).quantize(Decimal(1)))
+
+        edge = estimated_prob - buy_price
+        logger.info(
+            "[tick %d] Placing order: %s %s qty=%s @ %.4f kelly=%.4f balance=$%.4f",
+            self._snapshots_processed,
+            outcome,
+            condition_id[:20],
+            quantity,
+            buy_price,
+            fraction,
+            self._portfolio.balance,
+        )
+        trade = await self._portfolio.open_position(
+            condition_id=condition_id,
+            token_id=token_id,
+            outcome=outcome,
+            side=Side.BUY,
+            price=buy_price,
+            quantity=quantity,
+            timestamp=snapshot.timestamp,
+            reason=sig.reason,
+            edge=edge,
+        )
+        if trade is not None:
+            logger.info(
+                "[tick %d] TRADE OPENED: %s %s qty=%s @ %.4f edge=%.4f order=%s filled=%s",
+                self._snapshots_processed,
+                outcome,
+                condition_id[:20],
+                quantity,
+                buy_price,
+                edge,
+                trade.order_id,
+                trade.filled,
+            )
+            self._position_outcomes[condition_id] = outcome
+        else:
+            logger.warning(
+                "[tick %d] TRADE REJECTED: %s (duplicate, insufficient balance, or API error)",
+                self._snapshots_processed,
+                condition_id[:20],
+            )
+
+    # ------------------------------------------------------------------
+    # Safety guardrails
+    # ------------------------------------------------------------------
+
     def _handle_sigint(self) -> None:
         """Set the shutdown flag for graceful exit on SIGINT."""
         self._shutdown = True
@@ -198,169 +401,21 @@ class LiveTradingEngine:
         equity = self._portfolio.total_equity
         return equity / self._initial_balance < (Decimal(1) - self._max_loss_pct)
 
-    async def _bootstrap(self) -> None:
-        """Fetch initial market data and order books via HTTP.
+    async def _close_all_positions(self) -> None:
+        """Clear all position tracking before engine shutdown.
 
-        Register all markets with the price tracker and populate the
-        cached order books and market data.
+        For resolved 5-minute markets, Polymarket auto-redeems winning
+        tokens so no SELL orders are needed.  Just clear local tracking.
         """
-        for condition_id in self._active_markets:
-            try:
-                market: Market = await self._client.get_market(condition_id)
-            except (PolymarketAPIError, httpx.HTTPError):
-                logger.warning("Failed to fetch market %s", condition_id, exc_info=True)
-                continue
+        open_count = len(self._portfolio.positions)
+        if open_count > 0:
+            self._portfolio.clear_positions()
+            self._position_outcomes.clear()
+            logger.info("SHUTDOWN: cleared %d positions", open_count)
 
-            if len(market.tokens) < _MIN_TOKENS:
-                logger.warning("Market %s has fewer than 2 tokens", condition_id)
-                continue
-
-            yes_token = market.tokens[0]
-            no_token = market.tokens[1]
-
-            self._cached_markets[condition_id] = market
-            self._token_ids[condition_id] = (yes_token.token_id, no_token.token_id)
-            self._price_tracker.register_market(condition_id, yes_token.token_id, no_token.token_id)
-            self._asset_ids.extend([yes_token.token_id, no_token.token_id])
-
-            # Set initial prices from HTTP
-            self._price_tracker.update(yes_token.token_id, yes_token.price)
-            self._price_tracker.update(no_token.token_id, no_token.price)
-
-            try:
-                order_book = await self._client.get_order_book(yes_token.token_id)
-                self._cached_order_books[condition_id] = order_book
-            except (PolymarketAPIError, httpx.HTTPError):
-                logger.warning("Failed to fetch order book for %s", condition_id, exc_info=True)
-
-        logger.info(
-            "Bootstrapped %d markets with %d asset IDs",
-            len(self._cached_markets),
-            len(self._asset_ids),
-        )
-
-    async def _on_price_update(self, event: dict[str, Any]) -> None:
-        """Handle a WebSocket trade event.
-
-        Update the price tracker, build a snapshot from cached data, and
-        feed it to the strategy.
-
-        Args:
-            event: Parsed ``last_trade_price`` event from the WebSocket.
-
-        """
-        asset_id = str(event.get("asset_id", ""))
-        try:
-            price = Decimal(str(event.get("price", "0")))
-        except (ValueError, InvalidOperation):
-            logger.debug("Skipping event with invalid price: %s", event)
-            return
-
-        condition_id = self._price_tracker.update(asset_id, price)
-        if condition_id is None:
-            return
-
-        # Skip markets where we already have a position
-        if condition_id in self._position_outcomes:
-            return
-
-        snapshot = self._build_snapshot(condition_id)
-        if snapshot is None:
-            return
-
-        self._snapshots_processed += 1
-        market_history = self._history.setdefault(
-            condition_id, deque(maxlen=self._config.max_history)
-        )
-        history = list(market_history)
-        market_history.append(snapshot)
-
-        logger.info(
-            "[tick %d] %s YES=%.4f NO=%.4f bids=%d asks=%d",
-            self._snapshots_processed,
-            snapshot.question[:50],
-            snapshot.yes_price,
-            snapshot.no_price,
-            len(snapshot.order_book.bids),
-            len(snapshot.order_book.asks),
-        )
-
-        sig = self._strategy.on_snapshot(snapshot, history)
-        if sig is not None:
-            logger.info(
-                "[tick %d] SIGNAL: %s %s strength=%.4f reason=%s",
-                self._snapshots_processed,
-                sig.side.name,
-                sig.symbol[:20],
-                sig.strength,
-                sig.reason,
-            )
-            await self._apply_signal(sig, snapshot)
-        else:
-            logger.info("[tick %d] No signal", self._snapshots_processed)
-
-        outcome = self._position_outcomes.get(condition_id)
-        if outcome is not None:
-            mtm_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
-            self._portfolio.mark_to_market(condition_id, mtm_price)
-
-    def _build_snapshot(self, condition_id: str) -> MarketSnapshot | None:
-        """Build a MarketSnapshot from cached prices and order book.
-
-        Args:
-            condition_id: Market condition identifier.
-
-        Returns:
-            A ``MarketSnapshot`` or ``None`` if required data is missing.
-
-        """
-        prices = self._price_tracker.get_prices(condition_id)
-        if prices is None:
-            return None
-
-        yes_price, no_price = prices
-        if yes_price is None or no_price is None:
-            return None
-
-        order_book = self._cached_order_books.get(condition_id)
-        if order_book is None:
-            return None
-
-        market = self._cached_markets.get(condition_id)
-        if market is None:
-            return None
-
-        end_date = self._end_time_overrides.get(condition_id, market.end_date)
-
-        return MarketSnapshot(
-            condition_id=condition_id,
-            question=market.question,
-            timestamp=int(time.time()),
-            yes_price=yes_price,
-            no_price=no_price,
-            order_book=order_book,
-            volume=market.volume,
-            liquidity=market.liquidity,
-            end_date=end_date,
-        )
-
-    async def _refresh_order_books_loop(self) -> None:
-        """Periodically refresh order books via HTTP in the background."""
-        while True:
-            await asyncio.sleep(self._config.order_book_refresh_seconds)
-            for condition_id in self._active_markets:
-                market = self._cached_markets.get(condition_id)
-                if market is None or len(market.tokens) < _MIN_TOKENS:
-                    continue
-                try:
-                    order_book = await self._client.get_order_book(market.tokens[0].token_id)
-                    self._cached_order_books[condition_id] = order_book
-                except (PolymarketAPIError, httpx.HTTPError):
-                    logger.warning(
-                        "Failed to refresh order book for %s",
-                        condition_id,
-                        exc_info=True,
-                    )
+    # ------------------------------------------------------------------
+    # Background tasks
+    # ------------------------------------------------------------------
 
     async def _refresh_balance_loop(self) -> None:
         """Periodically refresh USDC balance from the CLOB API."""
@@ -370,90 +425,6 @@ class LiveTradingEngine:
                 await self._portfolio.refresh_balance()
             except (PolymarketAPIError, httpx.HTTPError):
                 logger.warning("Failed to refresh balance", exc_info=True)
-
-    async def _rotation_loop(self) -> None:
-        """Check for 5-minute window rotation periodically."""
-        if not self._config.series_slugs:
-            return
-        while True:
-            await asyncio.sleep(1)
-            now = int(time.time())
-            new_window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
-            if new_window != self._current_window:
-                self._current_window = new_window
-                await self._rotate_markets()
-
-    async def _rotate_markets(self) -> None:
-        """Re-discover active markets when the 5-minute window rotates.
-
-        Attempt to redeem resolved positions (if auto-redeem is enabled),
-        then clear all local position tracking and refresh the balance.
-        """
-        if self._auto_redeem:
-            await self._redeem_resolved()
-
-        remaining = len(self._portfolio.positions)
-        if remaining > 0:
-            self._portfolio.clear_positions()
-        self._position_outcomes.clear()
-        await self._portfolio.refresh_balance()
-        logger.info(
-            "ROTATION: balance now $%.4f",
-            self._portfolio.balance,
-        )
-
-        try:
-            discovered = await self._client.discover_series_markets(
-                list(self._config.series_slugs),
-            )
-        except (PolymarketAPIError, httpx.HTTPError):
-            logger.warning("Market rotation discovery failed", exc_info=True)
-            return
-
-        if not discovered:
-            logger.warning("Market rotation found no new markets")
-            return
-
-        new_ids = [cid for cid, _ in discovered]
-        self._active_markets = new_ids
-        self._end_time_overrides = dict(discovered)
-
-        # Clear price tracker and re-bootstrap for new markets
-        self._price_tracker.clear()
-        self._asset_ids.clear()
-        self._cached_markets.clear()
-        self._cached_order_books.clear()
-        self._token_ids.clear()
-
-        for cid in new_ids:
-            if cid not in self._history:
-                self._history[cid] = deque(maxlen=self._config.max_history)
-            try:
-                market = await self._client.get_market(cid)
-                if len(market.tokens) < _MIN_TOKENS:
-                    continue
-                self._cached_markets[cid] = market
-                yes_tok = market.tokens[0]
-                no_tok = market.tokens[1]
-                self._token_ids[cid] = (yes_tok.token_id, no_tok.token_id)
-                self._price_tracker.register_market(cid, yes_tok.token_id, no_tok.token_id)
-                self._asset_ids.extend([yes_tok.token_id, no_tok.token_id])
-                self._price_tracker.update(yes_tok.token_id, yes_tok.price)
-                self._price_tracker.update(no_tok.token_id, no_tok.price)
-
-                order_book = await self._client.get_order_book(yes_tok.token_id)
-                self._cached_order_books[cid] = order_book
-            except (PolymarketAPIError, httpx.HTTPError):
-                logger.warning("Failed to bootstrap rotated market %s", cid, exc_info=True)
-
-        await self._feed.update_subscription(self._asset_ids)
-
-        logger.info(
-            "Rotating markets: %d new condition IDs for window %d",
-            len(new_ids),
-            self._current_window,
-        )
-        self._log_performance()
 
     async def _redeem_resolved(self) -> None:
         """Discover redeemable positions and kick off background CTF redemption.
@@ -565,6 +536,10 @@ class LiveTradingEngine:
 
         return float(self._config.snipe_poll_seconds)
 
+    # ------------------------------------------------------------------
+    # Performance and results
+    # ------------------------------------------------------------------
+
     def _log_performance(self) -> None:
         """Log performance metrics at market rotation boundaries.
 
@@ -602,214 +577,6 @@ class LiveTradingEngine:
         )
         if ret <= Decimal(-20):
             logger.warning("DRAWDOWN ALERT return=%+.2f%%", ret)
-
-    async def _refresh_order_book(self, condition_id: str) -> MarketSnapshot | None:
-        """Fetch a fresh order book for a market and rebuild the snapshot.
-
-        Call immediately before executing a trade so the order book data
-        is current rather than up to ``order_book_refresh_seconds`` stale.
-
-        Args:
-            condition_id: Market condition identifier.
-
-        Returns:
-            Updated ``MarketSnapshot`` with the fresh order book,
-            or ``None`` if the refresh fails.
-
-        """
-        market = self._cached_markets.get(condition_id)
-        if market is None or len(market.tokens) < _MIN_TOKENS:
-            return None
-
-        try:
-            order_book = await self._client.get_order_book(market.tokens[0].token_id)
-            self._cached_order_books[condition_id] = order_book
-            logger.info("Refreshed order book for %s before trade", condition_id[:20])
-        except (PolymarketAPIError, httpx.HTTPError):
-            logger.warning(
-                "Failed to refresh order book for %s before trade, using cached",
-                condition_id[:20],
-                exc_info=True,
-            )
-
-        return self._build_snapshot(condition_id)
-
-    async def _apply_signal(self, sig: Signal, snapshot: MarketSnapshot) -> None:
-        """Convert a strategy signal into a real trade.
-
-        Refresh the order book before executing so position sizing and
-        price data are current. Size the position using the Kelly criterion
-        and execute via the live portfolio. A SELL signal on a market with
-        no open position is interpreted as "buy the NO/Down token"
-        (the complement outcome).
-
-        Args:
-            sig: Trading signal from the strategy.
-            snapshot: Current market snapshot.
-
-        """
-        # Refresh order book to get current bid/ask before trading
-        fresh_snapshot = await self._refresh_order_book(snapshot.condition_id)
-        if fresh_snapshot is not None:
-            snapshot = fresh_snapshot
-
-        condition_id = snapshot.condition_id
-        token_ids = self._token_ids.get(condition_id)
-        if token_ids is None:
-            logger.warning("No cached token IDs for %s, skipping signal", condition_id[:20])
-            return
-
-        # Close existing position
-        if sig.side == Side.SELL and condition_id in self._portfolio.positions:
-            outcome = self._position_outcomes.get(condition_id, "Yes")
-            close_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
-            token_id = token_ids[0] if outcome == "Yes" else token_ids[1]
-            pos = self._portfolio.positions[condition_id]
-            trade = await self._portfolio.close_position(
-                condition_id,
-                token_id,
-                close_price,
-                pos.quantity,
-                snapshot.timestamp,
-            )
-            if trade is not None:
-                logger.info(
-                    "[tick %d] POSITION CLOSED: %s @ %.4f order=%s filled=%s",
-                    self._snapshots_processed,
-                    condition_id[:20],
-                    close_price,
-                    trade.order_id,
-                    trade.filled,
-                )
-            self._position_outcomes.pop(condition_id, None)
-            return
-
-        # Open new position
-        if condition_id not in self._portfolio.positions:
-            if sig.side == Side.BUY:
-                buy_price = snapshot.yes_price
-                outcome = "Yes"
-                token_id = token_ids[0]
-            elif sig.side == Side.SELL:
-                buy_price = snapshot.no_price
-                outcome = "No"
-                token_id = token_ids[1]
-            else:
-                return
-
-            await self._open_position(
-                condition_id,
-                token_id,
-                outcome,
-                buy_price,
-                snapshot,
-                sig,
-            )
-
-    async def _open_position(
-        self,
-        condition_id: str,
-        token_id: str,
-        outcome: str,
-        buy_price: Decimal,
-        snapshot: MarketSnapshot,
-        sig: Signal,
-    ) -> None:
-        """Open a new live position on the given outcome token.
-
-        Size the position with Kelly criterion, refresh balance, and
-        place the order via the live portfolio.
-
-        Args:
-            condition_id: Market condition identifier.
-            token_id: CLOB token identifier for the outcome.
-            outcome: Token outcome ("Yes" or "No").
-            buy_price: Price at which to buy the token.
-            snapshot: Current market snapshot.
-            sig: Strategy signal that triggered the trade.
-
-        """
-        max_clob_price = Decimal("0.99")
-        if buy_price > max_clob_price:
-            logger.info(
-                "[tick %d] Capping price from %.4f to %.4f (CLOB max)",
-                self._snapshots_processed,
-                buy_price,
-                max_clob_price,
-            )
-            buy_price = max_clob_price
-
-        estimated_prob = max(
-            buy_price + sig.strength * (Decimal(1) - buy_price),
-            buy_price + self._config.min_edge,
-        )
-        estimated_prob = min(estimated_prob, Decimal("0.999"))
-
-        fraction = kelly_fraction(
-            estimated_prob,
-            buy_price,
-            fractional=self._config.kelly_fraction,
-        )
-
-        if fraction <= ZERO:
-            return
-
-        max_qty = self._portfolio.max_quantity_for(buy_price)
-        quantity = max(_MIN_ORDER_SIZE, (max_qty * fraction).quantize(Decimal(1)))
-
-        edge = estimated_prob - buy_price
-        logger.info(
-            "[tick %d] Placing order: %s %s qty=%s @ %.4f kelly=%.4f balance=$%.4f",
-            self._snapshots_processed,
-            outcome,
-            condition_id[:20],
-            quantity,
-            buy_price,
-            fraction,
-            self._portfolio.balance,
-        )
-        trade = await self._portfolio.open_position(
-            condition_id=condition_id,
-            token_id=token_id,
-            outcome=outcome,
-            side=Side.BUY,
-            price=buy_price,
-            quantity=quantity,
-            timestamp=snapshot.timestamp,
-            reason=sig.reason,
-            edge=edge,
-        )
-        if trade is not None:
-            logger.info(
-                "[tick %d] TRADE OPENED: %s %s qty=%s @ %.4f edge=%.4f order=%s filled=%s",
-                self._snapshots_processed,
-                outcome,
-                condition_id[:20],
-                quantity,
-                buy_price,
-                edge,
-                trade.order_id,
-                trade.filled,
-            )
-            self._position_outcomes[condition_id] = outcome
-        else:
-            logger.warning(
-                "[tick %d] TRADE REJECTED: %s (duplicate, insufficient balance, or API error)",
-                self._snapshots_processed,
-                condition_id[:20],
-            )
-
-    async def _close_all_positions(self) -> None:
-        """Clear all position tracking before engine shutdown.
-
-        For resolved 5-minute markets, Polymarket auto-redeems winning
-        tokens so no SELL orders are needed.  Just clear local tracking.
-        """
-        open_count = len(self._portfolio.positions)
-        if open_count > 0:
-            self._portfolio.clear_positions()
-            self._position_outcomes.clear()
-            logger.info("SHUTDOWN: cleared %d positions", open_count)
 
     async def _build_result(self) -> LiveTradingResult:
         """Build the final result from the portfolio state.
