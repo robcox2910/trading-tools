@@ -16,10 +16,14 @@ _ASSET_YES = "asset_aaa"
 _ASSET_NO = "asset_zzz"
 _FEE_BPS = 200
 _FIVE_MINUTES_MS = 300_000
+_FIFTEEN_MINUTES_MS = 900_000
 _WINDOW_START_MS = 1_700_000_100_000
 _WINDOW_ALIGNED_MS = 1_700_000_100_000 - (1_700_000_100_000 % _FIVE_MINUTES_MS)
+_WINDOW_ALIGNED_15M_MS = 1_700_000_100_000 - (1_700_000_100_000 % _FIFTEEN_MINUTES_MS)
 _BUCKET_SECONDS = 1
 _EXPECTED_BUCKETS_300 = 300
+_EXPECTED_BUCKETS_900 = 900
+_WINDOW_MINUTES_15 = 15
 
 
 def _make_tick(
@@ -298,6 +302,60 @@ class TestSnapshotBuilderBuildSnapshots:
         snapshots = builder.build_snapshots(ticks, window)
 
         assert all(s.end_date == end_date for s in snapshots)
+
+
+class TestSnapshotBuilder15MinuteWindow:
+    """Tests for SnapshotBuilder with 15-minute market windows."""
+
+    def test_detect_window_aligns_to_15_minute_boundary(self) -> None:
+        """Detect window aligned to 15-minute boundary."""
+        ticks = [
+            _make_tick(timestamp=_WINDOW_ALIGNED_15M_MS + 30_000),
+        ]
+        builder = SnapshotBuilder(
+            bucket_seconds=_BUCKET_SECONDS,
+            window_minutes=_WINDOW_MINUTES_15,
+        )
+
+        window = builder.detect_window(_CONDITION_ID, ticks)
+
+        assert window.start_ms == _WINDOW_ALIGNED_15M_MS
+        assert window.end_ms == _WINDOW_ALIGNED_15M_MS + _FIFTEEN_MINUTES_MS
+
+    def test_15_minute_window_produces_900_buckets(self) -> None:
+        """Build 900 one-second buckets for a 15-minute window."""
+        window = MarketWindow(
+            condition_id=_CONDITION_ID,
+            start_ms=_WINDOW_ALIGNED_15M_MS,
+            end_ms=_WINDOW_ALIGNED_15M_MS + _FIFTEEN_MINUTES_MS,
+            end_date="2023-11-14T22:35:00+00:00",
+        )
+        ticks = [
+            _make_tick(
+                asset_id=_ASSET_YES,
+                timestamp=_WINDOW_ALIGNED_15M_MS + 1000,
+                price=0.72,
+            ),
+            _make_tick(
+                asset_id=_ASSET_YES,
+                timestamp=_WINDOW_ALIGNED_15M_MS + 600_000,
+                price=0.85,
+            ),
+        ]
+        builder = SnapshotBuilder(
+            bucket_seconds=_BUCKET_SECONDS,
+            window_minutes=_WINDOW_MINUTES_15,
+        )
+
+        snapshots = builder.build_snapshots(ticks, window)
+
+        assert len(snapshots) == _EXPECTED_BUCKETS_900
+        # Tick at 600s should be in bucket 600
+        bucket_600_idx = 600
+        assert snapshots[bucket_600_idx].yes_price == Decimal("0.85")
+        # Bucket 300 (5 min mark) should be forward-filled from 0.72
+        bucket_300_idx = 300
+        assert snapshots[bucket_300_idx].yes_price == Decimal("0.72")
 
 
 def _make_book_snapshot(

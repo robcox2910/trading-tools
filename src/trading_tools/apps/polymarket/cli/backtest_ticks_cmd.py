@@ -199,6 +199,7 @@ def _run_tick_backtest(
     kelly_frac: Decimal,
     max_position_pct: Decimal,
     bucket_seconds: int,
+    window_minutes: int = 5,
     book_snapshots: dict[str, list[OrderBookSnapshot]] | None = None,
 ) -> PaperTradingResult:
     """Run the synchronous tick-based backtest replay.
@@ -211,6 +212,7 @@ def _run_tick_backtest(
         kelly_frac: Fractional Kelly multiplier.
         max_position_pct: Maximum fraction of capital per market.
         bucket_seconds: Seconds per snapshot bucket.
+        window_minutes: Duration of each market window in minutes.
         book_snapshots: Optional mapping from token_id to time-sorted
             order book snapshots for enriching market snapshots with
             real depth data. When ``None`` or empty, snapshots use
@@ -225,7 +227,7 @@ def _run_tick_backtest(
         window_seconds=snipe_window,
     )
     portfolio = PaperPortfolio(capital, max_position_pct)
-    builder = SnapshotBuilder(bucket_seconds=bucket_seconds)
+    builder = SnapshotBuilder(bucket_seconds=bucket_seconds, window_minutes=window_minutes)
 
     # Build windows and snapshots for each condition
     window_data: list[tuple[MarketWindow, list[MarketSnapshot]]] = []
@@ -263,6 +265,9 @@ def backtest_ticks(
         int, typer.Option(help="Seconds before market end to start sniping")
     ] = 90,
     bucket_seconds: Annotated[int, typer.Option(help="Seconds per snapshot bucket")] = 1,
+    window_minutes: Annotated[
+        int, typer.Option(help="Market window duration in minutes (5 or 15)")
+    ] = 5,
     kelly_frac: Annotated[float, typer.Option(help="Fractional Kelly multiplier")] = 0.25,
     max_position_pct: Annotated[
         float, typer.Option(help="Max fraction of capital per market")
@@ -297,7 +302,7 @@ def backtest_ticks(
     typer.echo(f"Period: {start} to {end}")
     typer.echo(f"DB: {db_url}")
     typer.echo(f"Threshold: {snipe_threshold}, Window: {snipe_window}s")
-    typer.echo(f"Capital: ${capital}, Bucket: {bucket_seconds}s")
+    typer.echo(f"Capital: ${capital}, Bucket: {bucket_seconds}s, Market window: {window_minutes}m")
     typer.echo("")
 
     typer.echo("Loading ticks from database...")
@@ -321,6 +326,7 @@ def backtest_ticks(
         kelly_frac=Decimal(str(kelly_frac)),
         max_position_pct=Decimal(str(max_position_pct)),
         bucket_seconds=bucket_seconds,
+        window_minutes=window_minutes,
         book_snapshots=book_data or None,
     )
 

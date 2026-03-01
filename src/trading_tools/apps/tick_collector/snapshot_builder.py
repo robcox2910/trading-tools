@@ -24,22 +24,25 @@ from trading_tools.core.models import ZERO
 if TYPE_CHECKING:
     from trading_tools.apps.tick_collector.models import OrderBookSnapshot, Tick
 
-_FIVE_MINUTES_MS = 300_000
+_DEFAULT_WINDOW_MINUTES = 5
 _MS_PER_SECOND = 1000
+_MS_PER_MINUTE = 60_000
 _HALF = Decimal("0.5")
 
 
 @dataclass(frozen=True)
 class MarketWindow:
-    """Metadata for a single 5-minute prediction market window.
+    """Metadata for a single prediction market window.
 
     Represent the time boundaries and resolution details for one window
     of tick data that maps to a single market lifecycle.
 
     Args:
         condition_id: Market condition identifier.
-        start_ms: Window start in epoch milliseconds (5-minute aligned).
-        end_ms: Window end in epoch milliseconds (start + 300,000).
+        start_ms: Window start in epoch milliseconds (aligned to window
+            duration boundary).
+        end_ms: Window end in epoch milliseconds
+            (start + window_minutes * 60_000).
         end_date: ISO-8601 datetime string for the strategy's
             time-remaining calculation.
 
@@ -61,23 +64,32 @@ class SnapshotBuilder:
 
     Args:
         bucket_seconds: Width of each time bucket in seconds. Default 1.
+        window_minutes: Duration of each market window in minutes.
+            Default 5 for 5-minute markets; set to 15 for 15-minute
+            markets.
 
     """
 
-    def __init__(self, bucket_seconds: int = 1) -> None:
-        """Initialize the builder with a bucket width.
+    def __init__(
+        self,
+        bucket_seconds: int = 1,
+        window_minutes: int = _DEFAULT_WINDOW_MINUTES,
+    ) -> None:
+        """Initialize the builder with a bucket width and window duration.
 
         Args:
             bucket_seconds: Seconds per snapshot bucket (must be >= 1).
+            window_minutes: Duration of each market window in minutes.
 
         """
         self._bucket_seconds = bucket_seconds
+        self._window_ms = window_minutes * _MS_PER_MINUTE
 
     def detect_window(self, condition_id: str, ticks: list[Tick]) -> MarketWindow:
-        """Infer the 5-minute market window from tick timestamps.
+        """Infer the market window from tick timestamps.
 
-        Round the earliest tick timestamp down to the nearest 5-minute
-        epoch-millisecond boundary. The window end is start + 300,000 ms.
+        Round the earliest tick timestamp down to the nearest window-duration
+        boundary. The window end is ``start + window_ms``.
 
         Args:
             condition_id: Market condition identifier for the window.
@@ -95,8 +107,8 @@ class SnapshotBuilder:
             raise ValueError(msg)
 
         earliest_ms = min(t.timestamp for t in ticks)
-        start_ms = (earliest_ms // _FIVE_MINUTES_MS) * _FIVE_MINUTES_MS
-        end_ms = start_ms + _FIVE_MINUTES_MS
+        start_ms = (earliest_ms // self._window_ms) * self._window_ms
+        end_ms = start_ms + self._window_ms
         end_date = datetime.fromtimestamp(
             end_ms / _MS_PER_SECOND,
             tz=UTC,
@@ -151,7 +163,7 @@ class SnapshotBuilder:
 
         # Build per-bucket price map for the YES asset
         bucket_ms = self._bucket_seconds * _MS_PER_SECOND
-        num_buckets = _FIVE_MINUTES_MS // bucket_ms
+        num_buckets = self._window_ms // bucket_ms
 
         bucket_prices: dict[int, Decimal] = {}
         for tick in ticks:
