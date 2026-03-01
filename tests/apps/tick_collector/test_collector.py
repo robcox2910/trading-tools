@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -509,3 +510,217 @@ class TestWindowAlignedDiscovery:
         now = 1_000_000_000 * _FIVE_MINUTES + 285
         expected_sleep = 285
         assert _seconds_until_next_discovery(now, lead) == expected_sleep
+
+
+class TestRunNoAssets:
+    """Tests for the run loop when no assets are discovered."""
+
+    @pytest.mark.asyncio
+    async def test_run_returns_early_when_no_assets(self) -> None:
+        """Return immediately when no asset IDs are discovered."""
+        config = _make_config(markets=())
+
+        mock_client = _mock_polymarket_client()
+        mock_client.get_market_tokens = AsyncMock(
+            return_value=Market(
+                condition_id="empty",
+                question="",
+                description="",
+                tokens=(),
+                end_date="",
+                volume=Decimal(0),
+                liquidity=Decimal(0),
+                active=True,
+            )
+        )
+
+        with patch(
+            "trading_tools.apps.tick_collector.collector.PolymarketClient",
+            return_value=mock_client,
+        ):
+            collector = TickCollector(config)
+            mock_repo = MagicMock()
+            mock_repo.init_db = AsyncMock()
+            mock_repo.close = AsyncMock()
+            collector._repo = mock_repo
+
+            with patch("asyncio.get_running_loop") as mock_loop:
+                mock_loop.return_value = MagicMock()
+                await collector.run()
+
+        # Should not have started the feed stream
+        assert collector._total_ticks == 0
+
+
+class TestDiscoveryFailure:
+    """Tests for discovery error handling."""
+
+    @pytest.mark.asyncio
+    async def test_series_discovery_failure_continues(self) -> None:
+        """Continue with static markets when series discovery fails."""
+        config = _make_config(
+            markets=(_CONDITION_ID,),
+            series_slugs=("btc-updown-5m",),
+        )
+
+        mock_client = _mock_polymarket_client()
+        mock_client.discover_series_markets = AsyncMock(side_effect=Exception("API unavailable"))
+
+        with patch(
+            "trading_tools.apps.tick_collector.collector.PolymarketClient",
+            return_value=mock_client,
+        ):
+            collector = TickCollector(config)
+            await collector._discover_and_resolve()
+
+        # Static market was still resolved
+        assert _ASSET_ID_YES in collector._asset_ids
+
+    @pytest.mark.asyncio
+    async def test_resolve_one_failure_returns_empty(self) -> None:
+        """Continue when resolving a single market fails."""
+        config = _make_config(markets=(_CONDITION_ID,))
+
+        mock_client = _mock_polymarket_client()
+        mock_client.get_market_tokens = AsyncMock(side_effect=Exception("Market not found"))
+
+        with patch(
+            "trading_tools.apps.tick_collector.collector.PolymarketClient",
+            return_value=mock_client,
+        ):
+            collector = TickCollector(config)
+            await collector._discover_and_resolve()
+
+        # No assets resolved since the API call failed
+        assert len(collector._asset_ids) == 0
+
+
+class TestPeriodicTasks:
+    """Tests for the periodic background tasks."""
+
+    @pytest.mark.asyncio
+    async def test_periodic_discovery_discovers_and_updates(self) -> None:
+        """Verify periodic discovery runs and updates subscription."""
+        config = _make_config(
+            markets=(_CONDITION_ID,),
+            series_slugs=("test-series",),
+            discovery_lead_seconds=30,
+        )
+
+        mock_client = _mock_polymarket_client()
+
+        with patch(
+            "trading_tools.apps.tick_collector.collector.PolymarketClient",
+            return_value=mock_client,
+        ):
+            collector = TickCollector(config)
+            collector._asset_ids = [_ASSET_ID_YES]
+            collector._condition_map = {_ASSET_ID_YES: _CONDITION_ID}
+
+            mock_feed = MagicMock()
+            mock_feed.update_subscription = AsyncMock()
+            collector._feed = mock_feed
+
+            # Make discover_and_resolve add a new asset
+            async def mock_discover() -> None:
+                collector._asset_ids.append("new_asset")
+                collector._condition_map["new_asset"] = "new_cond"
+
+            collector._discover_and_resolve = mock_discover  # type: ignore[method-assign]
+
+            # Patch sleep to run once then shut down
+            call_count = 0
+
+            async def fast_sleep(delay: float) -> None:  # noqa: ARG001
+                nonlocal call_count
+                call_count += 1
+                if call_count > 1:
+                    collector._shutdown = True
+
+            with patch("asyncio.sleep", side_effect=fast_sleep):
+                await collector._periodic_discovery()
+
+            mock_feed.update_subscription.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_periodic_heartbeat_logs_stats(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Verify heartbeat logs tick stats and resets counter."""
+        config = _make_config()
+
+        collector = TickCollector(config)
+        collector._ticks_since_heartbeat = 42
+        collector._asset_ids = [_ASSET_ID_YES]
+
+        mock_repo = MagicMock()
+        mock_repo.get_tick_count = AsyncMock(return_value=100)
+        collector._repo = mock_repo
+
+        call_count = 0
+
+        async def fast_sleep(delay: float) -> None:  # noqa: ARG001
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                collector._shutdown = True
+
+        with (
+            patch("asyncio.sleep", side_effect=fast_sleep),
+            caplog.at_level(logging.INFO),
+        ):
+            await collector._periodic_heartbeat()
+
+        assert collector._ticks_since_heartbeat == 0
+        assert "TICK-COLLECTOR" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_periodic_flush_flushes_buffer(self) -> None:
+        """Verify periodic flush writes buffered ticks."""
+        config = _make_config(flush_interval_seconds=1)
+
+        collector = TickCollector(config)
+        collector._condition_map[_ASSET_ID_YES] = _CONDITION_ID
+        collector._handle_event(_make_trade_event())
+        # Set last flush time far in the past to trigger flush
+        collector._last_flush_time = 0.0
+
+        mock_repo = MagicMock()
+        mock_repo.save_ticks = AsyncMock()
+        collector._repo = mock_repo
+
+        call_count = 0
+
+        async def fast_sleep(delay: float) -> None:  # noqa: ARG001
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                collector._shutdown = True
+
+        with patch("asyncio.sleep", side_effect=fast_sleep):
+            await collector._periodic_flush()
+
+        mock_repo.save_ticks.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_periodic_flush_skips_empty_buffer(self) -> None:
+        """Verify periodic flush does not write when buffer is empty."""
+        config = _make_config(flush_interval_seconds=1)
+
+        collector = TickCollector(config)
+        collector._last_flush_time = 0.0
+
+        mock_repo = MagicMock()
+        mock_repo.save_ticks = AsyncMock()
+        collector._repo = mock_repo
+
+        call_count = 0
+
+        async def fast_sleep(delay: float) -> None:  # noqa: ARG001
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                collector._shutdown = True
+
+        with patch("asyncio.sleep", side_effect=fast_sleep):
+            await collector._periodic_flush()
+
+        mock_repo.save_ticks.assert_not_awaited()
