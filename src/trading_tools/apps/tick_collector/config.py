@@ -12,6 +12,9 @@ _DEFAULT_FLUSH_INTERVAL = 10
 _DEFAULT_FLUSH_BATCH_SIZE = 100
 _DEFAULT_RECONNECT_BASE_DELAY = 5.0
 _DEFAULT_DISCOVERY_LEAD_SECONDS = 30
+_DEFAULT_BOOK_POLL_INTERVAL = 0
+_DEFAULT_BOOK_DEPTH_LEVELS = 10
+_DEFAULT_BOOK_POLL_STAGGER_MS = 100
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,12 @@ class CollectorConfig:
             30 means the collector discovers the next window's markets at
             4 min 30 s into the current window, giving time to subscribe
             before the new window opens.
+        book_poll_interval_seconds: Seconds between order book polling
+            cycles. Set to 0 (default) to disable order book capture.
+        book_depth_levels: Maximum number of bid/ask levels to store per
+            snapshot.
+        book_poll_stagger_ms: Milliseconds to wait between polling each
+            token to avoid rate-limit bursts.
 
     """
 
@@ -48,3 +57,6 @@ class CollectorConfig:
     flush_batch_size: int = _DEFAULT_FLUSH_BATCH_SIZE
     reconnect_base_delay: float = _DEFAULT_RECONNECT_BASE_DELAY
     discovery_lead_seconds: int = _DEFAULT_DISCOVERY_LEAD_SECONDS
+    book_poll_interval_seconds: int = _DEFAULT_BOOK_POLL_INTERVAL
+    book_depth_levels: int = _DEFAULT_BOOK_DEPTH_LEVELS
+    book_poll_stagger_ms: int = _DEFAULT_BOOK_POLL_STAGGER_MS

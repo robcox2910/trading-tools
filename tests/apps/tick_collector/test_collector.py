@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from decimal import Decimal
 from typing import Any
@@ -15,7 +16,12 @@ from trading_tools.apps.tick_collector.collector import (
     _seconds_until_next_discovery,
 )
 from trading_tools.apps.tick_collector.config import CollectorConfig
-from trading_tools.clients.polymarket.models import Market, MarketToken
+from trading_tools.clients.polymarket.models import (
+    Market,
+    MarketToken,
+    OrderBook,
+    OrderLevel,
+)
 
 _CONDITION_ID = "cond_test_123"
 _ASSET_ID_YES = "token_yes_456"
@@ -724,3 +730,125 @@ class TestPeriodicTasks:
             await collector._periodic_flush()
 
         mock_repo.save_ticks.assert_not_awaited()
+
+
+_BOOK_DEPTH_LEVELS = 2
+_BOOK_TIMESTAMP = 1700000000000
+_BOOK_SIZE_100 = Decimal(100)
+_BOOK_SIZE_150 = Decimal(150)
+_BOOK_SIZE_200 = Decimal(200)
+_BOOK_SIZE_250 = Decimal(250)
+_BOOK_SIZE_300 = Decimal(300)
+_BOOK_SIZE_350 = Decimal(350)
+
+
+class TestSerializeOrderBook:
+    """Tests for the _serialize_order_book method."""
+
+    def test_serialize_order_book(self) -> None:
+        """Verify JSON round-trip and depth truncation."""
+        config = CollectorConfig(
+            db_url="sqlite+aiosqlite:///:memory:",
+            markets=(_CONDITION_ID,),
+            book_depth_levels=_BOOK_DEPTH_LEVELS,
+        )
+        collector = TickCollector(config)
+
+        book = OrderBook(
+            token_id=_ASSET_ID_YES,
+            bids=(
+                OrderLevel(price=Decimal("0.72"), size=_BOOK_SIZE_100),
+                OrderLevel(price=Decimal("0.71"), size=_BOOK_SIZE_200),
+                OrderLevel(price=Decimal("0.70"), size=_BOOK_SIZE_300),
+            ),
+            asks=(
+                OrderLevel(price=Decimal("0.74"), size=_BOOK_SIZE_150),
+                OrderLevel(price=Decimal("0.75"), size=_BOOK_SIZE_250),
+                OrderLevel(price=Decimal("0.76"), size=_BOOK_SIZE_350),
+            ),
+            spread=Decimal("0.02"),
+            midpoint=Decimal("0.73"),
+        )
+
+        snapshot = collector._serialize_order_book(_ASSET_ID_YES, _BOOK_TIMESTAMP, book)
+
+        assert snapshot.token_id == _ASSET_ID_YES
+        assert snapshot.timestamp == _BOOK_TIMESTAMP
+        assert snapshot.spread == float(Decimal("0.02"))
+        assert snapshot.midpoint == float(Decimal("0.73"))
+
+        # Depth truncation: only 2 levels stored
+        bids = json.loads(snapshot.bids_json)
+        asks = json.loads(snapshot.asks_json)
+        assert len(bids) == _BOOK_DEPTH_LEVELS
+        assert len(asks) == _BOOK_DEPTH_LEVELS
+        assert bids[0] == ["0.72", "100"]
+        assert asks[0] == ["0.74", "150"]
+
+
+class TestBookPollingDisabled:
+    """Tests for order book polling when disabled."""
+
+    @pytest.mark.asyncio
+    async def test_book_polling_disabled_by_default(self) -> None:
+        """No polling occurs when book_poll_interval_seconds is 0."""
+        config = _make_config()
+        collector = TickCollector(config)
+
+        # Should return immediately since interval is 0
+        await collector._periodic_book_poll()
+
+        assert len(collector._book_buffer) == 0
+
+
+class TestBookPollingBufferAndFlush:
+    """Tests for order book polling buffer and flush cycle."""
+
+    @pytest.mark.asyncio
+    async def test_book_polling_buffers_and_flushes(self) -> None:
+        """Verify book polling fetches order books and flushes to DB."""
+        config = CollectorConfig(
+            db_url="sqlite+aiosqlite:///:memory:",
+            markets=(_CONDITION_ID,),
+            book_poll_interval_seconds=1,
+            book_depth_levels=10,
+            book_poll_stagger_ms=0,
+        )
+        collector = TickCollector(config)
+        collector._asset_ids = [_ASSET_ID_YES]
+
+        mock_book = OrderBook(
+            token_id=_ASSET_ID_YES,
+            bids=(OrderLevel(price=Decimal("0.72"), size=_BOOK_SIZE_100),),
+            asks=(OrderLevel(price=Decimal("0.74"), size=_BOOK_SIZE_150),),
+            spread=Decimal("0.02"),
+            midpoint=Decimal("0.73"),
+        )
+        mock_client = _mock_polymarket_client()
+        mock_client.get_order_book = AsyncMock(return_value=mock_book)
+
+        mock_repo = MagicMock()
+        mock_repo.save_order_book_snapshots = AsyncMock()
+        collector._repo = mock_repo
+
+        call_count = 0
+
+        async def fast_sleep(delay: float) -> None:  # noqa: ARG001
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                collector._shutdown = True
+
+        with (
+            patch(
+                "trading_tools.apps.tick_collector.collector.PolymarketClient",
+                return_value=mock_client,
+            ),
+            patch("asyncio.sleep", side_effect=fast_sleep),
+        ):
+            await collector._periodic_book_poll()
+
+        mock_repo.save_order_book_snapshots.assert_awaited()
+        saved = mock_repo.save_order_book_snapshots.call_args[0][0]
+        assert len(saved) == 1
+        assert saved[0].token_id == _ASSET_ID_YES

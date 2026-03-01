@@ -157,7 +157,7 @@ class TestBacktestTicksCLI:
                 new_callable=AsyncMock,
             ) as mock_load,
         ):
-            mock_load.return_value = {_CONDITION_ID: mock_ticks}
+            mock_load.return_value = ({_CONDITION_ID: mock_ticks}, {})
 
             result = runner.invoke(
                 app,
@@ -184,7 +184,7 @@ class TestBacktestTicksCLI:
             "trading_tools.apps.polymarket.cli.backtest_ticks_cmd._load_ticks",
             new_callable=AsyncMock,
         ) as mock_load:
-            mock_load.return_value = {}
+            mock_load.return_value = ({}, {})
 
             result = runner.invoke(
                 app,
@@ -208,7 +208,7 @@ class TestBacktestTicksCLI:
             "trading_tools.apps.polymarket.cli.backtest_ticks_cmd._load_ticks",
             new_callable=AsyncMock,
         ) as mock_load:
-            mock_load.return_value = {}
+            mock_load.return_value = ({}, {})
 
             result = runner.invoke(
                 app,

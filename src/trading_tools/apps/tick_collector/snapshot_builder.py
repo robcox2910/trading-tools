@@ -1,19 +1,28 @@
 """Build MarketSnapshots from raw tick data for backtesting.
 
 Convert sequences of ``Tick`` records into bucketed ``MarketSnapshot`` objects
-suitable for replay through the late snipe strategy. Ticks are grouped by
-asset, bucketed into configurable time intervals (default 1 second), and
-forward-filled across gaps to produce a continuous price series.
+suitable for replay through trading strategies. Ticks are grouped by asset,
+bucketed into configurable time intervals (default 1 second), and forward-filled
+across gaps to produce a continuous price series. When pre-loaded order book
+snapshots are provided, the builder enriches each market snapshot with real
+depth data via nearest-timestamp matching.
 """
 
+from __future__ import annotations
+
+import bisect
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from trading_tools.apps.polymarket_bot.models import MarketSnapshot
-from trading_tools.apps.tick_collector.models import Tick
-from trading_tools.clients.polymarket.models import OrderBook
+from trading_tools.clients.polymarket.models import OrderBook, OrderLevel
 from trading_tools.core.models import ZERO
+
+if TYPE_CHECKING:
+    from trading_tools.apps.tick_collector.models import OrderBookSnapshot, Tick
 
 _FIVE_MINUTES_MS = 300_000
 _MS_PER_SECOND = 1000
@@ -104,6 +113,7 @@ class SnapshotBuilder:
         self,
         ticks: list[Tick],
         window: MarketWindow,
+        book_snapshots: dict[str, list[OrderBookSnapshot]] | None = None,
     ) -> list[MarketSnapshot]:
         """Build a time-bucketed sequence of MarketSnapshots from ticks.
 
@@ -112,9 +122,17 @@ class SnapshotBuilder:
         price directly. Bucket ticks into intervals of ``bucket_seconds``,
         apply last-price-wins within each bucket, and forward-fill gaps.
 
+        When ``book_snapshots`` is provided and contains data for the YES
+        asset, each bucket is enriched with the nearest order book depth
+        snapshot via timestamp matching.
+
         Args:
             ticks: Non-empty list of ticks for a single condition_id.
             window: Market window metadata (start, end, end_date).
+            book_snapshots: Optional mapping from token_id to a
+                time-sorted list of ``OrderBookSnapshot`` records. When
+                provided, the YES asset's books are used to populate the
+                ``order_book`` field on each snapshot.
 
         Returns:
             List of ``MarketSnapshot`` objects, one per time bucket.
@@ -147,6 +165,9 @@ class SnapshotBuilder:
             bucket_idx = max(0, min(bucket_idx, num_buckets - 1))
             bucket_prices[bucket_idx] = price
 
+        # Pre-sort book snapshot timestamps for binary search
+        yes_books = book_snapshots.get(yes_asset) if book_snapshots else None
+
         # Forward-fill to produce continuous series
         empty_book = OrderBook(
             token_id="",
@@ -167,6 +188,12 @@ class SnapshotBuilder:
             bucket_start_ms = window.start_ms + i * bucket_ms
             timestamp_seconds = bucket_start_ms // _MS_PER_SECOND
 
+            order_book = empty_book
+            if yes_books:
+                matched = _find_nearest_book(yes_books, bucket_start_ms)
+                if matched is not None:
+                    order_book = matched
+
             snapshots.append(
                 MarketSnapshot(
                     condition_id=window.condition_id,
@@ -174,7 +201,7 @@ class SnapshotBuilder:
                     timestamp=timestamp_seconds,
                     yes_price=yes_price,
                     no_price=no_price,
-                    order_book=empty_book,
+                    order_book=order_book,
                     volume=ZERO,
                     liquidity=ZERO,
                     end_date=window.end_date,
@@ -182,3 +209,67 @@ class SnapshotBuilder:
             )
 
         return snapshots
+
+
+def _find_nearest_book(
+    books: list[OrderBookSnapshot],
+    target_ms: int,
+) -> OrderBook | None:
+    """Find the nearest order book snapshot and deserialize to ``OrderBook``.
+
+    Use binary search on the pre-sorted list of snapshots to find the one
+    closest to ``target_ms``. Return ``None`` if the list is empty.
+
+    Args:
+        books: Time-sorted list of ``OrderBookSnapshot`` records.
+        target_ms: Target epoch milliseconds to match against.
+
+    Returns:
+        A deserialized ``OrderBook`` from the nearest snapshot, or ``None``
+        if no snapshots are available.
+
+    """
+    if not books:
+        return None
+
+    timestamps = [b.timestamp for b in books]
+    idx = bisect.bisect_left(timestamps, target_ms)
+
+    # Compare candidates at idx-1 and idx
+    if idx == 0:
+        nearest = books[0]
+    elif idx >= len(books):
+        nearest = books[-1]
+    else:
+        before = books[idx - 1]
+        after = books[idx]
+        nearest = before if target_ms - before.timestamp <= after.timestamp - target_ms else after
+
+    return _deserialize_book(nearest)
+
+
+def _deserialize_book(snapshot: OrderBookSnapshot) -> OrderBook:
+    """Convert an ``OrderBookSnapshot`` ORM record to a typed ``OrderBook``.
+
+    Parse the JSON bid/ask arrays and construct ``OrderLevel`` tuples.
+
+    Args:
+        snapshot: Persisted order book snapshot with JSON level data.
+
+    Returns:
+        A typed ``OrderBook`` with deserialized price levels.
+
+    """
+    raw_bids: list[list[str]] = json.loads(snapshot.bids_json)
+    raw_asks: list[list[str]] = json.loads(snapshot.asks_json)
+
+    bids = tuple(OrderLevel(price=Decimal(b[0]), size=Decimal(b[1])) for b in raw_bids)
+    asks = tuple(OrderLevel(price=Decimal(a[0]), size=Decimal(a[1])) for a in raw_asks)
+
+    return OrderBook(
+        token_id=snapshot.token_id,
+        bids=bids,
+        asks=asks,
+        spread=Decimal(str(snapshot.spread)),
+        midpoint=Decimal(str(snapshot.midpoint)),
+    )

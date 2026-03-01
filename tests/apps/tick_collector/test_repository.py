@@ -3,13 +3,15 @@
 import pytest
 import pytest_asyncio
 
-from trading_tools.apps.tick_collector.models import Tick
+from trading_tools.apps.tick_collector.models import OrderBookSnapshot, Tick
 from trading_tools.apps.tick_collector.repository import TickRepository
 
 _ASSET_A = "asset_aaa"
 _ASSET_B = "asset_bbb"
 _CONDITION_A = "cond_aaa"
 _CONDITION_B = "cond_bbb"
+_TOKEN_A = "token_aaa"
+_TOKEN_B = "token_bbb"
 _BASE_TS = 1700000000000
 _FEE_BPS = 200
 _BATCH_COUNT_5 = 5
@@ -18,6 +20,9 @@ _ASSET_FILTER_COUNT_2 = 2
 _COMBINED_COUNT_7 = 7
 _CONDITION_TICKS_COUNT_3 = 3
 _DISTINCT_CONDITIONS_COUNT_2 = 2
+_BOOK_BATCH_COUNT_3 = 3
+_BOOK_RANGE_COUNT_2 = 2
+_TOLERANCE_MS = 5000
 
 
 def _make_tick(
@@ -281,3 +286,144 @@ class TestTickRepository:
     async def test_close(self, repo: TickRepository) -> None:
         """Close disposes the engine without raising."""
         await repo.close()
+
+
+def _make_book_snapshot(
+    token_id: str = _TOKEN_A,
+    timestamp: int = _BASE_TS,
+    bids_json: str = '[["0.72", "100"]]',
+    asks_json: str = '[["0.74", "150"]]',
+    spread: float = 0.02,
+    midpoint: float = 0.73,
+) -> OrderBookSnapshot:
+    """Create an OrderBookSnapshot instance for testing.
+
+    Args:
+        token_id: CLOB token identifier.
+        timestamp: Epoch milliseconds.
+        bids_json: JSON bid levels.
+        asks_json: JSON ask levels.
+        spread: Best ask minus best bid.
+        midpoint: Average of best bid and best ask.
+
+    Returns:
+        A new OrderBookSnapshot instance.
+
+    """
+    return OrderBookSnapshot(
+        token_id=token_id,
+        timestamp=timestamp,
+        bids_json=bids_json,
+        asks_json=asks_json,
+        spread=spread,
+        midpoint=midpoint,
+    )
+
+
+class TestOrderBookSnapshotRepository:
+    """Tests for order book snapshot repository operations."""
+
+    @pytest.mark.asyncio
+    async def test_save_and_query_order_book_snapshots(
+        self,
+        repo: TickRepository,
+    ) -> None:
+        """Batch-insert order book snapshots and query by time range."""
+        snapshots = [
+            _make_book_snapshot(timestamp=_BASE_TS + i * 1000) for i in range(_BOOK_BATCH_COUNT_3)
+        ]
+        await repo.save_order_book_snapshots(snapshots)
+
+        result = await repo.get_order_book_snapshots_in_range(
+            _TOKEN_A,
+            start_ms=_BASE_TS,
+            end_ms=_BASE_TS + 1000,
+        )
+
+        assert len(result) == _BOOK_RANGE_COUNT_2
+        assert result[0].timestamp == _BASE_TS
+        assert result[1].timestamp == _BASE_TS + 1000
+
+    @pytest.mark.asyncio
+    async def test_save_empty_book_snapshots(self, repo: TickRepository) -> None:
+        """Save an empty snapshot list without error."""
+        await repo.save_order_book_snapshots([])
+
+    @pytest.mark.asyncio
+    async def test_get_order_book_snapshots_filters_by_token(
+        self,
+        repo: TickRepository,
+    ) -> None:
+        """Query returns only snapshots for the requested token."""
+        snapshots = [
+            _make_book_snapshot(token_id=_TOKEN_A, timestamp=_BASE_TS),
+            _make_book_snapshot(token_id=_TOKEN_B, timestamp=_BASE_TS + 1000),
+        ]
+        await repo.save_order_book_snapshots(snapshots)
+
+        result = await repo.get_order_book_snapshots_in_range(
+            _TOKEN_A,
+            start_ms=_BASE_TS,
+            end_ms=_BASE_TS + 5000,
+        )
+
+        assert len(result) == 1
+        assert result[0].token_id == _TOKEN_A
+
+    @pytest.mark.asyncio
+    async def test_get_nearest_book_snapshot(self, repo: TickRepository) -> None:
+        """Return the closest snapshot within the tolerance window."""
+        snapshots = [
+            _make_book_snapshot(timestamp=_BASE_TS),
+            _make_book_snapshot(timestamp=_BASE_TS + 3000),
+            _make_book_snapshot(timestamp=_BASE_TS + 8000),
+        ]
+        await repo.save_order_book_snapshots(snapshots)
+
+        result = await repo.get_nearest_book_snapshot(
+            _TOKEN_A,
+            timestamp_ms=_BASE_TS + 2500,
+            tolerance_ms=_TOLERANCE_MS,
+        )
+
+        assert result is not None
+        assert result.timestamp == _BASE_TS + 3000
+
+    @pytest.mark.asyncio
+    async def test_get_nearest_book_snapshot_none_outside_tolerance(
+        self,
+        repo: TickRepository,
+    ) -> None:
+        """Return None when no snapshot exists within the tolerance window."""
+        snapshots = [_make_book_snapshot(timestamp=_BASE_TS)]
+        await repo.save_order_book_snapshots(snapshots)
+
+        result = await repo.get_nearest_book_snapshot(
+            _TOKEN_A,
+            timestamp_ms=_BASE_TS + 20000,
+            tolerance_ms=_TOLERANCE_MS,
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_order_book_snapshots_ordered_by_timestamp(
+        self,
+        repo: TickRepository,
+    ) -> None:
+        """Verify snapshots are returned in ascending timestamp order."""
+        snapshots = [
+            _make_book_snapshot(timestamp=_BASE_TS + 3000),
+            _make_book_snapshot(timestamp=_BASE_TS + 1000),
+            _make_book_snapshot(timestamp=_BASE_TS + 2000),
+        ]
+        await repo.save_order_book_snapshots(snapshots)
+
+        result = await repo.get_order_book_snapshots_in_range(
+            _TOKEN_A,
+            start_ms=_BASE_TS,
+            end_ms=_BASE_TS + 5000,
+        )
+
+        timestamps = [s.timestamp for s in result]
+        assert timestamps == sorted(timestamps)

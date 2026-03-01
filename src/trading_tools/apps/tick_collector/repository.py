@@ -1,9 +1,11 @@
-"""Async repository for persisting and querying tick records.
+"""Async repository for persisting and querying tick and order book records.
 
 Wrap SQLAlchemy async engine and session management for the tick collector.
 Support batch inserts for high-throughput WebSocket ingestion and time-range
-queries for backtesting. The repository is database-agnostic — swap from
-SQLite to PostgreSQL by changing the connection string.
+queries for backtesting. Order book snapshot methods provide nearest-match
+lookups for enriching backtest snapshots with real depth data. The repository
+is database-agnostic — swap from SQLite to PostgreSQL by changing the
+connection string.
 """
 
 import logging
@@ -16,7 +18,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from trading_tools.apps.tick_collector.models import Base, Tick
+from trading_tools.apps.tick_collector.models import Base, OrderBookSnapshot, Tick
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +160,87 @@ class TickRepository:
         async with self._session_factory() as session:
             result = await session.execute(stmt)
             return list(result.scalars().all())
+
+    async def save_order_book_snapshots(
+        self,
+        snapshots: list[OrderBookSnapshot],
+    ) -> None:
+        """Batch-insert a list of order book snapshot records.
+
+        Args:
+            snapshots: OrderBookSnapshot ORM instances to persist.
+
+        """
+        if not snapshots:
+            return
+        async with self._session_factory() as session, session.begin():
+            session.add_all(snapshots)
+        logger.debug("Saved %d order book snapshots", len(snapshots))
+
+    async def get_order_book_snapshots_in_range(
+        self,
+        token_id: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[OrderBookSnapshot]:
+        """Query order book snapshots for a token within a time range.
+
+        Args:
+            token_id: CLOB token identifier to filter on.
+            start_ms: Inclusive lower bound (epoch milliseconds).
+            end_ms: Inclusive upper bound (epoch milliseconds).
+
+        Returns:
+            List of matching snapshots ordered by timestamp ascending.
+
+        """
+        stmt = (
+            select(OrderBookSnapshot)
+            .where(
+                OrderBookSnapshot.token_id == token_id,
+                OrderBookSnapshot.timestamp >= start_ms,
+                OrderBookSnapshot.timestamp <= end_ms,
+            )
+            .order_by(OrderBookSnapshot.timestamp)
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def get_nearest_book_snapshot(
+        self,
+        token_id: str,
+        timestamp_ms: int,
+        tolerance_ms: int = 5000,
+    ) -> OrderBookSnapshot | None:
+        """Find the order book snapshot nearest to a given timestamp.
+
+        Search within ``tolerance_ms`` milliseconds of the target timestamp
+        and return the closest match by absolute time difference.
+
+        Args:
+            token_id: CLOB token identifier to filter on.
+            timestamp_ms: Target epoch milliseconds.
+            tolerance_ms: Maximum allowed distance in milliseconds.
+
+        Returns:
+            The nearest ``OrderBookSnapshot``, or ``None`` if no snapshot
+            exists within the tolerance window.
+
+        """
+        stmt = (
+            select(OrderBookSnapshot)
+            .where(
+                OrderBookSnapshot.token_id == token_id,
+                OrderBookSnapshot.timestamp >= timestamp_ms - tolerance_ms,
+                OrderBookSnapshot.timestamp <= timestamp_ms + tolerance_ms,
+            )
+            .order_by(func.abs(OrderBookSnapshot.timestamp - timestamp_ms))
+            .limit(1)
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return result.scalars().first()
 
     async def close(self) -> None:
         """Dispose the async engine and release all connections."""
