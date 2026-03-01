@@ -1,8 +1,19 @@
 """Tests for the WebSocket market feed client."""
 
+from __future__ import annotations
+
+import asyncio
 import json
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 from trading_tools.apps.tick_collector.ws_client import (
+    MarketFeed,
     _build_subscribe_message,
     _is_trade_event,
     _parse_message,
@@ -138,3 +149,78 @@ class TestBuildSubscribeMessage:
         msg = _build_subscribe_message([])
 
         assert msg["assets_ids"] == []
+
+
+class TestUpdateSubscription:
+    """Tests for the reconnect-based update_subscription method."""
+
+    @pytest.mark.asyncio
+    async def test_update_subscription_closes_ws(self) -> None:
+        """Close the active WebSocket so the stream loop reconnects."""
+        feed = MarketFeed()
+        mock_ws = AsyncMock()
+        feed._ws = mock_ws
+        await feed.update_subscription(["new_asset"])
+
+        mock_ws.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_update_subscription_sets_reconnect_flag(self) -> None:
+        """Set the reconnect flag so stream() skips backoff."""
+        feed = MarketFeed()
+        feed._ws = AsyncMock()
+        await feed.update_subscription(["new_asset"])
+
+        assert feed._reconnect_requested is True
+
+    @pytest.mark.asyncio
+    async def test_update_subscription_no_ws_is_noop(self) -> None:
+        """Do nothing when no WebSocket connection exists."""
+        feed = MarketFeed()
+
+        await feed.update_subscription(["new_asset"])
+
+        assert feed._ws is None
+        assert feed._reconnect_requested is False
+
+
+class TestStreamReconnect:
+    """Tests for the stream() reconnect behaviour after subscription update."""
+
+    @pytest.mark.asyncio
+    async def test_stream_reconnects_immediately_on_flag(self) -> None:
+        """Skip backoff delay when reconnecting for a subscription update."""
+        feed = MarketFeed(reconnect_base_delay=5.0)
+
+        call_count = 0
+
+        async def fake_connect_and_listen(
+            asset_ids: list[str],  # noqa: ARG001
+        ) -> AsyncIterator[dict[str, Any]]:
+            """Simulate two connect cycles, triggering reconnect on first."""
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Simulate: caller updates subscription mid-stream
+                feed._reconnect_requested = True
+                return
+                yield  # Make this an async generator  # type: ignore[misc]
+            # Second call: stop the loop
+            feed._closed = True
+            return
+            yield  # type: ignore[misc]
+
+        with patch.object(feed, "_connect_and_listen", side_effect=fake_connect_and_listen):
+            sleep_calls: list[float] = []
+            original_sleep = asyncio.sleep
+
+            async def spy_sleep(delay: float) -> None:
+                sleep_calls.append(delay)
+                await original_sleep(0)
+
+            with patch("asyncio.sleep", side_effect=spy_sleep):
+                async for _event in feed.stream(["asset_1"]):
+                    pass  # pragma: no cover
+
+        assert call_count == 2  # noqa: PLR2004
+        assert sleep_calls == []

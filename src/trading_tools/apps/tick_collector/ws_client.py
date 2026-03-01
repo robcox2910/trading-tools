@@ -51,6 +51,7 @@ class MarketFeed:
         self._reconnect_base_delay = reconnect_base_delay
         self._ws: ClientConnection | None = None
         self._closed = False
+        self._reconnect_requested = False
 
     async def stream(self, asset_ids: list[str]) -> AsyncIterator[dict[str, Any]]:
         """Connect and yield ``last_trade_price`` events indefinitely.
@@ -58,6 +59,10 @@ class MarketFeed:
         Automatically reconnect on failures with exponential backoff. Only
         events of type ``last_trade_price`` are yielded; all other message
         types (``book``, ``price_change``, etc.) are silently discarded.
+
+        When ``update_subscription()`` triggers an intentional reconnect, the
+        backoff delay is skipped so the fresh connection is established
+        immediately.
 
         Args:
             asset_ids: Token identifiers to subscribe to.
@@ -75,7 +80,8 @@ class MarketFeed:
             except ConnectionClosed as exc:
                 if self._closed:
                     return
-                logger.warning("WebSocket connection closed: %s", exc)
+                if not self._reconnect_requested:
+                    logger.warning("WebSocket connection closed: %s", exc)
             except OSError as exc:
                 if self._closed:
                     return
@@ -83,23 +89,37 @@ class MarketFeed:
 
             if self._closed:
                 return
+
+            if self._reconnect_requested:
+                self._reconnect_requested = False
+                delay = self._reconnect_base_delay
+                logger.info("Reconnecting immediately for subscription update")
+                continue
+
             logger.info("Reconnecting in %.1fs...", delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, _RECONNECT_MAX_DELAY)
 
     async def update_subscription(self, asset_ids: list[str]) -> None:
-        """Send a new subscription message on the existing connection.
+        """Force a WebSocket reconnect to apply a new subscription.
 
-        Use this to add newly discovered assets without reconnecting.
+        The Polymarket server silently ignores subsequent subscribe messages
+        on an existing connection. Close the current WebSocket so the
+        ``stream()`` reconnect loop re-establishes a fresh connection with
+        the updated asset IDs.
 
         Args:
-            asset_ids: Full list of token identifiers to subscribe to.
+            asset_ids: Full list of token identifiers (used for logging only;
+                the reconnect will read the caller's updated list directly).
 
         """
         if self._ws is not None:
-            msg = _build_subscribe_message(asset_ids)
-            await self._ws.send(json.dumps(msg))
-            logger.info("Updated subscription to %d assets", len(asset_ids))
+            self._reconnect_requested = True
+            logger.info(
+                "Closing WebSocket for subscription update (%d assets)",
+                len(asset_ids),
+            )
+            await self._ws.close()
 
     async def close(self) -> None:
         """Gracefully close the WebSocket connection."""
