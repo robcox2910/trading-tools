@@ -814,6 +814,7 @@ def _safe_decimal(value: Any) -> Decimal:
 
 
 _FIVE_MINUTES = 300
+_FIFTEEN_MINUTES = 900
 
 
 def _resolve_timestamped_slugs(
@@ -823,30 +824,36 @@ def _resolve_timestamped_slugs(
 ) -> list[str]:
     """Expand series slugs into timestamped slugs for rotating markets.
 
-    Polymarket 5-minute markets use slugs like ``btc-updown-5m-1771758600``
-    where the suffix is the Unix epoch of the current 5-minute window start.
-    For slugs ending in ``-5m``, compute the current window epoch and append
-    it.  When ``include_next`` is ``True``, also emit the next window slug
-    so the collector can discover upcoming markets before they open.
+    Polymarket rotating markets use slugs like ``btc-updown-5m-1771758600``
+    where the suffix is the Unix epoch of the current window start.  For
+    slugs ending in ``-5m`` or ``-15m``, compute the current window epoch
+    (aligned to 300s or 900s respectively) and append it.  When
+    ``include_next`` is ``True``, also emit the next window slug so the
+    collector can discover upcoming markets before they open.
     Other slugs are passed through unchanged.
 
     Args:
         series_slugs: Base series slugs (e.g. ``["btc-updown-5m"]``).
-        include_next: When ``True``, emit both the current and next 5-minute
-            window slugs for ``-5m`` series.  Non-5m slugs are not duplicated.
+        include_next: When ``True``, emit both the current and next window
+            slugs for timestamped series.  Other slugs are not duplicated.
 
     Returns:
         Resolved slugs with epoch suffixes where applicable.
 
     """
     now = int(time.time())
-    current_window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
     resolved: list[str] = []
     for slug in series_slugs:
         if slug.endswith("-5m"):
-            resolved.append(f"{slug}-{current_window}")
+            window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
+            resolved.append(f"{slug}-{window}")
             if include_next:
-                resolved.append(f"{slug}-{current_window + _FIVE_MINUTES}")
+                resolved.append(f"{slug}-{window + _FIVE_MINUTES}")
+        elif slug.endswith("-15m"):
+            window = (now // _FIFTEEN_MINUTES) * _FIFTEEN_MINUTES
+            resolved.append(f"{slug}-{window}")
+            if include_next:
+                resolved.append(f"{slug}-{window + _FIFTEEN_MINUTES}")
         else:
             resolved.append(slug)
     return resolved
