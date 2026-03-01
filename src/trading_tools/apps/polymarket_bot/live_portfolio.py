@@ -9,16 +9,17 @@ rather than raising, so the engine can continue operating.
 import logging
 from decimal import Decimal
 
+from trading_tools.apps.polymarket_bot.base_portfolio import BasePortfolio
 from trading_tools.apps.polymarket_bot.models import LiveTrade
 from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import OrderRequest
-from trading_tools.core.models import ONE, ZERO, Position, Side
+from trading_tools.core.models import ZERO, Position, Side
 
 logger = logging.getLogger(__name__)
 
 
-class LivePortfolio:
+class LivePortfolio(BasePortfolio):
     """Execute real trades and track positions via the Polymarket CLOB.
 
     Manage opening and closing positions across multiple prediction markets,
@@ -48,16 +49,17 @@ class LivePortfolio:
             use_market_orders: Use FOK market orders (default) or GTC limit.
 
         """
+        super().__init__(max_position_pct)
         self._client = client
-        self._max_position_pct = max_position_pct
         self._use_market_orders = use_market_orders
         self._balance = ZERO
         self._portfolio_value = ZERO
-        self._positions: dict[str, Position] = {}
-        self._mark_prices: dict[str, Decimal] = {}
         self._trades: list[LiveTrade] = []
-        self._outcomes: dict[str, str] = {}
         self._token_ids: dict[str, str] = {}
+
+    def _get_cash_balance(self) -> Decimal:
+        """Return the last-fetched USDC balance."""
+        return self._balance
 
     async def refresh_balance(self) -> Decimal:
         """Fetch the live USDC balance and full portfolio value.
@@ -278,35 +280,6 @@ class LivePortfolio:
         self._outcomes.clear()
         self._token_ids.clear()
 
-    def mark_to_market(self, condition_id: str, current_price: Decimal) -> None:
-        """Update the mark-to-market price for an open position.
-
-        Args:
-            condition_id: Market condition identifier.
-            current_price: Latest token price.
-
-        """
-        if condition_id in self._positions:
-            self._mark_prices[condition_id] = current_price
-
-    def max_quantity_for(self, price: Decimal) -> Decimal:
-        """Return the maximum quantity affordable at the given price.
-
-        Respect the per-market allocation limit and available balance.
-
-        Args:
-            price: Token price to compute quantity for.
-
-        Returns:
-            Maximum number of tokens that can be purchased.
-
-        """
-        if price <= ZERO:
-            return ZERO
-        max_allocation = self._balance * self._max_position_pct
-        budget = min(max_allocation, self._balance)
-        return (budget / price).quantize(ONE)
-
     @property
     def balance(self) -> Decimal:
         """Return the last-fetched USDC balance."""
@@ -316,27 +289,6 @@ class LivePortfolio:
     def portfolio_value(self) -> Decimal:
         """Return the last-fetched total portfolio value (USDC + positions)."""
         return self._portfolio_value
-
-    @property
-    def total_equity(self) -> Decimal:
-        """Return total equity: balance plus mark-to-market value of positions."""
-        unrealised = ZERO
-        for cid, pos in self._positions.items():
-            mark_price = self._mark_prices.get(cid, pos.entry_price)
-            if pos.side == Side.BUY:
-                unrealised += (mark_price - pos.entry_price) * pos.quantity
-            else:
-                unrealised += (pos.entry_price - mark_price) * pos.quantity
-        return (
-            self._balance
-            + unrealised
-            + sum(pos.entry_price * pos.quantity for pos in self._positions.values())
-        )
-
-    @property
-    def positions(self) -> dict[str, Position]:
-        """Return a copy of all open positions keyed by condition_id."""
-        return dict(self._positions)
 
     @property
     def trades(self) -> list[LiveTrade]:
