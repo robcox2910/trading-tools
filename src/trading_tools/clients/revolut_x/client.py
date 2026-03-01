@@ -235,6 +235,28 @@ class RevolutXClient:
 
         raise RevolutXAPIError(message, response.status_code)
 
+    def _parse_json(self, response: httpx.Response) -> dict[str, Any]:
+        """Parse JSON from a successful response.
+
+        Args:
+            response: HTTP response to parse.
+
+        Returns:
+            Parsed JSON as dictionary.
+
+        Raises:
+            RevolutXAPIError: When the response body is not valid JSON.
+
+        """
+        try:
+            result: dict[str, Any] = response.json()
+        except ValueError as exc:
+            raise RevolutXAPIError(
+                f"Invalid JSON in response: {response.text[:200]}",
+                response.status_code,
+            ) from exc
+        return result
+
     async def get(
         self,
         path: str,
@@ -251,8 +273,7 @@ class RevolutXClient:
 
         """
         response = await self._request("GET", path, params=params)
-        result: dict[str, Any] = response.json()
-        return result
+        return self._parse_json(response)
 
     async def post(
         self,
@@ -272,8 +293,7 @@ class RevolutXClient:
 
         """
         response = await self._request("POST", path, params=params, data=data)
-        result: dict[str, Any] = response.json()
-        return result
+        return self._parse_json(response)
 
     async def put(
         self,
@@ -293,8 +313,7 @@ class RevolutXClient:
 
         """
         response = await self._request("PUT", path, params=params, data=data)
-        result: dict[str, Any] = response.json()
-        return result
+        return self._parse_json(response)
 
     async def delete(
         self,
@@ -312,8 +331,7 @@ class RevolutXClient:
 
         """
         response = await self._request("DELETE", path, params=params)
-        result: dict[str, Any] = response.json()
-        return result
+        return self._parse_json(response)
 
     async def close(self) -> None:
         """Close the HTTP client."""

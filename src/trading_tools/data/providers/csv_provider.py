@@ -54,8 +54,14 @@ class CsvCandleProvider:
 
         """
         candles: list[Candle] = []
+        required = {"symbol", "timestamp", "open", "high", "low", "close", "volume", "interval"}
         with self._file_path.open() as f:
             reader = csv.DictReader(f)
+            present = set(reader.fieldnames or [])
+            missing = required - present
+            if missing:
+                msg = f"CSV missing required columns: {sorted(missing)}"
+                raise ValueError(msg)
             for row in reader:
                 ts = int(row["timestamp"])
                 if row["symbol"] != symbol:

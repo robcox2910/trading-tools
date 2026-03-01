@@ -7,7 +7,7 @@ returned candle until the full requested range is covered.
 """
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from trading_tools.clients.revolut_x.client import RevolutXClient
 from trading_tools.core.models import Candle, Interval
@@ -92,7 +92,12 @@ class RevolutXCandleProvider:
                 "until": until_ms,
             }
             response = await self._client.get(path, params=params)
-            batch = [self._parse_candle(raw, symbol, interval) for raw in response["data"]]
+            data = response.get("data")
+            if not isinstance(data, list):
+                break
+
+            rows = cast("list[dict[str, Any]]", data)
+            batch = [self._parse_candle(raw, symbol, interval) for raw in rows]
 
             if not batch:
                 break
@@ -103,7 +108,7 @@ class RevolutXCandleProvider:
                 break
 
             # Advance past the last candle's timestamp
-            next_since = int(response["data"][-1]["start"]) + 1
+            next_since = int(rows[-1]["start"]) + 1
             if next_since <= since_ms:
                 break
             since_ms = next_since

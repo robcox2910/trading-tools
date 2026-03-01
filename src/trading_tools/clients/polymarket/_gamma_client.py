@@ -167,7 +167,13 @@ class GammaClient:
         if response.status_code >= HTTP_BAD_REQUEST:
             self._handle_error(response)
 
-        result: Any = response.json()
+        try:
+            result: Any = response.json()
+        except ValueError as exc:
+            raise PolymarketAPIError(
+                msg=f"Invalid JSON in Gamma API response: {response.text[:200]}",
+                status_code=response.status_code,
+            ) from exc
         return result
 
     @staticmethod

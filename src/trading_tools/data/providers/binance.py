@@ -139,7 +139,14 @@ class BinanceCandleProvider:
 
         Convert the millisecond open-time to seconds and wrap all price
         and volume fields in ``Decimal`` for lossless arithmetic.
+
+        Raises:
+            ValueError: If the kline array has fewer than 6 elements.
+
         """
+        if len(raw) <= _IDX_VOLUME:
+            msg = f"Incomplete kline data: expected >= {_IDX_VOLUME + 1} fields, got {len(raw)}"
+            raise ValueError(msg)
         return Candle(
             symbol=symbol,
             timestamp=int(raw[_IDX_OPEN_TIME]) // _MS_PER_SECOND,

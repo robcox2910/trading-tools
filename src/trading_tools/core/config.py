@@ -136,11 +136,15 @@ class ConfigLoader:
         Returns:
             Dictionary with Revolut X settings.
 
+        Raises:
+            ConfigError: If the revolut_x config value is not a dictionary.
+
         """
         result: Any = self.get("revolut_x", {})
         if isinstance(result, dict):
             return cast("dict[str, Any]", result)
-        return {}
+        msg = f"revolut_x config must be a dict, got {type(result).__name__}"
+        raise ConfigError(msg)
 
     def get_private_key(self) -> bytes:
         """Load the Ed25519 private key from file.

@@ -44,4 +44,4 @@ def kelly_fraction(
     if edge <= ZERO:
         return ZERO
     full_kelly = edge / (ONE - market_price)
-    return full_kelly * fractional
+    return min(full_kelly * fractional, fractional)

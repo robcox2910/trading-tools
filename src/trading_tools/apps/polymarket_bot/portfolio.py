@@ -136,12 +136,9 @@ class PaperPortfolio(BasePortfolio):
         if pos is None:
             return None
 
-        if pos.side == Side.BUY:
-            pnl = (price - pos.entry_price) * pos.quantity
-        else:
-            pnl = (pos.entry_price - price) * pos.quantity
-
-        proceeds = pos.entry_price * pos.quantity + pnl
+        # Proceeds = market value of the tokens at exit price, regardless
+        # of which side opened the position.
+        proceeds = price * pos.quantity
         self._cash += proceeds
 
         exit_side = Side.SELL if pos.side == Side.BUY else Side.BUY
