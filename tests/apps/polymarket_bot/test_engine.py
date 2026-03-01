@@ -15,6 +15,7 @@ from trading_tools.apps.polymarket_bot.models import (
 from trading_tools.apps.polymarket_bot.strategies.mean_reversion import (
     PMMeanReversionStrategy,
 )
+from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import (
     Market,
     MarketToken,
@@ -185,7 +186,7 @@ class TestPaperTradingEngine:
     async def test_bootstrap_failure_returns_empty_result(self) -> None:
         """Verify that bootstrap failure with no assets returns clean result."""
         client = AsyncMock()
-        client.get_market = AsyncMock(side_effect=Exception("API down"))
+        client.get_market = AsyncMock(side_effect=PolymarketAPIError(msg="API down", status_code=0))
         strategy = PMMeanReversionStrategy(period=3, z_threshold=Decimal("1.5"))
         config = _make_config()
         feed = _mock_feed([])
@@ -429,7 +430,9 @@ class TestMarketRotation:
         start_time = 1700000000
 
         client = _mock_client()
-        client.discover_series_markets = AsyncMock(side_effect=Exception("API down"))
+        client.discover_series_markets = AsyncMock(
+            side_effect=PolymarketAPIError(msg="API down", status_code=0)
+        )
 
         config = BotConfig(
             initial_capital=_INITIAL_CAPITAL,

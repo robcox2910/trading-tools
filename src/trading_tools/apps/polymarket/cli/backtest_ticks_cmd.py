@@ -290,6 +290,7 @@ def backtest_ticks(
 
     if not all_ticks:
         typer.echo("No ticks found in the specified date range.")
+        return
 
     total_ticks = sum(len(t) for t in all_ticks.values())
     typer.echo(f"Found {len(all_ticks)} conditions with {total_ticks} ticks")
