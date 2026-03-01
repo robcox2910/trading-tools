@@ -71,7 +71,8 @@ revolut_x:
   base_url: https://test.revolut.com
 """)
 
-        with patch("trading_tools.clients.revolut_x.client.config") as mock_config:
+        with patch("trading_tools.clients.revolut_x.client.get_config") as mock_get_config:
+            mock_config = MagicMock()
 
             def _fake_get(k: str, default: str | None = None) -> str | None:
                 return {
@@ -82,6 +83,7 @@ revolut_x:
 
             mock_config.get.side_effect = _fake_get
             mock_config.get_private_key.return_value = pem
+            mock_get_config.return_value = mock_config
 
             client = RevolutXClient.from_config()
             assert client.api_key == "test_key_123"

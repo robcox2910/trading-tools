@@ -16,7 +16,7 @@ from trading_tools.clients.revolut_x.exceptions import (
     RevolutXRateLimitError,
     RevolutXValidationError,
 )
-from trading_tools.core.config import config
+from trading_tools.core.config import get_config
 
 _HTTP_BAD_REQUEST = 400
 _HTTP_UNAUTHORIZED = 401
@@ -65,15 +65,15 @@ class RevolutXClient:
             ValueError: If configuration is missing required values.
 
         """
-        api_key = config.get("revolut_x.api_key")
+        api_key = get_config().get("revolut_x.api_key")
         if not api_key:
             raise ValueError("revolut_x.api_key not configured")
 
-        base_url = config.get("revolut_x.base_url", "https://revx.revolut.com/api/1.0")
+        base_url = get_config().get("revolut_x.base_url", "https://revx.revolut.com/api/1.0")
 
         # Load private key
         private_key = Ed25519Signer.load_private_key_from_file(
-            config.get("revolut_x.private_key_path")
+            get_config().get("revolut_x.private_key_path")
         )
 
         return cls(

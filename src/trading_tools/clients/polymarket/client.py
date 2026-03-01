@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from trading_tools.clients.polymarket import _clob_adapter, _ctf_redeemer
+from trading_tools.clients.polymarket._constants import HTTP_BAD_REQUEST
 from trading_tools.clients.polymarket._gamma_client import GammaClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import (
@@ -34,7 +35,6 @@ logger = logging.getLogger(__name__)
 _ZERO = Decimal(0)
 _TWO = Decimal(2)
 _USDC_DECIMALS = Decimal("1e6")
-_HTTP_BAD_REQUEST = 400
 
 
 class PolymarketClient:
@@ -564,13 +564,19 @@ class PolymarketClient:
                 status_code=0,
             ) from exc
 
-        if response.status_code >= _HTTP_BAD_REQUEST:
+        if response.status_code >= HTTP_BAD_REQUEST:
             raise PolymarketAPIError(
                 msg=f"Data API error: HTTP {response.status_code}",
                 status_code=response.status_code,
             )
 
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise PolymarketAPIError(
+                msg=f"Invalid JSON in Data API response: {exc}",
+                status_code=response.status_code,
+            ) from exc
 
     async def redeem_positions(
         self,
@@ -720,8 +726,8 @@ class PolymarketClient:
 
         best_bid = bids[0].price if bids else _ZERO
         best_ask = asks[0].price if asks else _ZERO
-        spread = best_ask - best_bid if best_bid and best_ask else _ZERO
-        midpoint = (best_bid + best_ask) / _TWO if best_bid and best_ask else _ZERO
+        spread = best_ask - best_bid if bids and asks else _ZERO
+        midpoint = (best_bid + best_ask) / _TWO if bids and asks else _ZERO
 
         return OrderBook(
             token_id=token_id,
@@ -730,6 +736,30 @@ class PolymarketClient:
             spread=spread,
             midpoint=midpoint,
         )
+
+
+def _parse_json_or_list(raw: Any) -> list[str]:
+    """Parse a value that may be a JSON-encoded string or a plain list.
+
+    The Gamma API encodes some fields (``outcomes``, ``outcomePrices``,
+    ``clobTokenIds``) as JSON strings within the response.  This helper
+    normalises them into a plain ``list[str]``.
+
+    Args:
+        raw: A JSON-encoded string, a list, or an empty/missing value.
+
+    Returns:
+        Parsed list of strings, or an empty list on failure.
+
+    """
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)  # type: ignore[no-any-return]
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if isinstance(raw, list):
+        return [str(item) for item in raw]  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
+    return []
 
 
 def _parse_tokens(raw: dict[str, Any]) -> list[MarketToken]:
@@ -745,32 +775,9 @@ def _parse_tokens(raw: dict[str, Any]) -> list[MarketToken]:
         List of typed MarketToken instances.
 
     """
-    outcomes_raw = raw.get("outcomes", "")
-    if isinstance(outcomes_raw, str):
-        try:
-            outcomes: list[str] = json.loads(outcomes_raw)
-        except (json.JSONDecodeError, TypeError):
-            outcomes = []
-    else:
-        outcomes = list(outcomes_raw)
-
-    prices_raw = raw.get("outcomePrices", "")
-    if isinstance(prices_raw, str):
-        try:
-            prices: list[str] = json.loads(prices_raw)
-        except (json.JSONDecodeError, TypeError):
-            prices = []
-    else:
-        prices = list(prices_raw)
-
-    token_ids_raw = raw.get("clobTokenIds", "")
-    if isinstance(token_ids_raw, str):
-        try:
-            token_ids: list[str] = json.loads(token_ids_raw)
-        except (json.JSONDecodeError, TypeError):
-            token_ids = []
-    else:
-        token_ids = list(token_ids_raw)
+    outcomes = _parse_json_or_list(raw.get("outcomes", ""))
+    prices = _parse_json_or_list(raw.get("outcomePrices", ""))
+    token_ids = _parse_json_or_list(raw.get("clobTokenIds", ""))
 
     tokens: list[MarketToken] = []
     for i, outcome in enumerate(outcomes):

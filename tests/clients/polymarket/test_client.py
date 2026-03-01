@@ -9,6 +9,7 @@ import pytest
 
 from trading_tools.clients.polymarket.client import (
     PolymarketClient,
+    _parse_json_or_list,
     _resolve_timestamped_slugs,
     _safe_decimal,
 )
@@ -908,3 +909,82 @@ class TestGetPortfolioValue:
 
         with pytest.raises(PolymarketAPIError, match="Authentication required"):
             await client.get_portfolio_value()
+
+
+class TestParseJsonOrList:
+    """Tests for _parse_json_or_list helper."""
+
+    def test_parses_json_string(self) -> None:
+        """Parse a JSON-encoded list string into a Python list."""
+        assert _parse_json_or_list('["a", "b"]') == ["a", "b"]
+
+    def test_passes_through_list(self) -> None:
+        """Pass through an already-decoded list."""
+        assert _parse_json_or_list(["x", "y"]) == ["x", "y"]
+
+    def test_returns_empty_on_invalid_json(self) -> None:
+        """Return an empty list when the string is not valid JSON."""
+        assert _parse_json_or_list("not json") == []
+
+    def test_returns_empty_on_empty_string(self) -> None:
+        """Return an empty list for an empty string."""
+        assert _parse_json_or_list("") == []
+
+    def test_returns_empty_on_none(self) -> None:
+        """Return an empty list for None."""
+        assert _parse_json_or_list(None) == []
+
+
+class TestOrderBookDecimalZeroTruthiness:
+    """Test that Decimal(0) bid/ask prices don't break spread/midpoint."""
+
+    @pytest.fixture
+    def client(self) -> PolymarketClient:
+        """Create a PolymarketClient with mocked dependencies."""
+        with patch("trading_tools.clients.polymarket.client._clob_adapter.create_clob_client"):
+            return PolymarketClient()
+
+    @pytest.mark.asyncio
+    async def test_zero_bid_price_computes_spread(self, client: PolymarketClient) -> None:
+        """Compute spread even when best bid is Decimal(0)."""
+        raw_book = {
+            "bids": [{"price": "0.00", "size": "100"}],
+            "asks": [{"price": "0.50", "size": "100"}],
+        }
+        with patch(
+            "trading_tools.clients.polymarket.client._clob_adapter.fetch_order_book",
+            return_value=raw_book,
+        ):
+            book = await client.get_order_book("token_zero")
+
+        assert book.spread == Decimal("0.50")
+        assert book.midpoint == Decimal("0.25")
+
+
+class TestFetchPositionsJsonSafety:
+    """Test JSON parse safety in _fetch_positions."""
+
+    @pytest.fixture
+    def client_with_funder(self) -> PolymarketClient:
+        """Create a PolymarketClient with a funder address configured."""
+        with patch("trading_tools.clients.polymarket.client._clob_adapter.create_clob_client"):
+            return PolymarketClient(funder_address=_FUNDER_ADDRESS)
+
+    @pytest.mark.asyncio
+    async def test_raises_on_invalid_json_response(
+        self, client_with_funder: PolymarketClient
+    ) -> None:
+        """Raise PolymarketAPIError when Data API returns invalid JSON."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.side_effect = ValueError("No JSON object could be decoded")
+
+        with (
+            patch.object(
+                client_with_funder._data_client,
+                "get",
+                new=AsyncMock(return_value=mock_response),
+            ),
+            pytest.raises(PolymarketAPIError, match="Invalid JSON"),
+        ):
+            await client_with_funder.get_redeemable_positions()
