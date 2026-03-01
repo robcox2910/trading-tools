@@ -28,7 +28,7 @@ from trading_tools.apps.polymarket_bot.models import (
 )
 from trading_tools.apps.polymarket_bot.portfolio import PaperPortfolio
 from trading_tools.apps.polymarket_bot.strategies.late_snipe import PMLateSnipeStrategy
-from trading_tools.apps.tick_collector.models import Tick
+from trading_tools.apps.tick_collector.models import OrderBookSnapshot, Tick
 from trading_tools.apps.tick_collector.repository import TickRepository
 from trading_tools.apps.tick_collector.snapshot_builder import (
     MarketWindow,
@@ -155,8 +155,8 @@ async def _load_ticks(
     db_url: str,
     start_ms: int,
     end_ms: int,
-) -> dict[str, list[Tick]]:
-    """Load ticks from the database grouped by condition_id.
+) -> tuple[dict[str, list[Tick]], dict[str, list[OrderBookSnapshot]]]:
+    """Load ticks and order book snapshots from the database.
 
     Args:
         db_url: SQLAlchemy async connection string for the tick database.
@@ -164,18 +164,28 @@ async def _load_ticks(
         end_ms: Inclusive upper bound (epoch milliseconds).
 
     Returns:
-        Mapping from condition_id to sorted list of ticks.
+        Tuple of (ticks_by_condition_id, book_snapshots_by_token_id).
+        Book snapshots may be empty if none were captured.
 
     """
     repo = TickRepository(db_url)
     try:
         condition_ids = await repo.get_distinct_condition_ids(start_ms, end_ms)
-        result: dict[str, list[Tick]] = {}
+        tick_result: dict[str, list[Tick]] = {}
+        all_asset_ids: set[str] = set()
         for cid in condition_ids:
             ticks = await repo.get_ticks_by_condition(cid, start_ms, end_ms)
             if ticks:
-                result[cid] = ticks
-        return result
+                tick_result[cid] = ticks
+                all_asset_ids.update(t.asset_id for t in ticks)
+
+        book_result: dict[str, list[OrderBookSnapshot]] = {}
+        for asset_id in all_asset_ids:
+            books = await repo.get_order_book_snapshots_in_range(asset_id, start_ms, end_ms)
+            if books:
+                book_result[asset_id] = books
+
+        return tick_result, book_result
     finally:
         await repo.close()
 
@@ -189,6 +199,7 @@ def _run_tick_backtest(
     kelly_frac: Decimal,
     max_position_pct: Decimal,
     bucket_seconds: int,
+    book_snapshots: dict[str, list[OrderBookSnapshot]] | None = None,
 ) -> PaperTradingResult:
     """Run the synchronous tick-based backtest replay.
 
@@ -200,6 +211,10 @@ def _run_tick_backtest(
         kelly_frac: Fractional Kelly multiplier.
         max_position_pct: Maximum fraction of capital per market.
         bucket_seconds: Seconds per snapshot bucket.
+        book_snapshots: Optional mapping from token_id to time-sorted
+            order book snapshots for enriching market snapshots with
+            real depth data. When ``None`` or empty, snapshots use
+            empty order books (backward compatible).
 
     Returns:
         Summary of the backtest run.
@@ -216,7 +231,7 @@ def _run_tick_backtest(
     window_data: list[tuple[MarketWindow, list[MarketSnapshot]]] = []
     for condition_id, ticks in sorted(all_ticks.items()):
         window = builder.detect_window(condition_id, ticks)
-        snapshots = builder.build_snapshots(ticks, window)
+        snapshots = builder.build_snapshots(ticks, window, book_snapshots=book_snapshots)
         window_data.append((window, snapshots))
         logger.info(
             "Window: %s  ticks=%d  snapshots=%d",
@@ -286,7 +301,7 @@ def backtest_ticks(
     typer.echo("")
 
     typer.echo("Loading ticks from database...")
-    all_ticks = asyncio.run(_load_ticks(db_url, start_ms, end_ms))
+    all_ticks, book_data = asyncio.run(_load_ticks(db_url, start_ms, end_ms))
 
     if not all_ticks:
         typer.echo("No ticks found in the specified date range.")
@@ -294,6 +309,9 @@ def backtest_ticks(
 
     total_ticks = sum(len(t) for t in all_ticks.values())
     typer.echo(f"Found {len(all_ticks)} conditions with {total_ticks} ticks")
+    if book_data:
+        total_books = sum(len(b) for b in book_data.values())
+        typer.echo(f"Found {total_books} order book snapshots for {len(book_data)} tokens")
 
     result = _run_tick_backtest(
         all_ticks,
@@ -303,6 +321,7 @@ def backtest_ticks(
         kelly_frac=Decimal(str(kelly_frac)),
         max_position_pct=Decimal(str(max_position_pct)),
         bucket_seconds=bucket_seconds,
+        book_snapshots=book_data or None,
     )
 
     display_result(result)

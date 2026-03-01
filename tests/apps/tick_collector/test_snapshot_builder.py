@@ -4,10 +4,11 @@ from decimal import Decimal
 
 import pytest
 
-from trading_tools.apps.tick_collector.models import Tick
+from trading_tools.apps.tick_collector.models import OrderBookSnapshot, Tick
 from trading_tools.apps.tick_collector.snapshot_builder import (
     MarketWindow,
     SnapshotBuilder,
+    _find_nearest_book,
 )
 
 _CONDITION_ID = "cond_abc123"
@@ -297,3 +298,191 @@ class TestSnapshotBuilderBuildSnapshots:
         snapshots = builder.build_snapshots(ticks, window)
 
         assert all(s.end_date == end_date for s in snapshots)
+
+
+def _make_book_snapshot(
+    token_id: str = _ASSET_YES,
+    timestamp: int = _WINDOW_ALIGNED_MS,
+    bids_json: str = '[["0.72", "100"]]',
+    asks_json: str = '[["0.74", "150"]]',
+    spread: float = 0.02,
+    midpoint: float = 0.73,
+) -> OrderBookSnapshot:
+    """Create an OrderBookSnapshot instance for testing.
+
+    Args:
+        token_id: CLOB token identifier.
+        timestamp: Epoch milliseconds.
+        bids_json: JSON bid levels.
+        asks_json: JSON ask levels.
+        spread: Best ask minus best bid.
+        midpoint: Average of best bid and best ask.
+
+    Returns:
+        A new OrderBookSnapshot instance.
+
+    """
+    return OrderBookSnapshot(
+        token_id=token_id,
+        timestamp=timestamp,
+        bids_json=bids_json,
+        asks_json=asks_json,
+        spread=spread,
+        midpoint=midpoint,
+    )
+
+
+class TestBuildSnapshotsWithBookData:
+    """Tests for build_snapshots with order book enrichment."""
+
+    def test_build_snapshots_with_book_data(self) -> None:
+        """Pass pre-loaded books and verify non-empty order_book in snapshots."""
+        window = MarketWindow(
+            condition_id=_CONDITION_ID,
+            start_ms=_WINDOW_ALIGNED_MS,
+            end_ms=_WINDOW_ALIGNED_MS + _FIVE_MINUTES_MS,
+            end_date="2023-11-14T22:35:00+00:00",
+        )
+        ticks = [
+            _make_tick(
+                asset_id=_ASSET_YES,
+                timestamp=_WINDOW_ALIGNED_MS + 1000,
+                price=0.72,
+            ),
+        ]
+        book_snapshots = {
+            _ASSET_YES: [
+                _make_book_snapshot(
+                    token_id=_ASSET_YES,
+                    timestamp=_WINDOW_ALIGNED_MS + 500,
+                ),
+            ],
+        }
+        builder = SnapshotBuilder(bucket_seconds=_BUCKET_SECONDS)
+
+        snapshots = builder.build_snapshots(ticks, window, book_snapshots=book_snapshots)
+
+        # Snapshots should have non-empty order book from the matched book data
+        assert len(snapshots) == _EXPECTED_BUCKETS_300
+        # At least one snapshot should have bids populated
+        matched = snapshots[0]
+        assert len(matched.order_book.bids) > 0
+        assert matched.order_book.bids[0].price == Decimal("0.72")
+        assert matched.order_book.asks[0].price == Decimal("0.74")
+
+    def test_build_snapshots_without_book_data(self) -> None:
+        """No books passed produces empty order books (backward compat)."""
+        window = MarketWindow(
+            condition_id=_CONDITION_ID,
+            start_ms=_WINDOW_ALIGNED_MS,
+            end_ms=_WINDOW_ALIGNED_MS + _FIVE_MINUTES_MS,
+            end_date="2023-11-14T22:35:00+00:00",
+        )
+        ticks = [
+            _make_tick(
+                asset_id=_ASSET_YES,
+                timestamp=_WINDOW_ALIGNED_MS + 1000,
+                price=0.72,
+            ),
+        ]
+        builder = SnapshotBuilder(bucket_seconds=_BUCKET_SECONDS)
+
+        snapshots = builder.build_snapshots(ticks, window)
+
+        # All snapshots should have empty order books
+        assert all(len(s.order_book.bids) == 0 for s in snapshots)
+        assert all(len(s.order_book.asks) == 0 for s in snapshots)
+
+    def test_build_snapshots_with_no_matching_token(self) -> None:
+        """Books for a different token produce empty order books."""
+        window = MarketWindow(
+            condition_id=_CONDITION_ID,
+            start_ms=_WINDOW_ALIGNED_MS,
+            end_ms=_WINDOW_ALIGNED_MS + _FIVE_MINUTES_MS,
+            end_date="2023-11-14T22:35:00+00:00",
+        )
+        ticks = [
+            _make_tick(
+                asset_id=_ASSET_YES,
+                timestamp=_WINDOW_ALIGNED_MS + 1000,
+                price=0.72,
+            ),
+        ]
+        book_snapshots = {
+            "other_token": [
+                _make_book_snapshot(
+                    token_id="other_token",
+                    timestamp=_WINDOW_ALIGNED_MS + 500,
+                ),
+            ],
+        }
+        builder = SnapshotBuilder(bucket_seconds=_BUCKET_SECONDS)
+
+        snapshots = builder.build_snapshots(ticks, window, book_snapshots=book_snapshots)
+
+        assert all(len(s.order_book.bids) == 0 for s in snapshots)
+
+
+class TestFindNearestBook:
+    """Tests for the _find_nearest_book helper."""
+
+    def test_find_nearest_book_returns_closest(self) -> None:
+        """Return the book snapshot closest to the target timestamp."""
+        books = [
+            _make_book_snapshot(timestamp=_WINDOW_ALIGNED_MS),
+            _make_book_snapshot(
+                timestamp=_WINDOW_ALIGNED_MS + 5000,
+                bids_json='[["0.80", "200"]]',
+                asks_json='[["0.82", "300"]]',
+                spread=0.02,
+                midpoint=0.81,
+            ),
+            _make_book_snapshot(timestamp=_WINDOW_ALIGNED_MS + 10000),
+        ]
+
+        result = _find_nearest_book(books, _WINDOW_ALIGNED_MS + 4800)
+
+        assert result is not None
+        assert result.bids[0].price == Decimal("0.80")
+        assert result.bids[0].size == Decimal(200)
+
+    def test_find_nearest_book_exact_match(self) -> None:
+        """Return exact match when target equals a snapshot timestamp."""
+        books = [
+            _make_book_snapshot(timestamp=_WINDOW_ALIGNED_MS),
+            _make_book_snapshot(timestamp=_WINDOW_ALIGNED_MS + 5000),
+        ]
+
+        result = _find_nearest_book(books, _WINDOW_ALIGNED_MS)
+
+        assert result is not None
+        assert result.token_id == _ASSET_YES
+
+    def test_find_nearest_book_empty_list(self) -> None:
+        """Return None when the book list is empty."""
+        result = _find_nearest_book([], _WINDOW_ALIGNED_MS)
+
+        assert result is None
+
+    def test_find_nearest_book_before_all(self) -> None:
+        """Return the first book when target is before all snapshots."""
+        books = [
+            _make_book_snapshot(timestamp=_WINDOW_ALIGNED_MS + 5000),
+            _make_book_snapshot(timestamp=_WINDOW_ALIGNED_MS + 10000),
+        ]
+
+        result = _find_nearest_book(books, _WINDOW_ALIGNED_MS)
+
+        assert result is not None
+        assert result.token_id == _ASSET_YES
+
+    def test_find_nearest_book_after_all(self) -> None:
+        """Return the last book when target is after all snapshots."""
+        books = [
+            _make_book_snapshot(timestamp=_WINDOW_ALIGNED_MS),
+            _make_book_snapshot(timestamp=_WINDOW_ALIGNED_MS + 5000),
+        ]
+
+        result = _find_nearest_book(books, _WINDOW_ALIGNED_MS + 100000)
+
+        assert result is not None

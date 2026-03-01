@@ -1,25 +1,28 @@
 """Main orchestrator for the tick collector service.
 
 Wire together the WebSocket market feed, tick repository, and market discovery
-to capture every trade from Polymarket in real time. Handle buffered writes,
+to capture every trade from Polymarket in real time. Optionally poll the CLOB
+REST API for periodic order book depth snapshots. Handle buffered writes,
 periodic market re-discovery, heartbeat logging, and graceful shutdown.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
 import time
 from typing import TYPE_CHECKING, Any
 
-from trading_tools.apps.tick_collector.models import Tick
+from trading_tools.apps.tick_collector.models import OrderBookSnapshot, Tick
 from trading_tools.apps.tick_collector.repository import TickRepository
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
 
 if TYPE_CHECKING:
     from trading_tools.apps.tick_collector.config import CollectorConfig
+    from trading_tools.clients.polymarket.models import OrderBook
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +81,7 @@ class TickCollector:
         self._repo = TickRepository(config.db_url)
         self._feed = MarketFeed(reconnect_base_delay=config.reconnect_base_delay)
         self._buffer: list[Tick] = []
+        self._book_buffer: list[OrderBookSnapshot] = []
         self._shutdown = False
         self._ticks_since_heartbeat = 0
         self._total_ticks = 0
@@ -116,6 +120,7 @@ class TickCollector:
         discovery_task = asyncio.create_task(self._periodic_discovery())
         heartbeat_task = asyncio.create_task(self._periodic_heartbeat())
         flush_task = asyncio.create_task(self._periodic_flush())
+        book_poll_task = asyncio.create_task(self._periodic_book_poll())
 
         try:
             async for event in self._feed.stream(self._asset_ids):
@@ -128,13 +133,16 @@ class TickCollector:
             discovery_task.cancel()
             heartbeat_task.cancel()
             flush_task.cancel()
+            book_poll_task.cancel()
             await asyncio.gather(
                 discovery_task,
                 heartbeat_task,
                 flush_task,
+                book_poll_task,
                 return_exceptions=True,
             )
             await self._flush_buffer()
+            await self._flush_book_buffer()
             await self._feed.close()
             await self._repo.close()
             logger.info("Tick collector shut down — %d total ticks", self._total_ticks)
@@ -312,6 +320,82 @@ class TickCollector:
             elapsed = time.monotonic() - self._last_flush_time
             if elapsed >= self._config.flush_interval_seconds and self._buffer:
                 await self._flush_buffer()
+
+    def _serialize_order_book(
+        self,
+        token_id: str,
+        timestamp_ms: int,
+        book: OrderBook,
+    ) -> OrderBookSnapshot:
+        """Convert an ``OrderBook`` to an ORM snapshot with JSON-serialized levels.
+
+        Truncate bids and asks to ``book_depth_levels`` and serialize each
+        level as a ``[price, size]`` pair in JSON.
+
+        Args:
+            token_id: CLOB token identifier.
+            timestamp_ms: Epoch milliseconds when the book was fetched.
+            book: Typed order book from the Polymarket client.
+
+        Returns:
+            An ``OrderBookSnapshot`` ORM instance ready for persistence.
+
+        """
+        depth = self._config.book_depth_levels
+        bids = [[str(lvl.price), str(lvl.size)] for lvl in book.bids[:depth]]
+        asks = [[str(lvl.price), str(lvl.size)] for lvl in book.asks[:depth]]
+        return OrderBookSnapshot(
+            token_id=token_id,
+            timestamp=timestamp_ms,
+            bids_json=json.dumps(bids),
+            asks_json=json.dumps(asks),
+            spread=float(book.spread),
+            midpoint=float(book.midpoint),
+        )
+
+    async def _flush_book_buffer(self) -> None:
+        """Write all buffered order book snapshots to the database."""
+        if not self._book_buffer:
+            return
+        batch = list(self._book_buffer)
+        self._book_buffer.clear()
+        await self._repo.save_order_book_snapshots(batch)
+        logger.info("Flushed %d order book snapshots", len(batch))
+
+    async def _periodic_book_poll(self) -> None:
+        """Poll order books for all tracked tokens at a fixed interval.
+
+        Skip entirely when ``book_poll_interval_seconds`` is 0 (disabled).
+        Stagger requests across tokens by ``book_poll_stagger_ms`` to stay
+        within CLOB rate limits.
+        """
+        try:
+            await self._periodic_book_poll_inner()
+        except asyncio.CancelledError:
+            return
+
+    async def _periodic_book_poll_inner(self) -> None:
+        """Execute the book polling loop body."""
+        if self._config.book_poll_interval_seconds <= 0:
+            return
+        stagger_s = self._config.book_poll_stagger_ms / _MS_PER_SECOND
+        while not self._shutdown:
+            await asyncio.sleep(self._config.book_poll_interval_seconds)
+            if self._shutdown:
+                break
+            async with PolymarketClient() as client:
+                for token_id in list(self._asset_ids):
+                    if self._shutdown:
+                        break
+                    try:
+                        book = await client.get_order_book(token_id)
+                        snapshot = self._serialize_order_book(token_id, _now_ms(), book)
+                        self._book_buffer.append(snapshot)
+                    except Exception:
+                        logger.debug("Failed to poll order book for %s", token_id)
+                    if stagger_s > 0:
+                        await asyncio.sleep(stagger_s)
+            await self._flush_book_buffer()
 
 
 def _now_ms() -> int:

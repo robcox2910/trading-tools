@@ -38,6 +38,18 @@ def tick_collect(
         int,
         typer.Option(help="Seconds before next 5-min boundary to trigger discovery"),
     ] = 30,
+    book_interval: Annotated[
+        int,
+        typer.Option(help="Seconds between order book polls (0 = disabled)"),
+    ] = 0,
+    book_depth: Annotated[
+        int,
+        typer.Option(help="Max bid/ask levels to store per snapshot"),
+    ] = 10,
+    book_stagger: Annotated[
+        int,
+        typer.Option(help="Milliseconds between polling each token"),
+    ] = 100,
     verbose: Annotated[  # noqa: FBT002
         bool, typer.Option("--verbose", "-v", help="Enable debug logging")
     ] = False,
@@ -74,6 +86,9 @@ def tick_collect(
         flush_interval_seconds=flush_interval,
         flush_batch_size=flush_batch_size,
         discovery_lead_seconds=discovery_lead,
+        book_poll_interval_seconds=book_interval,
+        book_depth_levels=book_depth,
+        book_poll_stagger_ms=book_stagger,
     )
 
     typer.echo(f"Starting tick collector (db: {db_url})")
@@ -81,6 +96,11 @@ def tick_collect(
         typer.echo(f"Static markets: {len(market_ids)}")
     if series_slugs:
         typer.echo(f"Series slugs: {', '.join(series_slugs)}")
+    if book_interval > 0:
+        typer.echo(
+            f"Order book polling: every {book_interval}s, "
+            f"depth={book_depth}, stagger={book_stagger}ms"
+        )
 
     collector = TickCollector(config)
     asyncio.run(collector.run())

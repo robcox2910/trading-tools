@@ -1,14 +1,19 @@
 """Tests for tick collector ORM models."""
 
-from trading_tools.apps.tick_collector.models import Base, Tick
+from trading_tools.apps.tick_collector.models import Base, OrderBookSnapshot, Tick
 
 _SAMPLE_ASSET_ID = "asset_abc123"
 _SAMPLE_CONDITION_ID = "cond_xyz789"
+_SAMPLE_TOKEN_ID = "token_abc123"
 _SAMPLE_PRICE = 0.72
 _SAMPLE_SIZE = 15.5
 _SAMPLE_FEE_BPS = 200
 _SAMPLE_TIMESTAMP = 1700000000000
 _SAMPLE_RECEIVED_AT = 1700000000050
+_SAMPLE_SPREAD = 0.02
+_SAMPLE_MIDPOINT = 0.73
+_SAMPLE_BIDS_JSON = '[["0.72", "100"], ["0.71", "200"]]'
+_SAMPLE_ASKS_JSON = '[["0.74", "150"], ["0.75", "250"]]'
 
 
 class TestTickModel:
@@ -64,3 +69,39 @@ class TestTickModel:
         table = Base.metadata.tables["ticks"]
         index_names = {idx.name for idx in table.indexes}
         assert "ix_ticks_asset_timestamp" in index_names
+
+
+class TestOrderBookSnapshotModel:
+    """Tests for the OrderBookSnapshot SQLAlchemy model."""
+
+    def test_order_book_snapshot_fields(self) -> None:
+        """Create an OrderBookSnapshot and verify all fields are stored."""
+        snapshot = OrderBookSnapshot(
+            token_id=_SAMPLE_TOKEN_ID,
+            timestamp=_SAMPLE_TIMESTAMP,
+            bids_json=_SAMPLE_BIDS_JSON,
+            asks_json=_SAMPLE_ASKS_JSON,
+            spread=_SAMPLE_SPREAD,
+            midpoint=_SAMPLE_MIDPOINT,
+        )
+
+        assert snapshot.token_id == _SAMPLE_TOKEN_ID
+        assert snapshot.timestamp == _SAMPLE_TIMESTAMP
+        assert snapshot.bids_json == _SAMPLE_BIDS_JSON
+        assert snapshot.asks_json == _SAMPLE_ASKS_JSON
+        assert snapshot.spread == _SAMPLE_SPREAD
+        assert snapshot.midpoint == _SAMPLE_MIDPOINT
+
+    def test_order_book_snapshot_tablename(self) -> None:
+        """Verify the table name is 'order_book_snapshots'."""
+        assert OrderBookSnapshot.__tablename__ == "order_book_snapshots"
+
+    def test_base_metadata_contains_order_book_snapshots_table(self) -> None:
+        """Verify the Base metadata includes the order_book_snapshots table."""
+        assert "order_book_snapshots" in Base.metadata.tables
+
+    def test_composite_index_on_token_timestamp(self) -> None:
+        """Verify the composite index on (token_id, timestamp) is defined."""
+        table = Base.metadata.tables["order_book_snapshots"]
+        index_names = {idx.name for idx in table.indexes}
+        assert "ix_book_token_timestamp" in index_names

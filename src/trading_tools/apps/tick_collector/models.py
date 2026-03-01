@@ -1,11 +1,13 @@
 """SQLAlchemy ORM models for the tick collector database.
 
-Define the ``Tick`` table that stores individual trade events captured from
-the Polymarket CLOB WebSocket market channel. The schema is designed for
-efficient backtesting queries filtered by asset and time range.
+Define the ``Tick`` and ``OrderBookSnapshot`` tables. ``Tick`` stores individual
+trade events captured from the Polymarket CLOB WebSocket market channel.
+``OrderBookSnapshot`` stores periodic order book depth data polled from the
+CLOB REST API. Both schemas are designed for efficient backtesting queries
+filtered by asset/token and time range.
 """
 
-from sqlalchemy import BigInteger, Float, Index, Integer, String
+from sqlalchemy import BigInteger, Float, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -49,3 +51,36 @@ class Tick(Base):
         Index("ix_ticks_asset_timestamp", "asset_id", "timestamp"),
         Index("ix_ticks_condition_timestamp", "condition_id", "timestamp"),
     )
+
+
+class OrderBookSnapshot(Base):
+    """A periodic order book depth snapshot polled from the CLOB REST API.
+
+    Each row stores the top N bid/ask levels as JSON for a single token at a
+    point in time. The precomputed spread and midpoint enable fast filtering
+    without deserializing the level arrays.
+
+    Attributes:
+        id: Auto-incrementing primary key.
+        token_id: CLOB token identifier (indexed).
+        timestamp: Epoch milliseconds when the snapshot was taken (indexed).
+        bids_json: JSON array of ``[[price, size], ...]`` bid levels,
+            ordered best-to-worst.
+        asks_json: JSON array of ``[[price, size], ...]`` ask levels,
+            ordered best-to-worst.
+        spread: Best ask minus best bid at snapshot time.
+        midpoint: Average of best bid and best ask.
+
+    """
+
+    __tablename__ = "order_book_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_id: Mapped[str] = mapped_column(String, index=True)
+    timestamp: Mapped[int] = mapped_column(BigInteger, index=True)
+    bids_json: Mapped[str] = mapped_column(Text)
+    asks_json: Mapped[str] = mapped_column(Text)
+    spread: Mapped[float] = mapped_column(Float)
+    midpoint: Mapped[float] = mapped_column(Float)
+
+    __table_args__ = (Index("ix_book_token_timestamp", "token_id", "timestamp"),)
