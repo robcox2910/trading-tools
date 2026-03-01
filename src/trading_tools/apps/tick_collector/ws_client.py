@@ -72,20 +72,42 @@ class MarketFeed:
 
         """
         delay = self._reconnect_base_delay
+        consecutive_failures = 0
         while not self._closed:
             try:
                 async for event in self._connect_and_listen(asset_ids):
                     yield event
                     delay = self._reconnect_base_delay
+                    consecutive_failures = 0
             except ConnectionClosed as exc:
                 if self._closed:
                     return
                 if not self._reconnect_requested:
-                    logger.warning("WebSocket connection closed: %s", exc)
+                    consecutive_failures += 1
+                    logger.warning(
+                        "WebSocket connection closed: code=%s reason=%r (consecutive_failures=%d)",
+                        exc.code,
+                        exc.reason,
+                        consecutive_failures,
+                    )
             except OSError as exc:
                 if self._closed:
                     return
-                logger.warning("WebSocket connection error: %s", exc)
+                consecutive_failures += 1
+                logger.warning(
+                    "WebSocket connection error: %s: %s (consecutive_failures=%d)",
+                    type(exc).__name__,
+                    exc,
+                    consecutive_failures,
+                )
+            except Exception:
+                if self._closed:
+                    return
+                consecutive_failures += 1
+                logger.exception(
+                    "Unexpected WebSocket error (consecutive_failures=%d)",
+                    consecutive_failures,
+                )
 
             if self._closed:
                 return
@@ -93,10 +115,15 @@ class MarketFeed:
             if self._reconnect_requested:
                 self._reconnect_requested = False
                 delay = self._reconnect_base_delay
+                consecutive_failures = 0
                 logger.info("Reconnecting immediately for subscription update")
                 continue
 
-            logger.info("Reconnecting in %.1fs...", delay)
+            logger.info(
+                "Reconnecting in %.1fs (attempt %d)...",
+                delay,
+                consecutive_failures,
+            )
             await asyncio.sleep(delay)
             delay = min(delay * 2, _RECONNECT_MAX_DELAY)
 
@@ -139,6 +166,7 @@ class MarketFeed:
             Parsed ``last_trade_price`` event dictionaries.
 
         """
+        logger.debug("Opening WebSocket connection to %s", _WS_URL)
         async with connect(
             _WS_URL,
             ping_interval=_PING_INTERVAL,
@@ -153,6 +181,8 @@ class MarketFeed:
                 events = _parse_message(raw)
                 for event in events:
                     yield event
+
+        logger.debug("WebSocket connection closed normally")
 
 
 def _build_subscribe_message(asset_ids: list[str]) -> dict[str, object]:

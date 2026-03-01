@@ -224,3 +224,30 @@ class TestStreamReconnect:
 
         assert call_count == 2  # noqa: PLR2004
         assert sleep_calls == []
+
+    @pytest.mark.asyncio
+    async def test_stream_logs_consecutive_failures(self) -> None:
+        """Log the consecutive failure count on repeated connection errors."""
+        feed = MarketFeed(reconnect_base_delay=0.0)
+        expected_failures = 3
+
+        call_count = 0
+
+        async def failing_connect(
+            asset_ids: list[str],  # noqa: ARG001
+        ) -> AsyncIterator[dict[str, Any]]:
+            """Raise OSError on first calls, then stop the loop."""
+            nonlocal call_count
+            call_count += 1
+            if call_count <= expected_failures:
+                msg = f"Connection refused (attempt {call_count})"
+                raise OSError(msg)
+            feed._closed = True
+            return
+            yield  # type: ignore[misc]
+
+        with patch.object(feed, "_connect_and_listen", side_effect=failing_connect):
+            async for _event in feed.stream(["asset_1"]):
+                pass  # pragma: no cover
+
+        assert call_count == expected_failures + 1
