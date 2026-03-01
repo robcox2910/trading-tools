@@ -80,7 +80,7 @@ class TestSnapshotBuilderDetectWindow:
     """Tests for SnapshotBuilder.detect_window."""
 
     def test_detect_window_aligns_to_five_minute_boundary(self) -> None:
-        """Detect window start aligned down to nearest 5-minute boundary."""
+        """Detect window end aligned up to next 5-minute boundary from latest tick."""
         ticks = [
             _make_tick(timestamp=_WINDOW_ALIGNED_MS + 30_000),
             _make_tick(timestamp=_WINDOW_ALIGNED_MS + 60_000),
@@ -91,6 +91,33 @@ class TestSnapshotBuilderDetectWindow:
 
         assert window.start_ms == _WINDOW_ALIGNED_MS
         assert window.end_ms == _WINDOW_ALIGNED_MS + _FIVE_MINUTES_MS
+
+    def test_detect_window_with_pre_market_ticks(self) -> None:
+        """Align to window containing the latest tick, not the earliest.
+
+        When ticks arrive before the market window opens (pre-market
+        trading), the window must cover the latest tick's boundary so that
+        the resolution period is correctly captured.
+        """
+        # Simulate ticks arriving 5 minutes before a 15-minute window opens
+        # and continuing through to near the window end
+        pre_market_ms = _WINDOW_ALIGNED_15M_MS - 300_000  # 5 min before boundary
+        late_tick_ms = _WINDOW_ALIGNED_15M_MS + 800_000  # ~13 min into window
+        ticks = [
+            _make_tick(timestamp=pre_market_ms),
+            _make_tick(timestamp=_WINDOW_ALIGNED_15M_MS + 10_000),
+            _make_tick(timestamp=late_tick_ms),
+        ]
+        builder = SnapshotBuilder(
+            bucket_seconds=_BUCKET_SECONDS,
+            window_minutes=_WINDOW_MINUTES_15,
+        )
+
+        window = builder.detect_window(_CONDITION_ID, ticks)
+
+        # Window should cover the latest tick, not be based on earliest tick
+        assert window.start_ms == _WINDOW_ALIGNED_15M_MS
+        assert window.end_ms == _WINDOW_ALIGNED_15M_MS + _FIFTEEN_MINUTES_MS
 
     def test_detect_window_raises_on_empty_ticks(self) -> None:
         """Raise ValueError when given an empty tick list."""
@@ -308,7 +335,7 @@ class TestSnapshotBuilder15MinuteWindow:
     """Tests for SnapshotBuilder with 15-minute market windows."""
 
     def test_detect_window_aligns_to_15_minute_boundary(self) -> None:
-        """Detect window aligned to 15-minute boundary."""
+        """Detect window end aligned up to next 15-minute boundary from latest tick."""
         ticks = [
             _make_tick(timestamp=_WINDOW_ALIGNED_15M_MS + 30_000),
         ]

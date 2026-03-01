@@ -88,8 +88,11 @@ class SnapshotBuilder:
     def detect_window(self, condition_id: str, ticks: list[Tick]) -> MarketWindow:
         """Infer the market window from tick timestamps.
 
-        Round the earliest tick timestamp down to the nearest window-duration
-        boundary. The window end is ``start + window_ms``.
+        Use the latest tick timestamp to find the window end by rounding up
+        to the next window-duration boundary. This correctly handles markets
+        where ticks arrive before the window opens (e.g. pre-market trading),
+        ensuring the window covers the actual resolution period rather than
+        the pre-market period.
 
         Args:
             condition_id: Market condition identifier for the window.
@@ -106,9 +109,9 @@ class SnapshotBuilder:
             msg = "ticks list must not be empty"
             raise ValueError(msg)
 
-        earliest_ms = min(t.timestamp for t in ticks)
-        start_ms = (earliest_ms // self._window_ms) * self._window_ms
-        end_ms = start_ms + self._window_ms
+        latest_ms = max(t.timestamp for t in ticks)
+        end_ms = -(-latest_ms // self._window_ms) * self._window_ms
+        start_ms = end_ms - self._window_ms
         end_date = datetime.fromtimestamp(
             end_ms / _MS_PER_SECOND,
             tz=UTC,
