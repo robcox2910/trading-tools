@@ -19,15 +19,23 @@ CRYPTO_5M_SERIES: tuple[str, ...] = (
     "xrp-updown-5m",
 )
 
+CRYPTO_15M_SERIES: tuple[str, ...] = (
+    "btc-updown-15m",
+    "eth-updown-15m",
+    "sol-updown-15m",
+    "xrp-updown-15m",
+)
+
 
 def parse_series_slugs(series: str) -> tuple[str, ...]:
     """Parse a comma-separated series string into expanded slug tuples.
 
-    Expand the special value ``"crypto-5m"`` into all four crypto
-    Up/Down 5-minute series slugs.
+    Expand the shortcuts ``"crypto-5m"`` and ``"crypto-15m"`` into
+    all four crypto Up/Down series slugs for the respective timeframe.
 
     Args:
-        series: Comma-separated series slugs or ``"crypto-5m"`` shortcut.
+        series: Comma-separated series slugs, or the ``"crypto-5m"`` /
+            ``"crypto-15m"`` shortcuts.
 
     Returns:
         Tuple of expanded series slug strings.
@@ -40,6 +48,8 @@ def parse_series_slugs(series: str) -> tuple[str, ...]:
             continue
         if s == "crypto-5m":
             slugs.extend(CRYPTO_5M_SERIES)
+        elif s == "crypto-15m":
+            slugs.extend(CRYPTO_15M_SERIES)
         else:
             slugs.append(s)
     return tuple(slugs)

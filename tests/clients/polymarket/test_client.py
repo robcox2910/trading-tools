@@ -495,6 +495,36 @@ class TestResolveTimestampedSlugs:
         result = _resolve_timestamped_slugs(["btc-updown-5m"])
         assert len(result) == 1
 
+    def test_15m_slug_gets_epoch_suffix(self) -> None:
+        """Test that slugs ending in -15m get a 900s-aligned timestamp appended."""
+        result = _resolve_timestamped_slugs(["btc-updown-15m"])
+        assert len(result) == 1
+        assert result[0].startswith("btc-updown-15m-")
+        epoch_str = result[0].split("-")[-1]
+        epoch = int(epoch_str)
+        fifteen_minutes = 900
+        assert epoch % fifteen_minutes == 0
+
+    def test_15m_slug_include_next(self) -> None:
+        """Produce two slugs (current + next window) when include_next is True."""
+        result = _resolve_timestamped_slugs(["btc-updown-15m"], include_next=True)
+        assert len(result) == _EXPECTED_TOKEN_COUNT
+        epochs = [int(s.split("-")[-1]) for s in result]
+        fifteen_minutes = 900
+        assert epochs[1] - epochs[0] == fifteen_minutes
+        assert all(e % fifteen_minutes == 0 for e in epochs)
+
+    def test_mixed_5m_and_15m_slugs(self) -> None:
+        """Resolve both 5m and 15m slugs correctly in a single call."""
+        result = _resolve_timestamped_slugs(["btc-updown-5m", "btc-updown-15m"])
+        assert len(result) == _EXPECTED_TOKEN_COUNT
+        five_minutes = 300
+        fifteen_minutes = 900
+        epoch_5m = int(result[0].split("-")[-1])
+        epoch_15m = int(result[1].split("-")[-1])
+        assert epoch_5m % five_minutes == 0
+        assert epoch_15m % fifteen_minutes == 0
+
 
 class TestGetMarketTokens:
     """Tests for the lightweight get_market_tokens method."""

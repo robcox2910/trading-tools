@@ -8,6 +8,7 @@ import typer
 
 from trading_tools.apps.polymarket.cli._helpers import (
     CRYPTO_5M_SERIES,
+    CRYPTO_15M_SERIES,
     build_authenticated_client,
     configure_verbose_logging,
     parse_series_slugs,
@@ -52,6 +53,19 @@ class TestParseSeriesSlugs:
         """Skip empty segments from trailing commas."""
         result = parse_series_slugs("btc-updown-5m,,eth-updown-5m,")
         assert result == ("btc-updown-5m", "eth-updown-5m")
+
+    def test_crypto_15m_shortcut_expands(self) -> None:
+        """Expand the crypto-15m shortcut to all four 15-minute crypto series."""
+        result = parse_series_slugs("crypto-15m")
+        assert result == CRYPTO_15M_SERIES
+
+    def test_both_shortcuts_combined(self) -> None:
+        """Expand both crypto-5m and crypto-15m shortcuts together."""
+        result = parse_series_slugs("crypto-5m,crypto-15m")
+        expected_len = len(CRYPTO_5M_SERIES) + len(CRYPTO_15M_SERIES)
+        assert len(result) == expected_len
+        assert result[: len(CRYPTO_5M_SERIES)] == CRYPTO_5M_SERIES
+        assert result[len(CRYPTO_5M_SERIES) :] == CRYPTO_15M_SERIES
 
 
 class TestConfigureVerboseLogging:
