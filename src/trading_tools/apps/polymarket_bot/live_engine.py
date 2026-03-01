@@ -16,8 +16,10 @@ import signal
 import time
 from collections import deque
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
+
+import httpx
 
 from trading_tools.apps.polymarket_bot.kelly import kelly_fraction
 from trading_tools.apps.polymarket_bot.live_portfolio import LivePortfolio
@@ -30,6 +32,7 @@ from trading_tools.apps.polymarket_bot.price_tracker import PriceTracker
 from trading_tools.apps.polymarket_bot.protocols import PredictionMarketStrategy
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
+from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.core.models import ZERO, Side, Signal
 
 if TYPE_CHECKING:
@@ -204,7 +207,7 @@ class LiveTradingEngine:
         for condition_id in self._active_markets:
             try:
                 market: Market = await self._client.get_market(condition_id)
-            except Exception:
+            except (PolymarketAPIError, httpx.HTTPError):
                 logger.warning("Failed to fetch market %s", condition_id, exc_info=True)
                 continue
 
@@ -227,7 +230,7 @@ class LiveTradingEngine:
             try:
                 order_book = await self._client.get_order_book(yes_token.token_id)
                 self._cached_order_books[condition_id] = order_book
-            except Exception:
+            except (PolymarketAPIError, httpx.HTTPError):
                 logger.warning("Failed to fetch order book for %s", condition_id, exc_info=True)
 
         logger.info(
@@ -249,7 +252,7 @@ class LiveTradingEngine:
         asset_id = str(event.get("asset_id", ""))
         try:
             price = Decimal(str(event.get("price", "0")))
-        except Exception:
+        except (ValueError, InvalidOperation):
             logger.debug("Skipping event with invalid price: %s", event)
             return
 
@@ -296,9 +299,10 @@ class LiveTradingEngine:
         else:
             logger.info("[tick %d] No signal", self._snapshots_processed)
 
-        outcome = self._position_outcomes.get(condition_id, "Yes")
-        mtm_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
-        self._portfolio.mark_to_market(condition_id, mtm_price)
+        outcome = self._position_outcomes.get(condition_id)
+        if outcome is not None:
+            mtm_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
+            self._portfolio.mark_to_market(condition_id, mtm_price)
 
     def _build_snapshot(self, condition_id: str) -> MarketSnapshot | None:
         """Build a MarketSnapshot from cached prices and order book.
@@ -351,7 +355,7 @@ class LiveTradingEngine:
                 try:
                     order_book = await self._client.get_order_book(market.tokens[0].token_id)
                     self._cached_order_books[condition_id] = order_book
-                except Exception:
+                except (PolymarketAPIError, httpx.HTTPError):
                     logger.warning(
                         "Failed to refresh order book for %s",
                         condition_id,
@@ -364,7 +368,7 @@ class LiveTradingEngine:
             await asyncio.sleep(self._config.balance_refresh_seconds)
             try:
                 await self._portfolio.refresh_balance()
-            except Exception:
+            except (PolymarketAPIError, httpx.HTTPError):
                 logger.warning("Failed to refresh balance", exc_info=True)
 
     async def _rotation_loop(self) -> None:
@@ -402,7 +406,7 @@ class LiveTradingEngine:
             discovered = await self._client.discover_series_markets(
                 list(self._config.series_slugs),
             )
-        except Exception:
+        except (PolymarketAPIError, httpx.HTTPError):
             logger.warning("Market rotation discovery failed", exc_info=True)
             return
 
@@ -439,7 +443,7 @@ class LiveTradingEngine:
 
                 order_book = await self._client.get_order_book(yes_tok.token_id)
                 self._cached_order_books[cid] = order_book
-            except Exception:
+            except (PolymarketAPIError, httpx.HTTPError):
                 logger.warning("Failed to bootstrap rotated market %s", cid, exc_info=True)
 
         await self._feed.update_subscription(self._asset_ids)
@@ -470,7 +474,7 @@ class LiveTradingEngine:
 
         try:
             redeemable = await self._client.get_redeemable_positions()
-        except Exception:
+        except (PolymarketAPIError, httpx.HTTPError):
             logger.warning("Failed to discover redeemable positions", exc_info=True)
             return
 
@@ -621,7 +625,7 @@ class LiveTradingEngine:
             order_book = await self._client.get_order_book(market.tokens[0].token_id)
             self._cached_order_books[condition_id] = order_book
             logger.info("Refreshed order book for %s before trade", condition_id[:20])
-        except Exception:
+        except (PolymarketAPIError, httpx.HTTPError):
             logger.warning(
                 "Failed to refresh order book for %s before trade, using cached",
                 condition_id[:20],
@@ -735,10 +739,9 @@ class LiveTradingEngine:
             )
             buy_price = max_clob_price
 
-        min_edge = Decimal("0.005")
         estimated_prob = max(
             buy_price + sig.strength * (Decimal(1) - buy_price),
-            buy_price + min_edge,
+            buy_price + self._config.min_edge,
         )
         estimated_prob = min(estimated_prob, Decimal("0.999"))
 

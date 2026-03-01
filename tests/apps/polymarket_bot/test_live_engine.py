@@ -18,6 +18,7 @@ from trading_tools.apps.polymarket_bot.models import (
 from trading_tools.apps.polymarket_bot.strategies.mean_reversion import (
     PMMeanReversionStrategy,
 )
+from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import (
     Balance,
     Market,
@@ -227,7 +228,7 @@ class TestLiveTradingEngine:
     async def test_bootstrap_failure_returns_empty_result(self) -> None:
         """Verify bootstrap failure with no assets returns clean result."""
         client = AsyncMock()
-        client.get_market = AsyncMock(side_effect=Exception("API down"))
+        client.get_market = AsyncMock(side_effect=PolymarketAPIError(msg="API down", status_code=0))
         client.get_balance = AsyncMock(
             return_value=Balance(
                 asset_type="COLLATERAL",
