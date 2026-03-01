@@ -8,11 +8,12 @@ multiple prediction markets.
 
 from decimal import Decimal
 
+from trading_tools.apps.polymarket_bot.base_portfolio import BasePortfolio
 from trading_tools.apps.polymarket_bot.models import PaperTrade
-from trading_tools.core.models import ONE, ZERO, Position, Side
+from trading_tools.core.models import ZERO, Position, Side
 
 
-class PaperPortfolio:
+class PaperPortfolio(BasePortfolio):
     """Track multiple virtual positions and capital for paper trading.
 
     Manage opening and closing positions across multiple prediction markets,
@@ -33,15 +34,16 @@ class PaperPortfolio:
             max_position_pct: Maximum fraction of capital per market (0-1).
 
         """
+        super().__init__(max_position_pct)
         self._cash = initial_capital
         self._initial_capital = initial_capital
-        self._max_position_pct = max_position_pct
-        self._positions: dict[str, Position] = {}
-        self._mark_prices: dict[str, Decimal] = {}
         self._trades: list[PaperTrade] = []
-        self._outcomes: dict[str, str] = {}
         self._edges: dict[str, Decimal] = {}
         self._reasons: dict[str, str] = {}
+
+    def _get_cash_balance(self) -> Decimal:
+        """Return the current virtual cash balance."""
+        return self._cash
 
     def open_position(
         self,
@@ -162,62 +164,12 @@ class PaperPortfolio:
         self._trades.append(trade)
         return trade
 
-    def mark_to_market(self, condition_id: str, current_price: Decimal) -> None:
-        """Update the mark-to-market price for an open position.
-
-        Args:
-            condition_id: Market condition identifier.
-            current_price: Latest YES token price.
-
-        """
-        if condition_id in self._positions:
-            self._mark_prices[condition_id] = current_price
-
     @property
     def capital(self) -> Decimal:
         """Return the current cash balance (excluding unrealised gains)."""
         return self._cash
 
     @property
-    def total_equity(self) -> Decimal:
-        """Return total equity: cash plus mark-to-market value of all positions."""
-        unrealised = ZERO
-        for cid, pos in self._positions.items():
-            mark_price = self._mark_prices.get(cid, pos.entry_price)
-            if pos.side == Side.BUY:
-                unrealised += (mark_price - pos.entry_price) * pos.quantity
-            else:
-                unrealised += (pos.entry_price - mark_price) * pos.quantity
-        return (
-            self._cash
-            + unrealised
-            + sum(pos.entry_price * pos.quantity for pos in self._positions.values())
-        )
-
-    @property
-    def positions(self) -> dict[str, Position]:
-        """Return a copy of all open positions keyed by condition_id."""
-        return dict(self._positions)
-
-    @property
     def trades(self) -> list[PaperTrade]:
         """Return all recorded paper trades."""
         return list(self._trades)
-
-    def max_quantity_for(self, price: Decimal) -> Decimal:
-        """Return the maximum quantity affordable at the given price.
-
-        Respect the per-market allocation limit and available cash.
-
-        Args:
-            price: Token price to compute quantity for.
-
-        Returns:
-            Maximum number of tokens that can be purchased.
-
-        """
-        if price <= ZERO:
-            return ZERO
-        max_allocation = self._cash * self._max_position_pct
-        budget = min(max_allocation, self._cash)
-        return (budget / price).quantize(ONE)
