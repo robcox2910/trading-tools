@@ -6,13 +6,12 @@ and execute real trades.  All trade commands require confirmation by default.
 """
 
 import asyncio
-import os
 from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
 import typer
 
-from trading_tools.clients.polymarket.client import PolymarketClient
+from trading_tools.apps.polymarket.cli._helpers import build_authenticated_client
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import OrderRequest
 
@@ -23,35 +22,6 @@ _VALID_OUTCOMES = {"yes", "no"}
 _VALID_ORDER_TYPES = {"limit", "market"}
 _MIN_PRICE = Decimal("0.01")
 _MAX_PRICE = Decimal("0.99")
-
-
-def _build_authenticated_client() -> PolymarketClient:
-    """Build an authenticated PolymarketClient from environment variables.
-
-    Read the private key and optional API credentials from the environment.
-    Abort with an error if the private key is not set.
-
-    Returns:
-        Authenticated PolymarketClient ready for trading.
-
-    """
-    private_key = os.environ.get("POLYMARKET_PRIVATE_KEY", "")
-    if not private_key:
-        typer.echo("Error: POLYMARKET_PRIVATE_KEY environment variable is required.", err=True)
-        raise typer.Exit(code=1)
-
-    api_key = os.environ.get("POLYMARKET_API_KEY") or None
-    api_secret = os.environ.get("POLYMARKET_API_SECRET") or None
-    api_passphrase = os.environ.get("POLYMARKET_API_PASSPHRASE") or None
-    funder_address = os.environ.get("POLYMARKET_FUNDER_ADDRESS") or None
-
-    return PolymarketClient(
-        private_key=private_key,
-        api_key=api_key,
-        api_secret=api_secret,
-        api_passphrase=api_passphrase,
-        funder_address=funder_address,
-    )
 
 
 def _resolve_token_id(
@@ -185,7 +155,7 @@ async def _trade(
         confirm: Whether to prompt for confirmation.
 
     """
-    client = _build_authenticated_client()
+    client = build_authenticated_client()
     try:
         async with client:
             # Fetch market info
@@ -253,7 +223,7 @@ def balance() -> None:
 
 async def _balance() -> None:
     """Fetch and display the USDC balance."""
-    client = _build_authenticated_client()
+    client = build_authenticated_client()
     try:
         async with client:
             bal = await client.get_balance("COLLATERAL")
@@ -272,7 +242,7 @@ def orders() -> None:
 
 async def _orders() -> None:
     """Fetch and display open orders."""
-    client = _build_authenticated_client()
+    client = build_authenticated_client()
     try:
         async with client:
             open_orders = await client.get_open_orders()
@@ -314,7 +284,7 @@ async def _cancel(*, order_id: str) -> None:
         order_id: Identifier of the order to cancel.
 
     """
-    client = _build_authenticated_client()
+    client = build_authenticated_client()
     try:
         async with client:
             result = await client.cancel_order(order_id)
@@ -356,7 +326,7 @@ async def _redeem(*, confirm: bool) -> None:
         confirm: Whether to prompt for confirmation before redeeming.
 
     """
-    client = _build_authenticated_client()
+    client = build_authenticated_client()
     try:
         async with client:
             positions = await client.get_redeemable_positions()

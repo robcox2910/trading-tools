@@ -7,13 +7,16 @@ before starting.
 """
 
 import asyncio
-import logging
-import os
 from decimal import Decimal
 from typing import Annotated
 
 import typer
 
+from trading_tools.apps.polymarket.cli._helpers import (
+    build_authenticated_client,
+    configure_verbose_logging,
+    parse_series_slugs,
+)
 from trading_tools.apps.polymarket_bot.live_engine import LiveTradingEngine
 from trading_tools.apps.polymarket_bot.models import BotConfig, LiveTradingResult
 from trading_tools.apps.polymarket_bot.strategy_factory import (
@@ -23,76 +26,6 @@ from trading_tools.apps.polymarket_bot.strategy_factory import (
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
-
-_CRYPTO_5M_SERIES = (
-    "btc-updown-5m",
-    "eth-updown-5m",
-    "sol-updown-5m",
-    "xrp-updown-5m",
-)
-
-
-def _configure_verbose_logging() -> None:
-    """Enable INFO-level logging for tick-by-tick engine output."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-
-def _build_authenticated_client() -> PolymarketClient:
-    """Build an authenticated PolymarketClient from environment variables.
-
-    Read the private key and optional API credentials from the environment.
-    Abort with an error if the private key is not set.
-
-    Returns:
-        Authenticated PolymarketClient ready for trading.
-
-    """
-    private_key = os.environ.get("POLYMARKET_PRIVATE_KEY", "")
-    if not private_key:
-        typer.echo("Error: POLYMARKET_PRIVATE_KEY environment variable is required.", err=True)
-        raise typer.Exit(code=1)
-
-    api_key = os.environ.get("POLYMARKET_API_KEY") or None
-    api_secret = os.environ.get("POLYMARKET_API_SECRET") or None
-    api_passphrase = os.environ.get("POLYMARKET_API_PASSPHRASE") or None
-    funder_address = os.environ.get("POLYMARKET_FUNDER_ADDRESS") or None
-
-    return PolymarketClient(
-        private_key=private_key,
-        api_key=api_key,
-        api_secret=api_secret,
-        api_passphrase=api_passphrase,
-        funder_address=funder_address,
-    )
-
-
-def _parse_series_slugs(series: str) -> tuple[str, ...]:
-    """Parse a comma-separated series string into expanded slug tuples.
-
-    Expand the special value ``"crypto-5m"`` into all four crypto
-    Up/Down 5-minute series slugs.
-
-    Args:
-        series: Comma-separated series slugs or ``"crypto-5m"`` shortcut.
-
-    Returns:
-        Tuple of expanded series slug strings.
-
-    """
-    slugs: list[str] = []
-    for s in series.split(","):
-        s = s.strip()  # noqa: PLW2901
-        if not s:
-            continue
-        if s == "crypto-5m":
-            slugs.extend(_CRYPTO_5M_SERIES)
-        else:
-            slugs.append(s)
-    return tuple(slugs)
 
 
 async def _discover_markets(
@@ -185,7 +118,7 @@ def bot_live(  # noqa: PLR0913
         raise typer.Exit(code=1)
 
     if verbose:
-        _configure_verbose_logging()
+        configure_verbose_logging()
 
     asyncio.run(
         _bot_live(
@@ -310,10 +243,10 @@ async def _bot_live(  # noqa: PLR0913
     """
     market_ids = tuple(m.strip() for m in markets.split(",") if m.strip())
     market_end_times: tuple[tuple[str, str], ...] = ()
-    series_slugs = _parse_series_slugs(series)
+    series_slugs = parse_series_slugs(series)
 
     # Discover markets from series slugs
-    client = _build_authenticated_client()
+    client = build_authenticated_client()
     if series_slugs:
         try:
             async with client:
@@ -328,7 +261,7 @@ async def _bot_live(  # noqa: PLR0913
             market_ids = (*market_ids, *discovered_ids)
 
         # Rebuild client since the context manager closed it
-        client = _build_authenticated_client()
+        client = build_authenticated_client()
 
     if not market_ids:
         typer.echo(
