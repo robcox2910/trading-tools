@@ -166,13 +166,16 @@ class Trade:
     exit_fee: Decimal = field(default=ZERO)
 
     @property
+    def _raw_profit(self) -> Decimal:
+        """Return the gross profit before fees."""
+        if self.side == Side.SELL:
+            return (self.entry_price - self.exit_price) * self.quantity
+        return (self.exit_price - self.entry_price) * self.quantity
+
+    @property
     def pnl(self) -> Decimal:
         """Return the absolute profit or loss in quote currency, net of fees."""
-        if self.side == Side.SELL:
-            raw = (self.entry_price - self.exit_price) * self.quantity
-        else:
-            raw = (self.exit_price - self.entry_price) * self.quantity
-        return raw - self.entry_fee - self.exit_fee
+        return self._raw_profit - self.entry_fee - self.exit_fee
 
     @property
     def pnl_pct(self) -> Decimal:
@@ -186,12 +189,7 @@ class Trade:
         cost_basis = entry_value + self.entry_fee
         if cost_basis == ZERO:
             return ZERO
-        if self.side == Side.SELL:
-            raw = (self.entry_price - self.exit_price) * self.quantity
-        else:
-            raw = (self.exit_price - self.entry_price) * self.quantity
-        net = raw - self.entry_fee - self.exit_fee
-        return net / cost_basis
+        return (self._raw_profit - self.entry_fee - self.exit_fee) / cost_basis
 
 
 @dataclass

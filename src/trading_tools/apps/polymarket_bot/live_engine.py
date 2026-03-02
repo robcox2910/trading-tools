@@ -267,10 +267,17 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
 
         # Close existing position
         if signal.side == Side.SELL and condition_id in self._portfolio.positions:
-            outcome = self._position_outcomes.get(condition_id, "Yes")
+            outcome = self._position_outcomes.get(condition_id)
+            if outcome is None:
+                logger.error("Position outcome missing for %s, skipping close", condition_id[:20])
+                return
             close_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
             token_id = token_ids[0] if outcome == "Yes" else token_ids[1]
-            pos = self._portfolio.positions[condition_id]
+            pos = self._portfolio.positions.get(condition_id)
+            if pos is None:
+                logger.error("Position vanished for %s, clearing outcome", condition_id[:20])
+                self._position_outcomes.pop(condition_id, None)
+                return
             trade = await self._portfolio.close_position(
                 condition_id,
                 token_id,
@@ -287,7 +294,7 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
                     trade.order_id,
                     trade.filled,
                 )
-            self._position_outcomes.pop(condition_id, None)
+                self._position_outcomes.pop(condition_id, None)
             return
 
         # Open new position
@@ -361,7 +368,9 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
             return
 
         max_qty = self._portfolio.max_quantity_for(buy_price)
-        quantity = max(_MIN_ORDER_SIZE, (max_qty * fraction).quantize(Decimal(1)))
+        quantity = (max_qty * fraction).quantize(Decimal(1))
+        if quantity < _MIN_ORDER_SIZE:
+            return
 
         edge = estimated_prob - buy_price
         logger.info(

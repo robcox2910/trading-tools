@@ -195,9 +195,10 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
             return
 
         self._snapshots_processed += 1
-        market_history = self._history.setdefault(
-            condition_id, deque(maxlen=self._config.max_history)
-        )
+        market_history = self._history.get(condition_id)
+        if market_history is None:
+            market_history = deque[MarketSnapshot](maxlen=self._config.max_history)
+            self._history[condition_id] = market_history
         history = list(market_history)
         market_history.append(snapshot)
 

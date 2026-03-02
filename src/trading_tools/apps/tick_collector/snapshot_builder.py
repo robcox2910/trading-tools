@@ -162,6 +162,9 @@ class SnapshotBuilder:
 
         # Identify YES asset (lexicographically smaller)
         asset_ids = sorted({t.asset_id for t in ticks})
+        if not asset_ids:
+            msg = "ticks contain no asset IDs"
+            raise ValueError(msg)
         yes_asset = asset_ids[0]
 
         # Build per-bucket price map for the YES asset

@@ -6,7 +6,7 @@ deterministic testing, or when no API credentials are available.
 """
 
 import csv
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from trading_tools.core.models import Candle, Interval
@@ -62,24 +62,32 @@ class CsvCandleProvider:
             if missing:
                 msg = f"CSV missing required columns: {sorted(missing)}"
                 raise ValueError(msg)
-            for row in reader:
-                ts = int(row["timestamp"])
+            for line_num, row in enumerate(reader, start=2):
+                try:
+                    ts = int(row["timestamp"])
+                except (ValueError, TypeError) as exc:
+                    msg = f"CSV row {line_num}: invalid timestamp {row.get('timestamp')!r}"
+                    raise ValueError(msg) from exc
                 if row["symbol"] != symbol:
                     continue
                 if row["interval"] != interval.value:
                     continue
                 if ts < start_ts or ts > end_ts:
                     continue
-                candles.append(
-                    Candle(
-                        symbol=row["symbol"],
-                        timestamp=ts,
-                        open=Decimal(row["open"]),
-                        high=Decimal(row["high"]),
-                        low=Decimal(row["low"]),
-                        close=Decimal(row["close"]),
-                        volume=Decimal(row["volume"]),
-                        interval=Interval(row["interval"]),
+                try:
+                    candles.append(
+                        Candle(
+                            symbol=row["symbol"],
+                            timestamp=ts,
+                            open=Decimal(row["open"]),
+                            high=Decimal(row["high"]),
+                            low=Decimal(row["low"]),
+                            close=Decimal(row["close"]),
+                            volume=Decimal(row["volume"]),
+                            interval=Interval(row["interval"]),
+                        )
                     )
-                )
+                except InvalidOperation as exc:
+                    msg = f"CSV row {line_num}: invalid numeric value in {row}"
+                    raise ValueError(msg) from exc
         return candles
