@@ -365,11 +365,31 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
         )
 
         if fraction <= ZERO:
+            logger.info(
+                "[tick %d] Skipping %s %s: kelly=%.4f (no edge) prob=%.4f price=%.4f",
+                self._snapshots_processed,
+                outcome,
+                condition_id[:20],
+                fraction,
+                estimated_prob,
+                buy_price,
+            )
             return
 
         max_qty = self._portfolio.max_quantity_for(buy_price)
         quantity = (max_qty * fraction).quantize(Decimal(1))
         if quantity < _MIN_ORDER_SIZE:
+            logger.info(
+                "[tick %d] Skipping %s %s: qty=%s < min %s (kelly=%.4f max_qty=%s balance=$%.2f)",
+                self._snapshots_processed,
+                outcome,
+                condition_id[:20],
+                quantity,
+                _MIN_ORDER_SIZE,
+                fraction,
+                max_qty,
+                self._portfolio.balance,
+            )
             return
 
         edge = estimated_prob - buy_price
