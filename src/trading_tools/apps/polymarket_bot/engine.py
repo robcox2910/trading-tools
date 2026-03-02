@@ -106,7 +106,10 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
     async def _on_rotation_close(self) -> None:
         """Close all open paper positions at mark-to-market prices."""
         for cid in list(self._portfolio.positions):
-            outcome = self._position_outcomes.get(cid, "Yes")  # safe: only open positions tracked
+            outcome = self._position_outcomes.get(cid)
+            if outcome is None:
+                logger.error("Position outcome missing for %s during rotation", cid[:20])
+                continue
             last_snap = self._history.get(cid)
             if last_snap:
                 latest = last_snap[-1]
@@ -124,7 +127,7 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
                     cid[:20],
                     close_price,
                 )
-            self._position_outcomes.pop(cid, None)
+                self._position_outcomes.pop(cid, None)
 
     async def _apply_signal(self, signal: Signal, snapshot: MarketSnapshot) -> None:
         """Convert a strategy signal into a portfolio action.
@@ -149,7 +152,10 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
 
         # Close existing position
         if signal.side == Side.SELL and condition_id in self._portfolio.positions:
-            outcome = self._position_outcomes.get(condition_id, "Yes")  # safe: checked above
+            outcome = self._position_outcomes.get(condition_id)
+            if outcome is None:
+                logger.error("Position outcome missing for %s, skipping close", condition_id[:20])
+                return
             close_price = snapshot.yes_price if outcome == "Yes" else snapshot.no_price
             trade = self._portfolio.close_position(condition_id, close_price, snapshot.timestamp)
             if trade is not None:
@@ -159,7 +165,7 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
                     condition_id[:20],
                     close_price,
                 )
-            self._position_outcomes.pop(condition_id, None)
+                self._position_outcomes.pop(condition_id, None)
             return
 
         # Open new position (BUY → first token, SELL without position → second token)
@@ -212,7 +218,9 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
             return
 
         max_qty = self._portfolio.max_quantity_for(buy_price)
-        quantity = max(_MIN_ORDER_SIZE, (max_qty * fraction).quantize(Decimal(1)))
+        quantity = (max_qty * fraction).quantize(Decimal(1))
+        if quantity < _MIN_ORDER_SIZE:
+            return
 
         edge = estimated_prob - buy_price
         trade = self._portfolio.open_position(

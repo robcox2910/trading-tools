@@ -27,7 +27,7 @@ def _mock_client(
     balance: Decimal = _INITIAL_BALANCE,
     portfolio_value: Decimal = _PORTFOLIO_VALUE,
     order_id: str = _ORDER_ID,
-    filled: Decimal = ZERO,
+    filled: Decimal = Decimal(10),
 ) -> AsyncMock:
     """Build a mock PolymarketClient for portfolio tests.
 
@@ -100,6 +100,28 @@ class TestRefreshBalance:
 
 class TestOpenPosition:
     """Tests for opening live positions."""
+
+    @pytest.mark.asyncio
+    async def test_open_zero_fill_returns_none(self) -> None:
+        """Verify open_position returns None when the fill is zero."""
+        client = _mock_client(filled=ZERO)
+        portfolio = LivePortfolio(client, _MAX_POSITION_PCT)
+        await portfolio.refresh_balance()
+
+        trade = await portfolio.open_position(
+            condition_id=_CONDITION_A,
+            token_id=_TOKEN_YES,
+            outcome="Yes",
+            side=Side.BUY,
+            price=Decimal("0.50"),
+            quantity=Decimal(10),
+            timestamp=_TIMESTAMP,
+            reason="test",
+            edge=Decimal("0.05"),
+        )
+
+        assert trade is None
+        assert _CONDITION_A not in portfolio.positions
 
     @pytest.mark.asyncio
     async def test_open_position_places_order(self) -> None:
@@ -367,7 +389,7 @@ class TestMarkToMarket:
     @pytest.mark.asyncio
     async def test_mark_to_market_updates_equity(self) -> None:
         """Verify MTM updates reflected in total_equity."""
-        client = _mock_client()
+        client = _mock_client(filled=Decimal(100))
         portfolio = LivePortfolio(client, _MAX_POSITION_PCT)
         await portfolio.refresh_balance()
 

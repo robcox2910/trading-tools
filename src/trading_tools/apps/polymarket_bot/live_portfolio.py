@@ -170,7 +170,13 @@ class LivePortfolio(BasePortfolio):
             )
             return None
 
-        filled_qty = response.filled if response.filled > ZERO else quantity
+        if response.filled <= ZERO:
+            logger.warning(
+                "Order for %s returned zero fill, skipping position",
+                condition_id[:20],
+            )
+            return None
+        filled_qty = response.filled
         self._positions[condition_id] = Position(
             symbol=condition_id,
             side=side,
