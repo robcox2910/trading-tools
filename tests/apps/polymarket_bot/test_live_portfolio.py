@@ -102,8 +102,15 @@ class TestOpenPosition:
     """Tests for opening live positions."""
 
     @pytest.mark.asyncio
-    async def test_open_zero_fill_returns_none(self) -> None:
-        """Verify open_position returns None when the fill is zero."""
+    async def test_open_zero_fill_falls_back_to_requested_quantity(self) -> None:
+        """Use the requested quantity when CLOB reports filled=0.
+
+        FOK market orders on Polymarket omit the ``filled`` field in the
+        response, which defaults to 0.  A 200 OK means the full amount
+        was filled, so the portfolio must fall back to the requested
+        quantity instead of rejecting the trade.
+        """
+        requested_qty = Decimal(10)
         client = _mock_client(filled=ZERO)
         portfolio = LivePortfolio(client, _MAX_POSITION_PCT)
         await portfolio.refresh_balance()
@@ -114,14 +121,15 @@ class TestOpenPosition:
             outcome="Yes",
             side=Side.BUY,
             price=Decimal("0.50"),
-            quantity=Decimal(10),
+            quantity=requested_qty,
             timestamp=_TIMESTAMP,
             reason="test",
             edge=Decimal("0.05"),
         )
 
-        assert trade is None
-        assert _CONDITION_A not in portfolio.positions
+        assert trade is not None
+        assert _CONDITION_A in portfolio.positions
+        assert portfolio.positions[_CONDITION_A].quantity == requested_qty
 
     @pytest.mark.asyncio
     async def test_open_position_places_order(self) -> None:
