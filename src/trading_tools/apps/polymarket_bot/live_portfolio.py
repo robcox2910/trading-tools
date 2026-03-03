@@ -170,13 +170,11 @@ class LivePortfolio(BasePortfolio):
             )
             return None
 
-        if response.filled <= ZERO:
-            logger.warning(
-                "Order for %s returned zero fill, skipping position",
-                condition_id[:20],
-            )
-            return None
-        filled_qty = response.filled
+        # FOK market orders on Polymarket return filled=0 even on success
+        # because the CLOB response omits the ``filled`` field.  Fall back
+        # to the requested quantity (FOK is all-or-nothing, so a 200 OK
+        # means the full amount was filled).
+        filled_qty = response.filled if response.filled > ZERO else quantity
         self._positions[condition_id] = Position(
             symbol=condition_id,
             side=side,
