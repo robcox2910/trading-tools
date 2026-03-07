@@ -14,7 +14,7 @@ import typer
 
 from trading_tools.apps.polymarket.cli._helpers import (
     build_authenticated_client,
-    configure_verbose_logging,
+    configure_logging,
     discover_markets,
     parse_series_slugs,
 )
@@ -90,8 +90,7 @@ def bot_live(  # noqa: PLR0913
         typer.echo("This flag prevents accidental live trading with real money.", err=True)
         raise typer.Exit(code=1)
 
-    if verbose:
-        configure_verbose_logging()
+    configure_logging(verbose=verbose)
 
     asyncio.run(
         _bot_live(

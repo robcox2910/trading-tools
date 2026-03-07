@@ -12,7 +12,7 @@ from typing import Annotated
 import typer
 
 from trading_tools.apps.polymarket.cli._helpers import (
-    configure_verbose_logging,
+    configure_logging,
     discover_markets,
     parse_series_slugs,
 )
@@ -71,8 +71,7 @@ def bot(  # noqa: PLR0913
     Use ``--series`` to auto-discover active 5-minute crypto markets, or
     ``--markets`` to specify condition IDs directly. Both can be combined.
     """
-    if verbose:
-        configure_verbose_logging()
+    configure_logging(verbose=verbose)
 
     asyncio.run(
         _bot(

@@ -55,13 +55,28 @@ def parse_series_slugs(series: str) -> tuple[str, ...]:
     return tuple(slugs)
 
 
-def configure_verbose_logging() -> None:
-    """Enable INFO-level logging for tick-by-tick engine output."""
+def configure_logging(*, verbose: bool = False) -> None:
+    """Configure application logging for bot commands.
+
+    Always enable INFO-level logging so trade signals, PERF summaries,
+    and market rotations are visible.  When ``verbose`` is ``True``,
+    lower application loggers to DEBUG while keeping noisy third-party
+    loggers (websockets, httpx) at WARNING to avoid disk-filling output.
+
+    Args:
+        verbose: Enable DEBUG-level logging for application code.
+
+    """
+    level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s %(message)s",
         datefmt="%H:%M:%S",
     )
+    if verbose:
+        # Silence noisy third-party loggers that flood disk at DEBUG level
+        for name in ("websockets", "httpx", "httpcore", "py_clob_client"):
+            logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def build_authenticated_client() -> PolymarketClient:
