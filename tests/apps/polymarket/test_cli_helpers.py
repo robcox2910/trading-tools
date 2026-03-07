@@ -10,7 +10,7 @@ from trading_tools.apps.polymarket.cli._helpers import (
     CRYPTO_5M_SERIES,
     CRYPTO_15M_SERIES,
     build_authenticated_client,
-    configure_verbose_logging,
+    configure_logging,
     parse_series_slugs,
 )
 from trading_tools.clients.polymarket.client import PolymarketClient
@@ -68,18 +68,36 @@ class TestParseSeriesSlugs:
         assert result[len(CRYPTO_5M_SERIES) :] == CRYPTO_15M_SERIES
 
 
-class TestConfigureVerboseLogging:
-    """Test verbose logging configuration."""
+class TestConfigureLogging:
+    """Test logging configuration."""
 
-    def test_configures_info_level(self) -> None:
-        """Verify logging is configured at INFO level."""
+    def test_default_configures_info_level(self) -> None:
+        """Configure INFO level when verbose is False."""
         with patch("trading_tools.apps.polymarket.cli._helpers.logging") as mock_logging:
-            configure_verbose_logging()
+            configure_logging()
             mock_logging.basicConfig.assert_called_once_with(
                 level=mock_logging.INFO,
                 format="%(asctime)s %(message)s",
                 datefmt="%H:%M:%S",
             )
+
+    def test_verbose_configures_debug_level(self) -> None:
+        """Configure DEBUG level when verbose is True."""
+        with patch("trading_tools.apps.polymarket.cli._helpers.logging") as mock_logging:
+            configure_logging(verbose=True)
+            mock_logging.basicConfig.assert_called_once_with(
+                level=mock_logging.DEBUG,
+                format="%(asctime)s %(message)s",
+                datefmt="%H:%M:%S",
+            )
+
+    def test_verbose_silences_third_party_loggers(self) -> None:
+        """Silence noisy third-party loggers when verbose is True."""
+        with patch("trading_tools.apps.polymarket.cli._helpers.logging") as mock_logging:
+            configure_logging(verbose=True)
+            silenced = {call[0][0] for call in mock_logging.getLogger.call_args_list}
+            assert "websockets" in silenced
+            assert "httpx" in silenced
 
 
 class TestBuildAuthenticatedClient:
