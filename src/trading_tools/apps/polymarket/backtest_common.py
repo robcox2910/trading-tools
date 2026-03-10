@@ -2,13 +2,17 @@
 
 Provide reusable functions for feeding snapshots to strategies, resolving
 positions at window boundaries, building result summaries, parsing dates,
-and displaying output. Used by both the candle-based ``backtest-snipe``
-and tick-based ``backtest-ticks`` commands.
+displaying output, loading ticks from the database, and checking order book
+liquidity. Used by ``backtest-snipe``, ``backtest-ticks``, and
+``grid-backtest`` commands.
 """
+
+from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -18,11 +22,18 @@ from trading_tools.apps.polymarket_bot.models import (
     PaperTrade,
     PaperTradingResult,
 )
-from trading_tools.apps.polymarket_bot.portfolio import PaperPortfolio
-from trading_tools.apps.polymarket_bot.strategies.late_snipe import PMLateSnipeStrategy
+from trading_tools.apps.tick_collector.repository import TickRepository
 from trading_tools.core.models import ZERO, Side
 
+if TYPE_CHECKING:
+    from trading_tools.apps.polymarket_bot.portfolio import PaperPortfolio
+    from trading_tools.apps.polymarket_bot.strategies.late_snipe import PMLateSnipeStrategy
+    from trading_tools.apps.tick_collector.models import OrderBookSnapshot, Tick
+    from trading_tools.clients.polymarket.models import OrderBook
+
 logger = logging.getLogger(__name__)
+
+_MS_PER_SECOND = 1000
 
 
 def configure_verbose_logging() -> None:
@@ -51,18 +62,66 @@ def parse_date(value: str) -> int:
     return int(dt.timestamp())
 
 
+def check_order_book_liquidity(
+    order_book: OrderBook,
+    side: Side,
+    price: Decimal,
+    quantity: Decimal,
+) -> bool:
+    """Check whether the order book can absorb a trade at the given price.
+
+    For a BUY YES order, sum ask sizes where ask price <= price.
+    For a BUY NO order (``Side.SELL``), use YES bids as proxy — sum bid
+    sizes where bid price >= (1 - price).
+
+    Args:
+        order_book: Order book snapshot for the YES token.
+        side: Trade side — ``Side.BUY`` for YES, ``Side.SELL`` for NO.
+        price: Execution price of the trade.
+        quantity: Number of tokens to trade.
+
+    Returns:
+        ``True`` if the available liquidity is sufficient, ``False`` otherwise.
+
+    """
+    if not order_book.asks and not order_book.bids:
+        return False
+
+    if side == Side.BUY:
+        # BUY YES: sum asks at or below our price
+        available = sum(
+            (level.size for level in order_book.asks if level.price <= price),
+            start=ZERO,
+        )
+    else:
+        # BUY NO: use YES bids as proxy
+        complement = Decimal(1) - price
+        available = sum(
+            (level.size for level in order_book.bids if level.price >= complement),
+            start=ZERO,
+        )
+
+    return available >= quantity
+
+
 def feed_snapshot_to_strategy(
     snapshot: MarketSnapshot,
     strategy: PMLateSnipeStrategy,
     portfolio: PaperPortfolio,
     kelly_frac: Decimal,
     position_outcomes: dict[str, str],
+    *,
+    check_liquidity: bool = False,
 ) -> PaperTrade | None:
     """Feed a single snapshot to the strategy and open a position if signalled.
 
     Evaluate the snapshot against the strategy. If a signal is produced and no
     position is already open for this market, compute Kelly sizing and open
     a position in the portfolio.
+
+    When ``check_liquidity`` is ``True``, verify that the snapshot's order book
+    has sufficient depth to absorb the computed quantity before opening the
+    position. Skip the trade if liquidity is insufficient.
 
     Args:
         snapshot: Market snapshot to evaluate.
@@ -71,6 +130,8 @@ def feed_snapshot_to_strategy(
         kelly_frac: Fractional Kelly multiplier for position sizing.
         position_outcomes: Mutable dict tracking condition_id → outcome
             (``"Yes"`` or ``"No"``). Updated when a position is opened.
+        check_liquidity: When ``True``, validate order book depth before
+            opening the position. Default ``False`` for backward compatibility.
 
     Returns:
         A ``PaperTrade`` if a position was opened, else ``None``.
@@ -107,6 +168,18 @@ def feed_snapshot_to_strategy(
 
     max_qty = portfolio.max_quantity_for(buy_price)
     quantity = max(Decimal(1), (max_qty * fraction).quantize(Decimal(1)))
+
+    if check_liquidity and not check_order_book_liquidity(
+        snapshot.order_book, signal.side, buy_price, quantity
+    ):
+        logger.info(
+            "SKIP (liquidity): %s %s qty=%s @ %.4f",
+            outcome,
+            condition_id,
+            quantity,
+            buy_price,
+        )
+        return None
 
     edge = estimated_prob - buy_price
     trade = portfolio.open_position(
@@ -269,3 +342,45 @@ def display_result(result: PaperTradingResult) -> None:
         if "win_rate" in result.metrics:
             win_rate = result.metrics["win_rate"] * Decimal(100)
             typer.echo(f"Win rate: {win_rate:.1f}%")
+
+
+async def load_ticks(
+    db_url: str,
+    start_ms: int,
+    end_ms: int,
+) -> tuple[dict[str, list[Tick]], dict[str, list[OrderBookSnapshot]]]:
+    """Load ticks and order book snapshots from the database.
+
+    Query the tick repository for all conditions within the time range,
+    then load any corresponding order book snapshots for enrichment.
+
+    Args:
+        db_url: SQLAlchemy async connection string for the tick database.
+        start_ms: Inclusive lower bound (epoch milliseconds).
+        end_ms: Inclusive upper bound (epoch milliseconds).
+
+    Returns:
+        Tuple of (ticks_by_condition_id, book_snapshots_by_token_id).
+        Book snapshots may be empty if none were captured.
+
+    """
+    repo = TickRepository(db_url)
+    try:
+        condition_ids = await repo.get_distinct_condition_ids(start_ms, end_ms)
+        tick_result: dict[str, list[Tick]] = {}
+        all_asset_ids: set[str] = set()
+        for cid in condition_ids:
+            ticks = await repo.get_ticks_by_condition(cid, start_ms, end_ms)
+            if ticks:
+                tick_result[cid] = ticks
+                all_asset_ids.update(t.asset_id for t in ticks)
+
+        book_result: dict[str, list[OrderBookSnapshot]] = {}
+        for asset_id in all_asset_ids:
+            books = await repo.get_order_book_snapshots_in_range(asset_id, start_ms, end_ms)
+            if books:
+                book_result[asset_id] = books
+
+        return tick_result, book_result
+    finally:
+        await repo.close()

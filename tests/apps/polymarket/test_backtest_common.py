@@ -14,7 +14,7 @@ from trading_tools.apps.polymarket.backtest_common import (
 from trading_tools.apps.polymarket_bot.models import MarketSnapshot, PaperTradingResult
 from trading_tools.apps.polymarket_bot.portfolio import PaperPortfolio
 from trading_tools.apps.polymarket_bot.strategies.late_snipe import PMLateSnipeStrategy
-from trading_tools.clients.polymarket.models import OrderBook
+from trading_tools.clients.polymarket.models import OrderBook, OrderLevel
 from trading_tools.core.models import ZERO, Side
 
 _CONDITION_ID = "cond_test_001"
@@ -134,6 +134,76 @@ class TestFeedSnapshotToStrategy:
         assert result.side == Side.BUY
         assert _CONDITION_ID in outcomes
         assert outcomes[_CONDITION_ID] == "Yes"
+
+    def test_check_liquidity_skips_when_insufficient(self) -> None:
+        """Skip trade when check_liquidity is True and book is empty."""
+        strategy = PMLateSnipeStrategy(threshold=_THRESHOLD, window_seconds=_WINDOW_SECONDS)
+        portfolio = PaperPortfolio(_CAPITAL, _MAX_POS_PCT)
+        outcomes: dict[str, str] = {}
+
+        # Within snipe window, YES above threshold, but empty order book
+        end_date = "2023-11-14T22:17:20+00:00"
+        snapshot = _make_snapshot(
+            yes_price="0.85",
+            no_price="0.15",
+            timestamp=_TIMESTAMP,
+            end_date=end_date,
+        )
+
+        result = feed_snapshot_to_strategy(
+            snapshot=snapshot,
+            strategy=strategy,
+            portfolio=portfolio,
+            kelly_frac=_KELLY_FRAC,
+            position_outcomes=outcomes,
+            check_liquidity=True,
+        )
+
+        assert result is None
+        assert _CONDITION_ID not in outcomes
+
+    def test_check_liquidity_allows_when_sufficient(self) -> None:
+        """Open trade when check_liquidity is True and book has depth."""
+        strategy = PMLateSnipeStrategy(threshold=_THRESHOLD, window_seconds=_WINDOW_SECONDS)
+        portfolio = PaperPortfolio(_CAPITAL, _MAX_POS_PCT)
+        outcomes: dict[str, str] = {}
+
+        book_with_depth = OrderBook(
+            token_id="test",
+            bids=(),
+            asks=(
+                OrderLevel(price=Decimal("0.84"), size=Decimal(500)),
+                OrderLevel(price=Decimal("0.85"), size=Decimal(500)),
+            ),
+            spread=ZERO,
+            midpoint=Decimal("0.85"),
+        )
+
+        end_date = "2023-11-14T22:17:20+00:00"
+        snapshot = MarketSnapshot(
+            condition_id=_CONDITION_ID,
+            question="Test market?",
+            timestamp=_TIMESTAMP,
+            yes_price=Decimal("0.85"),
+            no_price=Decimal("0.15"),
+            order_book=book_with_depth,
+            volume=ZERO,
+            liquidity=ZERO,
+            end_date=end_date,
+        )
+
+        result = feed_snapshot_to_strategy(
+            snapshot=snapshot,
+            strategy=strategy,
+            portfolio=portfolio,
+            kelly_frac=_KELLY_FRAC,
+            position_outcomes=outcomes,
+            check_liquidity=True,
+        )
+
+        assert result is not None
+        assert result.side == Side.BUY
+        assert _CONDITION_ID in outcomes
 
     def test_duplicate_position_skipped(self) -> None:
         """Skip when portfolio already has a position for this market."""

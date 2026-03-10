@@ -153,7 +153,7 @@ class TestBacktestTicksCLI:
 
         with (
             patch(
-                "trading_tools.apps.polymarket.cli.backtest_ticks_cmd._load_ticks",
+                "trading_tools.apps.polymarket.cli.backtest_ticks_cmd.load_ticks",
                 new_callable=AsyncMock,
             ) as mock_load,
         ):
@@ -181,7 +181,7 @@ class TestBacktestTicksCLI:
         runner = CliRunner()
 
         with patch(
-            "trading_tools.apps.polymarket.cli.backtest_ticks_cmd._load_ticks",
+            "trading_tools.apps.polymarket.cli.backtest_ticks_cmd.load_ticks",
             new_callable=AsyncMock,
         ) as mock_load:
             mock_load.return_value = ({}, {})
@@ -205,7 +205,7 @@ class TestBacktestTicksCLI:
         runner = CliRunner()
 
         with patch(
-            "trading_tools.apps.polymarket.cli.backtest_ticks_cmd._load_ticks",
+            "trading_tools.apps.polymarket.cli.backtest_ticks_cmd.load_ticks",
             new_callable=AsyncMock,
         ) as mock_load:
             mock_load.return_value = ({}, {})
