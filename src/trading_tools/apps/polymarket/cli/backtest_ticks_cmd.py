@@ -19,17 +19,14 @@ from trading_tools.apps.polymarket.backtest_common import (
     configure_verbose_logging,
     display_result,
     feed_snapshot_to_strategy,
+    load_ticks,
     parse_date,
     resolve_positions,
 )
-from trading_tools.apps.polymarket_bot.models import (
-    MarketSnapshot,
-    PaperTradingResult,
-)
+from trading_tools.apps.polymarket_bot.models import MarketSnapshot, PaperTradingResult
 from trading_tools.apps.polymarket_bot.portfolio import PaperPortfolio
 from trading_tools.apps.polymarket_bot.strategies.late_snipe import PMLateSnipeStrategy
 from trading_tools.apps.tick_collector.models import OrderBookSnapshot, Tick
-from trading_tools.apps.tick_collector.repository import TickRepository
 from trading_tools.apps.tick_collector.snapshot_builder import (
     MarketWindow,
     SnapshotBuilder,
@@ -62,6 +59,8 @@ class TickBacktestRunner:
         portfolio: PaperPortfolio,
         kelly_frac: Decimal,
         initial_capital: Decimal,
+        *,
+        check_liquidity: bool = False,
     ) -> None:
         """Initialize the tick backtest runner.
 
@@ -70,12 +69,15 @@ class TickBacktestRunner:
             portfolio: Paper portfolio with initial capital.
             kelly_frac: Fractional Kelly multiplier.
             initial_capital: Starting capital for result metadata.
+            check_liquidity: When ``True``, validate order book depth
+                before opening positions. Default ``False``.
 
         """
         self._strategy = strategy
         self._portfolio = portfolio
         self._kelly_frac = kelly_frac
         self._initial_capital = initial_capital
+        self._check_liquidity = check_liquidity
         self._snapshots_processed = 0
         self._windows_processed = 0
         self._wins = 0
@@ -133,6 +135,7 @@ class TickBacktestRunner:
                 portfolio=self._portfolio,
                 kelly_frac=self._kelly_frac,
                 position_outcomes=self._position_outcomes,
+                check_liquidity=self._check_liquidity,
             )
 
         # Build final-price map from last snapshot
@@ -149,45 +152,6 @@ class TickBacktestRunner:
         )
         self._wins += wins
         self._losses += losses
-
-
-async def _load_ticks(
-    db_url: str,
-    start_ms: int,
-    end_ms: int,
-) -> tuple[dict[str, list[Tick]], dict[str, list[OrderBookSnapshot]]]:
-    """Load ticks and order book snapshots from the database.
-
-    Args:
-        db_url: SQLAlchemy async connection string for the tick database.
-        start_ms: Inclusive lower bound (epoch milliseconds).
-        end_ms: Inclusive upper bound (epoch milliseconds).
-
-    Returns:
-        Tuple of (ticks_by_condition_id, book_snapshots_by_token_id).
-        Book snapshots may be empty if none were captured.
-
-    """
-    repo = TickRepository(db_url)
-    try:
-        condition_ids = await repo.get_distinct_condition_ids(start_ms, end_ms)
-        tick_result: dict[str, list[Tick]] = {}
-        all_asset_ids: set[str] = set()
-        for cid in condition_ids:
-            ticks = await repo.get_ticks_by_condition(cid, start_ms, end_ms)
-            if ticks:
-                tick_result[cid] = ticks
-                all_asset_ids.update(t.asset_id for t in ticks)
-
-        book_result: dict[str, list[OrderBookSnapshot]] = {}
-        for asset_id in all_asset_ids:
-            books = await repo.get_order_book_snapshots_in_range(asset_id, start_ms, end_ms)
-            if books:
-                book_result[asset_id] = books
-
-        return tick_result, book_result
-    finally:
-        await repo.close()
 
 
 def _run_tick_backtest(
@@ -306,7 +270,7 @@ def backtest_ticks(
     typer.echo("")
 
     typer.echo("Loading ticks from database...")
-    all_ticks, book_data = asyncio.run(_load_ticks(db_url, start_ms, end_ms))
+    all_ticks, book_data = asyncio.run(load_ticks(db_url, start_ms, end_ms))
 
     if not all_ticks:
         typer.echo("No ticks found in the specified date range.")
