@@ -266,7 +266,7 @@ class TestFormatGridTable:
 
     def test_formats_win_rate_table(self) -> None:
         """Format a grid as a win rate table with percentage values."""
-        cells = (GridCell(Decimal("0.80"), 60, Decimal("5.0"), 10, 7, 3, Decimal("70.0")),)
+        cells = (GridCell(Decimal("0.80"), 60, Decimal("5.0"), 10, 7, 3, Decimal("0.7")),)
         result = GridBacktestResult(
             cells=cells,
             thresholds=(Decimal("0.80"),),
