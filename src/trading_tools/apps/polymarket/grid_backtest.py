@@ -327,8 +327,10 @@ def format_grid_table(result: GridBacktestResult, metric: str = "return_pct") ->
                 parts.append(" -")
             else:
                 value = getattr(cell, metric)
-                if metric in {"return_pct", "win_rate"}:
+                if metric == "return_pct":
                     parts.append(f" {value:.1f}%")
+                elif metric == "win_rate":
+                    parts.append(f" {value * _HUNDRED:.1f}%")
                 else:
                     parts.append(f" {value}")
         rows.append(" |".join(parts) + " |")
