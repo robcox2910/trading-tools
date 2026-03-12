@@ -7,6 +7,7 @@ import typer
 
 from trading_tools.apps.polymarket.backtest_common import (
     build_backtest_result,
+    compute_order_book_slippage,
     feed_snapshot_to_strategy,
     parse_date,
     resolve_positions,
@@ -41,6 +42,7 @@ def _make_snapshot(
     no_price: str = "0.50",
     timestamp: int = _TIMESTAMP,
     end_date: str = "2023-11-14T22:35:00+00:00",
+    order_book: OrderBook | None = None,
 ) -> MarketSnapshot:
     """Create a MarketSnapshot for testing.
 
@@ -50,6 +52,7 @@ def _make_snapshot(
         no_price: NO token price as string.
         timestamp: Epoch seconds.
         end_date: ISO-8601 end date.
+        order_book: Optional order book. Uses empty book if ``None``.
 
     Returns:
         A new MarketSnapshot instance.
@@ -61,7 +64,7 @@ def _make_snapshot(
         timestamp=timestamp,
         yes_price=Decimal(yes_price),
         no_price=Decimal(no_price),
-        order_book=_EMPTY_BOOK,
+        order_book=order_book if order_book is not None else _EMPTY_BOOK,
         volume=ZERO,
         liquidity=ZERO,
         end_date=end_date,
@@ -382,3 +385,282 @@ class TestBuildBacktestResult:
         )
 
         assert "win_rate" not in result.metrics
+
+
+def _make_order_book(
+    bids: tuple[OrderLevel, ...] = (),
+    asks: tuple[OrderLevel, ...] = (),
+) -> OrderBook:
+    """Create an OrderBook for testing.
+
+    Args:
+        bids: Bid levels.
+        asks: Ask levels.
+
+    Returns:
+        A new OrderBook instance.
+
+    """
+    return OrderBook(
+        token_id="test",
+        bids=bids,
+        asks=asks,
+        spread=ZERO,
+        midpoint=Decimal("0.5"),
+    )
+
+
+class TestComputeOrderBookSlippage:
+    """Tests for the compute_order_book_slippage helper."""
+
+    def test_empty_book_returns_none(self) -> None:
+        """Return None when the order book has no levels."""
+        book = _make_order_book()
+        result = compute_order_book_slippage(book, Side.BUY, Decimal("0.85"), Decimal(10))
+        assert result is None
+
+    def test_single_ask_level_vwap_equals_ask(self) -> None:
+        """Return the ask price as VWAP when a single level fills the order."""
+        book = _make_order_book(
+            asks=(OrderLevel(price=Decimal("0.84"), size=Decimal(100)),),
+        )
+        result = compute_order_book_slippage(book, Side.BUY, Decimal("0.85"), Decimal(10))
+        assert result == Decimal("0.84")
+
+    def test_multiple_ask_levels_vwap(self) -> None:
+        """Compute correct VWAP across multiple ask levels."""
+        book = _make_order_book(
+            asks=(
+                OrderLevel(price=Decimal("0.83"), size=Decimal(5)),
+                OrderLevel(price=Decimal("0.85"), size=Decimal(10)),
+            ),
+        )
+        # Fill 10: 5 @ 0.83 + 5 @ 0.85 = 4.15 + 4.25 = 8.40 / 10 = 0.84
+        result = compute_order_book_slippage(book, Side.BUY, Decimal("0.85"), Decimal(10))
+        expected = Decimal("0.84")
+        assert result == expected
+
+    def test_insufficient_liquidity_returns_none(self) -> None:
+        """Return None when the book cannot fill the full quantity."""
+        book = _make_order_book(
+            asks=(OrderLevel(price=Decimal("0.84"), size=Decimal(5)),),
+        )
+        result = compute_order_book_slippage(book, Side.BUY, Decimal("0.85"), Decimal(10))
+        assert result is None
+
+    def test_asks_above_price_excluded(self) -> None:
+        """Exclude ask levels priced above the snapshot price."""
+        book = _make_order_book(
+            asks=(
+                OrderLevel(price=Decimal("0.84"), size=Decimal(5)),
+                OrderLevel(price=Decimal("0.90"), size=Decimal(100)),
+            ),
+        )
+        # Only 5 available at 0.84; 0.90 > 0.85 is excluded → insufficient
+        result = compute_order_book_slippage(book, Side.BUY, Decimal("0.85"), Decimal(10))
+        assert result is None
+
+    def test_buy_no_walks_bids_with_complement(self) -> None:
+        """Walk YES bids for BUY NO, converting to complement prices."""
+        # BUY NO at price 0.15: complement = 1 - 0.15 = 0.85
+        # Eligible YES bids: price >= 0.85 → bid at 0.86
+        # NO fill price = 1 - 0.86 = 0.14
+        book = _make_order_book(
+            bids=(OrderLevel(price=Decimal("0.86"), size=Decimal(20)),),
+        )
+        result = compute_order_book_slippage(book, Side.SELL, Decimal("0.15"), Decimal(10))
+        expected = Decimal("0.14")
+        assert result == expected
+
+    def test_exact_fill_at_single_level(self) -> None:
+        """Fill exactly at a single level's available size."""
+        exact_qty = Decimal(50)
+        book = _make_order_book(
+            asks=(OrderLevel(price=Decimal("0.82"), size=exact_qty),),
+        )
+        result = compute_order_book_slippage(book, Side.BUY, Decimal("0.85"), exact_qty)
+        assert result == Decimal("0.82")
+
+
+# Shared snipe end_date that puts _TIMESTAMP inside the snipe window
+_SNIPE_END_DATE = "2023-11-14T22:17:20+00:00"
+
+
+class TestFeedSnapshotSlippage:
+    """Tests for slippage modelling in feed_snapshot_to_strategy."""
+
+    def test_slippage_applied_trade_opens_at_vwap(self) -> None:
+        """Open trade at VWAP fill price when slippage modelling is enabled."""
+        strategy = PMLateSnipeStrategy(threshold=_THRESHOLD, window_seconds=_WINDOW_SECONDS)
+        portfolio = PaperPortfolio(_CAPITAL, _MAX_POS_PCT)
+        outcomes: dict[str, str] = {}
+
+        book = _make_order_book(
+            asks=(
+                OrderLevel(price=Decimal("0.84"), size=Decimal(500)),
+                OrderLevel(price=Decimal("0.85"), size=Decimal(500)),
+            ),
+        )
+        snapshot = _make_snapshot(
+            yes_price="0.85",
+            no_price="0.15",
+            end_date=_SNIPE_END_DATE,
+            order_book=book,
+        )
+
+        result = feed_snapshot_to_strategy(
+            snapshot=snapshot,
+            strategy=strategy,
+            portfolio=portfolio,
+            kelly_frac=_KELLY_FRAC,
+            position_outcomes=outcomes,
+            max_slippage=Decimal("0.05"),
+        )
+
+        assert result is not None
+        # VWAP should be <= snapshot price (cheaper asks available)
+        assert result.price <= Decimal("0.85")
+        assert _CONDITION_ID in outcomes
+
+    def test_slippage_exceeds_max_skips_trade(self) -> None:
+        """Skip trade when slippage exceeds the maximum tolerance."""
+        strategy = PMLateSnipeStrategy(threshold=_THRESHOLD, window_seconds=_WINDOW_SECONDS)
+        portfolio = PaperPortfolio(_CAPITAL, _MAX_POS_PCT)
+        outcomes: dict[str, str] = {}
+
+        # Only asks at 0.85 → VWAP = 0.85, slippage = 0.0
+        # But if we set max_slippage very low (e.g., -0.01) it should skip
+        # Actually: asks all at 0.85 when buy_price is 0.85 → slippage = 0.
+        # Use asks priced above the snapshot's nominal for realistic slippage.
+        # With ask at 0.85, buy_price=0.85, slippage = 0.85 - 0.85 = 0.
+        # Use a tiny tolerance to test: set max_slippage = -0.001
+        # which means any VWAP >= buy_price is rejected.
+        book = _make_order_book(
+            asks=(OrderLevel(price=Decimal("0.85"), size=Decimal(500)),),
+        )
+        snapshot = _make_snapshot(
+            yes_price="0.85",
+            no_price="0.15",
+            end_date=_SNIPE_END_DATE,
+            order_book=book,
+        )
+
+        # Slippage = 0.85 - 0.85 = 0.0, which is > -0.001 → skip
+        result = feed_snapshot_to_strategy(
+            snapshot=snapshot,
+            strategy=strategy,
+            portfolio=portfolio,
+            kelly_frac=_KELLY_FRAC,
+            position_outcomes=outcomes,
+            max_slippage=Decimal("-0.001"),
+        )
+
+        assert result is None
+        assert _CONDITION_ID not in outcomes
+
+    def test_unfillable_order_skips_trade(self) -> None:
+        """Skip trade when the order book cannot fill the quantity."""
+        strategy = PMLateSnipeStrategy(threshold=_THRESHOLD, window_seconds=_WINDOW_SECONDS)
+        portfolio = PaperPortfolio(_CAPITAL, _MAX_POS_PCT)
+        outcomes: dict[str, str] = {}
+
+        # Very thin book — only 1 token available
+        book = _make_order_book(
+            asks=(OrderLevel(price=Decimal("0.84"), size=Decimal(1)),),
+        )
+        snapshot = _make_snapshot(
+            yes_price="0.85",
+            no_price="0.15",
+            end_date=_SNIPE_END_DATE,
+            order_book=book,
+        )
+
+        result = feed_snapshot_to_strategy(
+            snapshot=snapshot,
+            strategy=strategy,
+            portfolio=portfolio,
+            kelly_frac=_KELLY_FRAC,
+            position_outcomes=outcomes,
+            max_slippage=Decimal("0.05"),
+        )
+
+        assert result is None
+        assert _CONDITION_ID not in outcomes
+
+    def test_max_slippage_none_uses_snapshot_price(self) -> None:
+        """Use snapshot price when max_slippage is None (backward compatible)."""
+        strategy = PMLateSnipeStrategy(threshold=_THRESHOLD, window_seconds=_WINDOW_SECONDS)
+        portfolio = PaperPortfolio(_CAPITAL, _MAX_POS_PCT)
+        outcomes: dict[str, str] = {}
+
+        snapshot = _make_snapshot(
+            yes_price="0.85",
+            no_price="0.15",
+            end_date=_SNIPE_END_DATE,
+        )
+
+        result = feed_snapshot_to_strategy(
+            snapshot=snapshot,
+            strategy=strategy,
+            portfolio=portfolio,
+            kelly_frac=_KELLY_FRAC,
+            position_outcomes=outcomes,
+        )
+
+        assert result is not None
+        assert result.price == Decimal("0.85")
+        assert result.slippage == ZERO
+
+    def test_empty_book_with_max_slippage_falls_through(self) -> None:
+        """Use snapshot price when book is empty even with max_slippage set."""
+        strategy = PMLateSnipeStrategy(threshold=_THRESHOLD, window_seconds=_WINDOW_SECONDS)
+        portfolio = PaperPortfolio(_CAPITAL, _MAX_POS_PCT)
+        outcomes: dict[str, str] = {}
+
+        snapshot = _make_snapshot(
+            yes_price="0.85",
+            no_price="0.15",
+            end_date=_SNIPE_END_DATE,
+        )
+
+        result = feed_snapshot_to_strategy(
+            snapshot=snapshot,
+            strategy=strategy,
+            portfolio=portfolio,
+            kelly_frac=_KELLY_FRAC,
+            position_outcomes=outcomes,
+            max_slippage=Decimal("0.05"),
+        )
+
+        assert result is not None
+        assert result.price == Decimal("0.85")
+        assert result.slippage == ZERO
+
+    def test_slippage_field_recorded_on_trade(self) -> None:
+        """Record the slippage amount on the returned PaperTrade."""
+        strategy = PMLateSnipeStrategy(threshold=_THRESHOLD, window_seconds=_WINDOW_SECONDS)
+        portfolio = PaperPortfolio(_CAPITAL, _MAX_POS_PCT)
+        outcomes: dict[str, str] = {}
+
+        # Asks only at 0.85 → VWAP = 0.85, slippage = 0.0
+        book = _make_order_book(
+            asks=(OrderLevel(price=Decimal("0.85"), size=Decimal(500)),),
+        )
+        snapshot = _make_snapshot(
+            yes_price="0.85",
+            no_price="0.15",
+            end_date=_SNIPE_END_DATE,
+            order_book=book,
+        )
+
+        result = feed_snapshot_to_strategy(
+            snapshot=snapshot,
+            strategy=strategy,
+            portfolio=portfolio,
+            kelly_frac=_KELLY_FRAC,
+            position_outcomes=outcomes,
+            max_slippage=Decimal("0.05"),
+        )
+
+        assert result is not None
+        assert result.slippage == ZERO

@@ -2,9 +2,9 @@
 
 Provide reusable functions for feeding snapshots to strategies, resolving
 positions at window boundaries, building result summaries, parsing dates,
-displaying output, loading ticks from the database, and checking order book
-liquidity. Used by ``backtest-snipe``, ``backtest-ticks``, and
-``grid-backtest`` commands.
+displaying output, loading ticks from the database, checking order book
+liquidity, and computing order book slippage. Used by ``backtest-snipe``,
+``backtest-ticks``, and ``grid-backtest`` commands.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MS_PER_SECOND = 1000
+_ONE = Decimal(1)
 
 
 def configure_verbose_logging() -> None:
@@ -62,6 +63,42 @@ def parse_date(value: str) -> int:
     return int(dt.timestamp())
 
 
+def _collect_fillable_levels(
+    order_book: OrderBook,
+    side: Side,
+    price: Decimal,
+) -> list[tuple[Decimal, Decimal]]:
+    """Collect order book levels eligible to fill a trade.
+
+    For BUY YES: return ask levels where ask price <= price, sorted cheapest
+    first. For BUY NO (``Side.SELL``): return bid levels where bid price >=
+    (1 - price), with prices converted to the NO complement, sorted cheapest
+    first.
+
+    Args:
+        order_book: Order book snapshot for the YES token.
+        side: Trade side — ``Side.BUY`` for YES, ``Side.SELL`` for NO.
+        price: Maximum acceptable execution price.
+
+    Returns:
+        List of ``(fill_price, size)`` tuples in price-priority order
+        (cheapest first).
+
+    """
+    if side == Side.BUY:
+        levels = [(level.price, level.size) for level in order_book.asks if level.price <= price]
+        levels.sort(key=lambda lv: lv[0])
+    else:
+        complement = _ONE - price
+        levels = [
+            (_ONE - level.price, level.size)
+            for level in order_book.bids
+            if level.price >= complement
+        ]
+        levels.sort(key=lambda lv: lv[0])
+    return levels
+
+
 def check_order_book_liquidity(
     order_book: OrderBook,
     side: Side,
@@ -87,21 +124,52 @@ def check_order_book_liquidity(
     if not order_book.asks and not order_book.bids:
         return False
 
-    if side == Side.BUY:
-        # BUY YES: sum asks at or below our price
-        available = sum(
-            (level.size for level in order_book.asks if level.price <= price),
-            start=ZERO,
-        )
-    else:
-        # BUY NO: use YES bids as proxy
-        complement = Decimal(1) - price
-        available = sum(
-            (level.size for level in order_book.bids if level.price >= complement),
-            start=ZERO,
-        )
-
+    levels = _collect_fillable_levels(order_book, side, price)
+    available = sum((size for _, size in levels), start=ZERO)
     return available >= quantity
+
+
+def compute_order_book_slippage(
+    order_book: OrderBook,
+    side: Side,
+    price: Decimal,
+    quantity: Decimal,
+) -> Decimal | None:
+    """Compute the VWAP fill price by walking the order book.
+
+    Walk eligible levels in price-priority order (cheapest asks first for
+    BUY YES, highest bids converted to NO complement for BUY NO). Consume
+    size from each level until the full quantity is filled and compute the
+    volume-weighted average price.
+
+    Args:
+        order_book: Order book snapshot for the YES token.
+        side: Trade side — ``Side.BUY`` for YES, ``Side.SELL`` for NO.
+        price: Maximum acceptable execution price (snapshot mid-price).
+        quantity: Number of tokens to fill.
+
+    Returns:
+        The VWAP fill price, or ``None`` if the book cannot fill the full
+        quantity.
+
+    """
+    levels = _collect_fillable_levels(order_book, side, price)
+    if not levels:
+        return None
+
+    filled = ZERO
+    cost = ZERO
+    for level_price, level_size in levels:
+        take = min(level_size, quantity - filled)
+        cost += level_price * take
+        filled += take
+        if filled >= quantity:
+            break
+
+    if filled < quantity:
+        return None
+
+    return cost / quantity
 
 
 def feed_snapshot_to_strategy(
@@ -112,6 +180,7 @@ def feed_snapshot_to_strategy(
     position_outcomes: dict[str, str],
     *,
     check_liquidity: bool = False,
+    max_slippage: Decimal | None = None,
 ) -> PaperTrade | None:
     """Feed a single snapshot to the strategy and open a position if signalled.
 
@@ -123,6 +192,11 @@ def feed_snapshot_to_strategy(
     has sufficient depth to absorb the computed quantity before opening the
     position. Skip the trade if liquidity is insufficient.
 
+    When ``max_slippage`` is set and the order book is non-empty, compute a
+    VWAP fill price by walking the book. Skip the trade if the book cannot
+    fill the quantity or if slippage exceeds the tolerance. Use the VWAP
+    price for edge computation and position entry.
+
     Args:
         snapshot: Market snapshot to evaluate.
         strategy: Late snipe strategy instance.
@@ -132,6 +206,9 @@ def feed_snapshot_to_strategy(
             (``"Yes"`` or ``"No"``). Updated when a position is opened.
         check_liquidity: When ``True``, validate order book depth before
             opening the position. Default ``False`` for backward compatibility.
+        max_slippage: Maximum allowable slippage from the snapshot price.
+            When ``None``, slippage modelling is disabled and the snapshot
+            price is used directly.
 
     Returns:
         A ``PaperTrade`` if a position was opened, else ``None``.
@@ -156,7 +233,7 @@ def feed_snapshot_to_strategy(
         return None
 
     # Kelly sizing
-    estimated_prob = buy_price + signal.strength * (Decimal(1) - buy_price)
+    estimated_prob = buy_price + signal.strength * (_ONE - buy_price)
     estimated_prob = min(estimated_prob, Decimal("0.99"))
     fraction = kelly_fraction(
         estimated_prob,
@@ -181,16 +258,55 @@ def feed_snapshot_to_strategy(
         )
         return None
 
-    edge = estimated_prob - buy_price
+    # Slippage modelling
+    fill_price = buy_price
+    slippage = ZERO
+    book_has_levels = bool(snapshot.order_book.asks or snapshot.order_book.bids)
+    if max_slippage is not None and book_has_levels:
+        vwap = compute_order_book_slippage(snapshot.order_book, signal.side, buy_price, quantity)
+        if vwap is None:
+            logger.info(
+                "SKIP (unfillable): %s %s qty=%s @ %.4f",
+                outcome,
+                condition_id,
+                quantity,
+                buy_price,
+            )
+            return None
+
+        slippage = vwap - buy_price
+        if slippage > max_slippage:
+            logger.info(
+                "SKIP (slippage %.4f > %.4f): %s %s qty=%s @ %.4f",
+                slippage,
+                max_slippage,
+                outcome,
+                condition_id,
+                quantity,
+                buy_price,
+            )
+            return None
+
+        fill_price = vwap
+        logger.info(
+            "SLIPPAGE: %s %s slippage=%.4f vwap=%.4f",
+            outcome,
+            condition_id,
+            slippage,
+            vwap,
+        )
+
+    edge = estimated_prob - fill_price
     trade = portfolio.open_position(
         condition_id=condition_id,
         outcome=outcome,
         side=Side.BUY,
-        price=buy_price,
+        price=fill_price,
         quantity=quantity,
         timestamp=snapshot.timestamp,
         reason=signal.reason,
         edge=edge,
+        slippage=slippage,
     )
     if trade is not None:
         position_outcomes[condition_id] = outcome
@@ -199,7 +315,7 @@ def feed_snapshot_to_strategy(
             outcome,
             condition_id,
             quantity,
-            buy_price,
+            fill_price,
             edge,
         )
     return trade
