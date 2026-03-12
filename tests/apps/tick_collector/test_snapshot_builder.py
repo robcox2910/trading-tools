@@ -127,6 +127,128 @@ class TestSnapshotBuilderDetectWindow:
             builder.detect_window(_CONDITION_ID, [])
 
 
+class TestDetectAllWindows:
+    """Tests for SnapshotBuilder.detect_all_windows."""
+
+    def test_ticks_spanning_two_windows_returns_two_pairs(self) -> None:
+        """Ticks in two different 5-minute boundaries produce two window pairs."""
+        # Window 1: ticks at aligned boundary + 0-4 min
+        # Window 2: ticks at aligned boundary + 5-9 min (next window)
+        base = _WINDOW_ALIGNED_MS
+        ticks = [
+            # Window 1 (5 ticks)
+            _make_tick(timestamp=base + 10_000, price=0.50),
+            _make_tick(timestamp=base + 20_000, price=0.52),
+            _make_tick(timestamp=base + 30_000, price=0.55),
+            _make_tick(timestamp=base + 40_000, price=0.58),
+            _make_tick(timestamp=base + 50_000, price=0.60),
+            # Window 2 (5 ticks)
+            _make_tick(timestamp=base + _FIVE_MINUTES_MS + 10_000, price=0.70),
+            _make_tick(timestamp=base + _FIVE_MINUTES_MS + 20_000, price=0.75),
+            _make_tick(timestamp=base + _FIVE_MINUTES_MS + 30_000, price=0.80),
+            _make_tick(timestamp=base + _FIVE_MINUTES_MS + 40_000, price=0.85),
+            _make_tick(timestamp=base + _FIVE_MINUTES_MS + 50_000, price=0.90),
+        ]
+        builder = SnapshotBuilder(bucket_seconds=_BUCKET_SECONDS)
+
+        result = builder.detect_all_windows(_CONDITION_ID, ticks)
+
+        expected_windows = 2
+        assert len(result) == expected_windows
+        # First window starts at aligned boundary
+        assert result[0][0].start_ms == base
+        assert result[0][0].end_ms == base + _FIVE_MINUTES_MS
+        expected_ticks_per_window = 5
+        assert len(result[0][1]) == expected_ticks_per_window
+        # Second window starts at next boundary
+        assert result[1][0].start_ms == base + _FIVE_MINUTES_MS
+        assert result[1][0].end_ms == base + 2 * _FIVE_MINUTES_MS
+        assert len(result[1][1]) == expected_ticks_per_window
+
+    def test_ticks_in_single_window_returns_one_pair(self) -> None:
+        """Ticks within a single 5-minute boundary produce one window pair."""
+        base = _WINDOW_ALIGNED_MS
+        ticks = [
+            _make_tick(timestamp=base + 10_000, price=0.50),
+            _make_tick(timestamp=base + 20_000, price=0.55),
+            _make_tick(timestamp=base + 30_000, price=0.60),
+            _make_tick(timestamp=base + 40_000, price=0.65),
+            _make_tick(timestamp=base + 50_000, price=0.70),
+        ]
+        builder = SnapshotBuilder(bucket_seconds=_BUCKET_SECONDS)
+
+        result = builder.detect_all_windows(_CONDITION_ID, ticks)
+
+        expected_windows = 1
+        assert len(result) == expected_windows
+        assert result[0][0].start_ms == base
+        expected_ticks = 5
+        assert len(result[0][1]) == expected_ticks
+
+    def test_sparse_stragglers_filtered_out(self) -> None:
+        """Windows with fewer than MIN_TICKS_PER_WINDOW are excluded."""
+        base = _WINDOW_ALIGNED_MS
+        ticks = [
+            # Window 1: 5 ticks (above threshold)
+            _make_tick(timestamp=base + 10_000, price=0.50),
+            _make_tick(timestamp=base + 20_000, price=0.55),
+            _make_tick(timestamp=base + 30_000, price=0.60),
+            _make_tick(timestamp=base + 40_000, price=0.65),
+            _make_tick(timestamp=base + 50_000, price=0.70),
+            # Window 2: 2 ticks (below threshold — stragglers)
+            _make_tick(timestamp=base + _FIVE_MINUTES_MS + 10_000, price=0.99),
+            _make_tick(timestamp=base + _FIVE_MINUTES_MS + 20_000, price=0.99),
+        ]
+        builder = SnapshotBuilder(bucket_seconds=_BUCKET_SECONDS)
+
+        result = builder.detect_all_windows(_CONDITION_ID, ticks)
+
+        # Only the first window survives filtering
+        expected_windows = 1
+        assert len(result) == expected_windows
+        assert result[0][0].start_ms == base
+
+    def test_empty_ticks_raises(self) -> None:
+        """Raise ValueError when given an empty tick list."""
+        builder = SnapshotBuilder(bucket_seconds=_BUCKET_SECONDS)
+
+        with pytest.raises(ValueError, match="empty"):
+            builder.detect_all_windows(_CONDITION_ID, [])
+
+    def test_windows_have_correct_end_date(self) -> None:
+        """Each returned window has a valid ISO-format end_date."""
+        base = _WINDOW_ALIGNED_MS
+        ticks = [
+            _make_tick(timestamp=base + 10_000, price=0.50),
+            _make_tick(timestamp=base + 20_000, price=0.55),
+            _make_tick(timestamp=base + 30_000, price=0.60),
+            _make_tick(timestamp=base + 40_000, price=0.65),
+            _make_tick(timestamp=base + 50_000, price=0.70),
+        ]
+        builder = SnapshotBuilder(bucket_seconds=_BUCKET_SECONDS)
+
+        result = builder.detect_all_windows(_CONDITION_ID, ticks)
+
+        expected_windows = 1
+        assert len(result) == expected_windows
+        window = result[0][0]
+        assert window.condition_id == _CONDITION_ID
+        assert window.end_date.endswith("+00:00")
+
+    def test_all_below_threshold_returns_empty(self) -> None:
+        """Return empty list when all windows have fewer ticks than threshold."""
+        base = _WINDOW_ALIGNED_MS
+        ticks = [
+            _make_tick(timestamp=base + 10_000, price=0.50),
+            _make_tick(timestamp=base + 20_000, price=0.55),
+        ]
+        builder = SnapshotBuilder(bucket_seconds=_BUCKET_SECONDS)
+
+        result = builder.detect_all_windows(_CONDITION_ID, ticks)
+
+        assert len(result) == 0
+
+
 class TestSnapshotBuilderBuildSnapshots:
     """Tests for SnapshotBuilder.build_snapshots."""
 

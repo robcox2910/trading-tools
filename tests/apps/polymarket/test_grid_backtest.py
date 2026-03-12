@@ -159,7 +159,10 @@ class TestRunGridBacktest:
         """Run a 2x2 grid and verify all four cells are populated."""
         ticks = {
             _CONDITION_ID: [
-                _make_tick(timestamp=_WINDOW_START_MS + 200_000, price=0.90),
+                _make_tick(timestamp=_WINDOW_START_MS + 200_000, price=0.85),
+                _make_tick(timestamp=_WINDOW_START_MS + 210_000, price=0.87),
+                _make_tick(timestamp=_WINDOW_START_MS + 220_000, price=0.89),
+                _make_tick(timestamp=_WINDOW_START_MS + 230_000, price=0.90),
                 _make_tick(timestamp=_WINDOW_START_MS + 250_000, price=0.92),
             ],
         }
@@ -192,7 +195,11 @@ class TestRunGridBacktest:
         """Verify that each cell has non-negative trade counts."""
         ticks = {
             _CONDITION_ID: [
-                _make_tick(timestamp=_WINDOW_START_MS + 200_000, price=0.90),
+                _make_tick(timestamp=_WINDOW_START_MS + 200_000, price=0.85),
+                _make_tick(timestamp=_WINDOW_START_MS + 210_000, price=0.87),
+                _make_tick(timestamp=_WINDOW_START_MS + 220_000, price=0.89),
+                _make_tick(timestamp=_WINDOW_START_MS + 230_000, price=0.90),
+                _make_tick(timestamp=_WINDOW_START_MS + 250_000, price=0.92),
             ],
         }
 
@@ -332,7 +339,11 @@ class TestGridBacktestCLI:
         runner = CliRunner()
 
         mock_ticks = [
-            _make_tick(timestamp=_WINDOW_START_MS + 200_000, price=0.90),
+            _make_tick(timestamp=_WINDOW_START_MS + 200_000, price=0.85),
+            _make_tick(timestamp=_WINDOW_START_MS + 210_000, price=0.87),
+            _make_tick(timestamp=_WINDOW_START_MS + 220_000, price=0.89),
+            _make_tick(timestamp=_WINDOW_START_MS + 230_000, price=0.90),
+            _make_tick(timestamp=_WINDOW_START_MS + 250_000, price=0.92),
         ]
 
         with patch(
