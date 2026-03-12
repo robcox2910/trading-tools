@@ -130,6 +130,7 @@ def _run_single_cell(
     capital: Decimal,
     kelly_frac: Decimal,
     max_position_pct: Decimal,
+    max_slippage: Decimal | None = None,
 ) -> GridCell:
     """Run a single backtest cell with specific strategy parameters.
 
@@ -143,6 +144,8 @@ def _run_single_cell(
         capital: Initial virtual capital.
         kelly_frac: Fractional Kelly multiplier.
         max_position_pct: Maximum fraction of capital per market.
+        max_slippage: Maximum allowable slippage from the snapshot price.
+            When ``None``, slippage modelling is disabled.
 
     Returns:
         A ``GridCell`` with the performance metrics for this combination.
@@ -167,6 +170,7 @@ def _run_single_cell(
                 kelly_frac=kelly_frac,
                 position_outcomes=position_outcomes,
                 check_liquidity=True,
+                max_slippage=max_slippage,
             )
 
         final_prices: dict[str, Decimal] = {}
@@ -224,6 +228,7 @@ def run_grid_backtest(
     max_position_pct: Decimal,
     bucket_seconds: int,
     window_minutes: int = 5,
+    max_slippage: Decimal | None = None,
 ) -> GridBacktestResult:
     """Run a grid search over threshold and window parameters.
 
@@ -242,6 +247,8 @@ def run_grid_backtest(
         max_position_pct: Maximum fraction of capital per market.
         bucket_seconds: Seconds per snapshot bucket.
         window_minutes: Duration of each market window in minutes.
+        max_slippage: Maximum allowable slippage from the snapshot price.
+            When ``None``, slippage modelling is disabled.
 
     Returns:
         A ``GridBacktestResult`` with all cell results and metadata.
@@ -267,6 +274,7 @@ def run_grid_backtest(
                 capital=capital,
                 kelly_frac=kelly_frac,
                 max_position_pct=max_position_pct,
+                max_slippage=max_slippage,
             )
             cells.append(cell)
             logger.info(

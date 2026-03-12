@@ -61,6 +61,7 @@ class TickBacktestRunner:
         initial_capital: Decimal,
         *,
         check_liquidity: bool = False,
+        max_slippage: Decimal | None = None,
     ) -> None:
         """Initialize the tick backtest runner.
 
@@ -71,6 +72,8 @@ class TickBacktestRunner:
             initial_capital: Starting capital for result metadata.
             check_liquidity: When ``True``, validate order book depth
                 before opening positions. Default ``False``.
+            max_slippage: Maximum allowable slippage from the snapshot
+                price. When ``None``, slippage modelling is disabled.
 
         """
         self._strategy = strategy
@@ -78,6 +81,7 @@ class TickBacktestRunner:
         self._kelly_frac = kelly_frac
         self._initial_capital = initial_capital
         self._check_liquidity = check_liquidity
+        self._max_slippage = max_slippage
         self._snapshots_processed = 0
         self._windows_processed = 0
         self._wins = 0
@@ -136,6 +140,7 @@ class TickBacktestRunner:
                 kelly_frac=self._kelly_frac,
                 position_outcomes=self._position_outcomes,
                 check_liquidity=self._check_liquidity,
+                max_slippage=self._max_slippage,
             )
 
         # Build final-price map from last snapshot
@@ -165,6 +170,7 @@ def _run_tick_backtest(
     bucket_seconds: int,
     window_minutes: int = 5,
     book_snapshots: dict[str, list[OrderBookSnapshot]] | None = None,
+    max_slippage: Decimal | None = None,
 ) -> PaperTradingResult:
     """Run the synchronous tick-based backtest replay.
 
@@ -181,6 +187,8 @@ def _run_tick_backtest(
             order book snapshots for enriching market snapshots with
             real depth data. When ``None`` or empty, snapshots use
             empty order books (backward compatible).
+        max_slippage: Maximum allowable slippage from the snapshot price.
+            When ``None``, slippage modelling is disabled.
 
     Returns:
         Summary of the backtest run.
@@ -215,6 +223,7 @@ def _run_tick_backtest(
         portfolio=portfolio,
         kelly_frac=kelly_frac,
         initial_capital=capital,
+        max_slippage=max_slippage,
     )
     return runner.replay(window_data)
 
@@ -240,6 +249,10 @@ def backtest_ticks(
     max_position_pct: Annotated[
         float, typer.Option(help="Max fraction of capital per market")
     ] = 0.1,
+    max_slippage: Annotated[
+        float | None,
+        typer.Option(help="Max slippage tolerance (0-1 scale, e.g. 0.05). None disables."),
+    ] = 0.05,
     verbose: Annotated[  # noqa: FBT002
         bool, typer.Option("--verbose", "-v", help="Enable per-trade logging")
     ] = False,
@@ -286,6 +299,7 @@ def backtest_ticks(
         total_books = sum(len(b) for b in book_data.values())
         typer.echo(f"Found {total_books} order book snapshots for {len(book_data)} tokens")
 
+    slip = Decimal(str(max_slippage)) if max_slippage is not None else None
     result = _run_tick_backtest(
         all_ticks,
         capital=Decimal(str(capital)),
@@ -296,6 +310,7 @@ def backtest_ticks(
         bucket_seconds=bucket_seconds,
         window_minutes=window_minutes,
         book_snapshots=book_data or None,
+        max_slippage=slip,
     )
 
     display_result(result)

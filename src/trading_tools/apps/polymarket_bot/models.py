@@ -132,6 +132,7 @@ class PaperTrade:
         timestamp: Unix epoch seconds of execution.
         reason: Human-readable explanation of why the trade was made.
         estimated_edge: Strategy's estimated probability edge over market price.
+        slippage: Price slippage from order book VWAP fill (0 when not modelled).
 
     """
 
@@ -143,6 +144,7 @@ class PaperTrade:
     timestamp: int
     reason: str
     estimated_edge: Decimal
+    slippage: Decimal = ZERO
 
 
 def _empty_metrics() -> dict[str, Decimal]:

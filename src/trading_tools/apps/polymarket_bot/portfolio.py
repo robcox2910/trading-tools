@@ -55,6 +55,8 @@ class PaperPortfolio(BasePortfolio):
         timestamp: int,
         reason: str,
         edge: Decimal,
+        *,
+        slippage: Decimal = ZERO,
     ) -> PaperTrade | None:
         """Open a virtual position in a prediction market.
 
@@ -71,6 +73,7 @@ class PaperPortfolio(BasePortfolio):
             timestamp: Unix epoch seconds of execution.
             reason: Strategy's explanation for the trade.
             edge: Estimated probability edge over market price.
+            slippage: Price slippage from order book VWAP fill. Default zero.
 
         Returns:
             A ``PaperTrade`` if the position was opened, or ``None`` if
@@ -107,6 +110,7 @@ class PaperPortfolio(BasePortfolio):
             timestamp=timestamp,
             reason=reason,
             estimated_edge=edge,
+            slippage=slippage,
         )
         self._trades.append(trade)
         return trade

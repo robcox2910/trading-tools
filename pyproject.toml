@@ -96,7 +96,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.pylint]
-max-args = 11
+max-args = 12
+max-returns = 8
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = [

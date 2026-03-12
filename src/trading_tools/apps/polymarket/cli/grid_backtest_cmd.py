@@ -97,6 +97,10 @@ def grid_backtest(
     max_position_pct: Annotated[
         float, typer.Option(help="Max fraction of capital per market")
     ] = 0.1,
+    max_slippage: Annotated[
+        float | None,
+        typer.Option(help="Max slippage tolerance (0-1 scale, e.g. 0.05). None disables."),
+    ] = 0.05,
     verbose: Annotated[  # noqa: FBT002
         bool, typer.Option("--verbose", "-v", help="Enable per-trade logging")
     ] = False,
@@ -149,6 +153,7 @@ def grid_backtest(
         typer.echo(f"Found {total_books} order book snapshots for {len(book_data)} tokens")
     typer.echo("")
 
+    slip = Decimal(str(max_slippage)) if max_slippage is not None else None
     result = run_grid_backtest(
         all_ticks,
         book_snapshots=book_data or None,
@@ -159,6 +164,7 @@ def grid_backtest(
         max_position_pct=Decimal(str(max_position_pct)),
         bucket_seconds=bucket_seconds,
         window_minutes=_WINDOW_MINUTES,
+        max_slippage=slip,
     )
 
     _display_results(result)
