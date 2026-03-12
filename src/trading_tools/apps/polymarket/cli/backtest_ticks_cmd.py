@@ -196,15 +196,19 @@ def _run_tick_backtest(
     # Build windows and snapshots for each condition
     window_data: list[tuple[MarketWindow, list[MarketSnapshot]]] = []
     for condition_id, ticks in sorted(all_ticks.items()):
-        window = builder.detect_window(condition_id, ticks)
-        snapshots = builder.build_snapshots(ticks, window, book_snapshots=book_snapshots)
-        window_data.append((window, snapshots))
-        logger.info(
-            "Window: %s  ticks=%d  snapshots=%d",
-            condition_id[:20],
-            len(ticks),
-            len(snapshots),
-        )
+        for window, window_ticks in builder.detect_all_windows(condition_id, ticks):
+            snapshots = builder.build_snapshots(
+                window_ticks,
+                window,
+                book_snapshots=book_snapshots,
+            )
+            window_data.append((window, snapshots))
+            logger.info(
+                "Window: %s  ticks=%d  snapshots=%d",
+                condition_id[:20],
+                len(window_ticks),
+                len(snapshots),
+            )
 
     runner = TickBacktestRunner(
         strategy=strategy,

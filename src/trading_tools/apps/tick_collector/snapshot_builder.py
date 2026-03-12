@@ -28,6 +28,7 @@ _DEFAULT_WINDOW_MINUTES = 5
 _MS_PER_SECOND = 1000
 _MS_PER_MINUTE = 60_000
 _HALF = Decimal("0.5")
+_MIN_TICKS_PER_WINDOW = 5
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,68 @@ class SnapshotBuilder:
             end_ms=end_ms,
             end_date=end_date,
         )
+
+    def detect_all_windows(
+        self,
+        condition_id: str,
+        ticks: list[Tick],
+    ) -> list[tuple[MarketWindow, list[Tick]]]:
+        """Partition ticks into all calendar-aligned windows.
+
+        Group ticks by their window boundary (e.g. 5-minute aligned slots)
+        and return a ``(MarketWindow, ticks)`` pair for each boundary that
+        contains enough ticks. This correctly handles markets whose ticks
+        span multiple windows (pre-market, active, post-resolution) by
+        producing separate replay windows for each period.
+
+        Args:
+            condition_id: Market condition identifier for the windows.
+            ticks: Non-empty list of ticks to partition.
+
+        Returns:
+            List of ``(MarketWindow, ticks)`` pairs sorted by window start
+            time. Windows with fewer than ``_MIN_TICKS_PER_WINDOW`` ticks
+            are excluded to filter straggler noise.
+
+        Raises:
+            ValueError: If the ticks list is empty.
+
+        """
+        if not ticks:
+            msg = "ticks list must not be empty"
+            raise ValueError(msg)
+
+        window_ms = self._window_ms
+
+        # Group ticks by calendar-aligned window boundary
+        groups: dict[int, list[Tick]] = {}
+        for tick in ticks:
+            window_key = tick.timestamp // window_ms
+            groups.setdefault(window_key, []).append(tick)
+
+        # Build (MarketWindow, ticks) pairs for windows with enough ticks
+        results: list[tuple[MarketWindow, list[Tick]]] = []
+        for window_key in sorted(groups):
+            window_ticks = groups[window_key]
+            if len(window_ticks) < _MIN_TICKS_PER_WINDOW:
+                continue
+
+            start_ms = window_key * window_ms
+            end_ms = start_ms + window_ms
+            end_date = datetime.fromtimestamp(
+                end_ms / _MS_PER_SECOND,
+                tz=UTC,
+            ).isoformat()
+
+            window = MarketWindow(
+                condition_id=condition_id,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                end_date=end_date,
+            )
+            results.append((window, window_ticks))
+
+        return results
 
     def build_snapshots(
         self,

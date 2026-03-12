@@ -148,7 +148,11 @@ class TestBacktestTicksCLI:
         runner = CliRunner()
 
         mock_ticks = [
-            _make_tick(timestamp=_WINDOW_START_MS + 200_000, price=0.90),
+            _make_tick(timestamp=_WINDOW_START_MS + 200_000, price=0.85),
+            _make_tick(timestamp=_WINDOW_START_MS + 210_000, price=0.87),
+            _make_tick(timestamp=_WINDOW_START_MS + 220_000, price=0.89),
+            _make_tick(timestamp=_WINDOW_START_MS + 230_000, price=0.90),
+            _make_tick(timestamp=_WINDOW_START_MS + 250_000, price=0.92),
         ]
 
         with (
