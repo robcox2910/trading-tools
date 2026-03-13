@@ -1,7 +1,7 @@
 [project]
 name = "trading-tools"
 dynamic = ["version"]
-description = "Trading tools for analyzing and trading cryptocurrencies via Revolut X API"
+description = "Trading tools for fetching market data, backtesting strategies, and trading on Revolut X, Binance, and Polymarket"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [

@@ -34,7 +34,7 @@ private_key = Ed25519Signer.load_private_key_from_file("/path/to/private_key.pem
 client = RevolutXClient(
     api_key="your_64_character_api_key",
     private_key=private_key,
-    base_url="https://api.revolut.com/api/1.0",
+    base_url="https://revx.revolut.com/api/1.0",
 )
 
 # Use client

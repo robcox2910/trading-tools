@@ -39,3 +39,16 @@
 - Add production deps to `[project.dependencies]`
 - Add dev deps to `[project.optional-dependencies.dev]` or `[dependency-groups.dev]`
 - Run `uv sync --all-extras` after modifying dependencies
+
+## Documentation
+
+Documentation must be kept up to date with every code change. Outdated docs are worse than no docs.
+
+- **Adding/changing CLI flags or commands**: Update the relevant doc in `docs/` (`BACKTESTER.md`, `POLYMARKET.md`, or `GETTING_STARTED.md`) to reflect the new options, defaults, and help text
+- **Adding a new module or app**: Update `docs/ARCHITECTURE.md` project tree and module tables
+- **Adding a new feature**: Update `README.md` feature list and add usage examples
+- **Changing configuration**: Update `docs/GETTING_STARTED.md` and `.env.example` if new env vars are introduced
+- **Adding a new strategy**: Add it to the strategy tables in `docs/BACKTESTER.md` or `docs/POLYMARKET.md`
+- **Changing dependencies**: Note any new prerequisites in `docs/GETTING_STARTED.md` if they require system-level setup
+
+When in doubt, grep the `docs/` directory for references to the code you changed and update any stale content.
