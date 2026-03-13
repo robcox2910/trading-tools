@@ -259,7 +259,6 @@ EnvironmentFile=-/run/tick-collector.env
 
 ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket tick-collect \
   --series ${bot_series} \
-  --db-url $${TICK_DB_URL:-sqlite+aiosqlite:////var/lib/trading-tools/tick_data.db} \
   --verbose
 
 StandardOutput=append:/var/log/trading-tools/tick-collector.log
@@ -293,7 +292,6 @@ ExecStartPre=/bin/bash $REPO_DIR/fetch-secrets.sh /run/whale-monitor.env
 EnvironmentFile=-/run/whale-monitor.env
 
 ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket whale-monitor \
-  --db-url $${WHALE_DB_URL:-sqlite+aiosqlite:///whale_data.db} \
   --verbose
 
 StandardOutput=append:/var/log/trading-tools/whale-monitor.log
