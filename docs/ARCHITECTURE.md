@@ -34,7 +34,12 @@ trading-tools/
 │   │   │   └── models.py            # Tick and order book SQLAlchemy models
 │   │   └── whale_monitor/           # Whale trade monitoring service
 │   │       ├── monitor.py           # Polling service
-│   │       └── models.py            # Whale and trade SQLAlchemy models
+│   │       ├── models.py            # Whale and trade SQLAlchemy models
+│   │       ├── repository.py        # Async SQLAlchemy repository for whales and trades
+│   │       ├── analyser.py          # Aggregate trades into WhaleAnalysis / MarketBreakdown
+│   │       ├── correlator.py        # Cross-reference whale bets with Binance spot price direction
+│   │       ├── collector.py         # Shared trade-fetching utilities
+│   │       └── config.py            # Whale monitor configuration dataclasses
 │   ├── clients/                     # External API clients
 │   │   ├── revolut_x/               # Revolut X API client
 │   │   │   ├── auth/                # Ed25519 authentication
@@ -110,7 +115,7 @@ Runnable applications and long-lived services. Each application has:
 | `polymarket` | CLI for market queries, trading, bots, tick collection, and whale monitoring |
 | `polymarket_bot` | Paper and live trading engines (consumed by `polymarket` CLI) |
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
-| `whale_monitor` | Polling service that tracks whale trades |
+| `whale_monitor` | Polling service that tracks whale trades, with analysis, per-market breakdown, and Binance spot correlation |
 
 ### `/clients` — API Clients
 

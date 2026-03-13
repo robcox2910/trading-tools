@@ -52,3 +52,16 @@ Documentation must be kept up to date with every code change. Outdated docs are 
 - **Changing dependencies**: Note any new prerequisites in `docs/GETTING_STARTED.md` if they require system-level setup
 
 When in doubt, grep the `docs/` directory for references to the code you changed and update any stale content.
+
+## Notebooks (`src/users/*/`)
+
+Notebooks live under `src/users/<username>/` and are for exploration, not production code.
+
+- **Reuse core and data first** — before writing any data-fetching logic in a notebook, check whether a function already exists in `trading_tools.core`, `trading_tools.data`, or a client. If an existing function nearly fits but is too narrow, generalise it in the source module first, then call it from the notebook.
+- **Auto-reload must always be on** — every notebook must begin with:
+  ```python
+  %load_ext autoreload
+  %autoreload 2
+  ```
+  This ensures edits to library code are picked up without restarting the kernel.
+- **No duplicate logic** — notebooks must not re-implement anything that already lives in the package. Call the module; don't copy it.

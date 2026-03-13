@@ -309,6 +309,23 @@ trading-tools-polymarket whale-markets --address 0x1234... --days 1 --min-trades
 | `--min-trades` | `10` | Minimum trades per market to include |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 
+### `whale-correlate` — Correlate Whale Bets with Spot Price
+
+Cross-reference a whale's directional bet per market with actual spot price movement fetched from Binance.
+
+```bash
+trading-tools-polymarket whale-correlate --address 0x1234... --days 7 --min-trades 10
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--address` | *(required)* | Whale proxy wallet address to analyse |
+| `--days` | `1` | Number of days to analyse |
+| `--min-trades` | `10` | Minimum trades per market to include |
+| `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
+
+For each market the command shows: the whale's favoured side (Up/Down), the actual price change over the market window, and whether the whale's call was correct.
+
 ## Backtesting Polymarket Strategies
 
 ### `backtest-snipe` — Backtest Late Snipe on Synthetic Data
