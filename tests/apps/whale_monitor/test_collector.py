@@ -234,6 +234,36 @@ class TestPollWhale:
         assert saved[0].transaction_hash == "tx_new"
 
     @pytest.mark.asyncio
+    async def test_poll_whale_deduplicates_within_batch(self) -> None:
+        """Verify duplicate hashes within the same API response are skipped."""
+        config = _make_config()
+        monitor = WhaleMonitor(config)
+
+        mock_repo = MagicMock()
+        mock_repo.get_existing_hashes = AsyncMock(return_value=set())
+        mock_repo.save_trades = AsyncMock()
+        monitor._repo = mock_repo
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = [
+            _make_raw_trade(tx_hash="tx_dup"),
+            _make_raw_trade(tx_hash="tx_dup"),
+            _make_raw_trade(tx_hash="tx_unique"),
+        ]
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        count = await monitor._poll_whale(mock_client, _ADDRESS)
+
+        assert count == _POLL_COUNT_2
+        saved = mock_repo.save_trades.call_args[0][0]
+        assert len(saved) == _POLL_COUNT_2
+        hashes = {t.transaction_hash for t in saved}
+        assert hashes == {"tx_dup", "tx_unique"}
+
+    @pytest.mark.asyncio
     async def test_poll_whale_empty_response(self) -> None:
         """Return zero when API returns no trades."""
         config = _make_config()
