@@ -6,6 +6,7 @@ from tracked whale addresses and persists them to a database.
 
 import asyncio
 import logging
+import os
 from typing import Annotated
 
 import typer
@@ -13,7 +14,7 @@ import typer
 from trading_tools.apps.whale_monitor.collector import WhaleMonitor
 from trading_tools.apps.whale_monitor.config import WhaleMonitorConfig
 
-_DEFAULT_DB_URL = "sqlite+aiosqlite:///whale_data.db"
+_DEFAULT_DB_URL = os.environ.get("WHALE_DB_URL", "sqlite+aiosqlite:///whale_data.db")
 _DEFAULT_POLL_INTERVAL = 120
 
 

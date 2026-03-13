@@ -7,6 +7,7 @@ IDs and auto-discovery via Gamma API series slugs.
 
 import asyncio
 import logging
+import os
 from typing import Annotated
 
 import typer
@@ -15,7 +16,7 @@ from trading_tools.apps.polymarket.cli._helpers import parse_series_slugs
 from trading_tools.apps.tick_collector.collector import TickCollector
 from trading_tools.apps.tick_collector.config import CollectorConfig
 
-_DEFAULT_DB_URL = "sqlite+aiosqlite:///tick_data.db"
+_DEFAULT_DB_URL = os.environ.get("TICK_DB_URL", "sqlite+aiosqlite:///tick_data.db")
 
 
 def tick_collect(

@@ -259,7 +259,7 @@ EnvironmentFile=-/run/tick-collector.env
 
 ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket tick-collect \
   --series ${bot_series} \
-  --db-url sqlite+aiosqlite:////var/lib/trading-tools/tick_data.db \
+  --db-url $${TICK_DB_URL:-sqlite+aiosqlite:////var/lib/trading-tools/tick_data.db} \
   --verbose
 
 StandardOutput=append:/var/log/trading-tools/tick-collector.log
@@ -277,15 +277,48 @@ TimeoutStopSec=90
 WantedBy=multi-user.target
 SVCEOF
 
-# ── 12. Enable and start paper bot + tick collector ────────────
+# ── 12. Systemd service: whale monitor ──────────────────────────
+cat > /etc/systemd/system/whale-monitor.service <<SVCEOF
+[Unit]
+Description=Polymarket Whale Trade Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$REPO_DIR
+
+ExecStartPre=/bin/bash $REPO_DIR/fetch-secrets.sh /run/whale-monitor.env
+EnvironmentFile=-/run/whale-monitor.env
+
+ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket whale-monitor \
+  --db-url $${WHALE_DB_URL:-sqlite+aiosqlite:///whale_data.db} \
+  --verbose
+
+StandardOutput=append:/var/log/trading-tools/whale-monitor.log
+StandardError=append:/var/log/trading-tools/whale-monitor.log
+
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGINT
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+# ── 13. Enable and start paper bot + tick collector + whale monitor ──
 systemctl daemon-reload
 systemctl enable trading-bot-paper.service
 systemctl start trading-bot-paper.service
 systemctl enable tick-collector.service
 systemctl start tick-collector.service
+systemctl enable whale-monitor.service
+systemctl start whale-monitor.service
 
 # Live bot is installed but NOT enabled/started
-echo "Paper bot and tick collector started. Live bot installed but disabled."
+echo "Paper bot, tick collector, and whale monitor started. Live bot installed but disabled."
 echo "To start live bot: sudo systemctl start trading-bot-live"
 
 echo "=== Bootstrap completed at $(date -u) ==="

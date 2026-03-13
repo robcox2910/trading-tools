@@ -6,6 +6,7 @@ statistics, and hourly activity patterns.
 """
 
 import asyncio
+import os
 import time
 from typing import Annotated
 
@@ -14,7 +15,7 @@ import typer
 from trading_tools.apps.whale_monitor.analyser import analyse_trades, format_analysis
 from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
-_DEFAULT_DB_URL = "sqlite+aiosqlite:///whale_data.db"
+_DEFAULT_DB_URL = os.environ.get("WHALE_DB_URL", "sqlite+aiosqlite:///whale_data.db")
 _DEFAULT_DAYS = 7
 _SECONDS_PER_DAY = 86400
 

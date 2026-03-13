@@ -5,13 +5,14 @@ monitor database so it will be included in future polling cycles.
 """
 
 import asyncio
+import os
 from typing import Annotated
 
 import typer
 
 from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
-_DEFAULT_DB_URL = "sqlite+aiosqlite:///whale_data.db"
+_DEFAULT_DB_URL = os.environ.get("WHALE_DB_URL", "sqlite+aiosqlite:///whale_data.db")
 
 
 def whale_add(
