@@ -171,12 +171,14 @@ class WhaleMonitor:
         existing_hashes = await self._repo.get_existing_hashes(candidate_hashes)
 
         new_trades: list[WhaleTrade] = []
+        seen_hashes: set[str] = set(existing_hashes)
         now_ms = _now_ms()
 
         for raw in all_raw_trades:
             tx_hash = str(raw.get("transactionHash", ""))
-            if tx_hash in existing_hashes:
+            if tx_hash in seen_hashes:
                 continue
+            seen_hashes.add(tx_hash)
             trade = _parse_trade(raw, address, now_ms)
             if trade:
                 new_trades.append(trade)
