@@ -38,11 +38,6 @@ output "sns_topic_arn" {
   value       = aws_sns_topic.trading_alerts.arn
 }
 
-output "tick_data_volume_id" {
-  description = "EBS volume ID for persistent tick data storage"
-  value       = aws_ebs_volume.tick_data.id
-}
-
 output "rds_endpoint" {
   description = "RDS PostgreSQL endpoint (host:port)"
   value       = aws_db_instance.trading_tools.endpoint
