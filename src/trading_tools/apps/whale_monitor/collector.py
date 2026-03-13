@@ -132,9 +132,10 @@ class WhaleMonitor:
     async def _poll_whale(self, client: httpx.AsyncClient, address: str) -> int:
         """Fetch and store new trades for a single whale address.
 
-        Paginate through the Data API up to ``max_offset`` to capture up
-        to 4000 trades. Deduplicate by transaction hash against existing
-        records.
+        Paginate through the Data API up to ``max_offset``, processing
+        each page immediately to minimise peak memory usage. Deduplicate
+        by transaction hash against existing records and within the
+        current poll cycle.
 
         Args:
             client: Async HTTP client for API requests.
@@ -144,8 +145,10 @@ class WhaleMonitor:
             Number of new trades inserted.
 
         """
-        all_raw_trades: list[dict[str, Any]] = []
+        total_new = 0
+        seen_hashes: set[str] = set()
         limit = self._config.api_limit
+        now_ms = _now_ms()
 
         for offset in range(0, self._config.max_offset + 1, limit):
             url = f"{_DATA_API_BASE}/trades"
@@ -157,26 +160,58 @@ class WhaleMonitor:
             }
             resp = await client.get(url, params=params)
             resp.raise_for_status()
-            page = resp.json()
+            page: list[dict[str, Any]] = resp.json()
             if not page:
                 break
-            all_raw_trades.extend(page)
+
+            page_new = await self._process_page(page, address, seen_hashes, now_ms)
+            total_new += page_new
+
             if len(page) < limit:
                 break
 
-        if not all_raw_trades:
+        return total_new
+
+    async def _process_page(
+        self,
+        page: list[dict[str, Any]],
+        address: str,
+        seen_hashes: set[str],
+        now_ms: int,
+    ) -> int:
+        """Deduplicate and persist a single page of raw trades.
+
+        Check candidate hashes against the database and the running
+        ``seen_hashes`` set, then batch-insert any genuinely new trades.
+        Each page is processed and discarded before fetching the next,
+        keeping peak memory proportional to one page (~1000 records).
+
+        Args:
+            page: Raw trade dicts from one API page.
+            address: Whale proxy wallet address.
+            seen_hashes: Hashes already seen in this poll cycle
+                (mutated in-place to track cross-page duplicates).
+            now_ms: Collection timestamp in epoch milliseconds.
+
+        Returns:
+            Number of new trades inserted from this page.
+
+        """
+        candidate_hashes = {
+            str(t.get("transactionHash", ""))
+            for t in page
+            if str(t.get("transactionHash", "")) not in seen_hashes
+        }
+        if not candidate_hashes:
             return 0
 
-        candidate_hashes = {str(t.get("transactionHash", "")) for t in all_raw_trades}
         existing_hashes = await self._repo.get_existing_hashes(candidate_hashes)
+        skip = existing_hashes | (seen_hashes & candidate_hashes)
 
         new_trades: list[WhaleTrade] = []
-        seen_hashes: set[str] = set(existing_hashes)
-        now_ms = _now_ms()
-
-        for raw in all_raw_trades:
+        for raw in page:
             tx_hash = str(raw.get("transactionHash", ""))
-            if tx_hash in seen_hashes:
+            if tx_hash in skip or tx_hash in seen_hashes:
                 continue
             seen_hashes.add(tx_hash)
             trade = _parse_trade(raw, address, now_ms)
