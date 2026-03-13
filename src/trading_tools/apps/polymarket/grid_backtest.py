@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from trading_tools.apps.polymarket.backtest_common import (
     build_backtest_result,
+    compute_resolved_outcomes,
     feed_snapshot_to_strategy,
     resolve_positions,
 )
@@ -131,6 +132,7 @@ def _run_single_cell(
     kelly_frac: Decimal,
     max_position_pct: Decimal,
     max_slippage: Decimal | None = None,
+    resolved_outcomes: dict[str, bool] | None = None,
 ) -> GridCell:
     """Run a single backtest cell with specific strategy parameters.
 
@@ -146,6 +148,9 @@ def _run_single_cell(
         max_position_pct: Maximum fraction of capital per market.
         max_slippage: Maximum allowable slippage from the snapshot price.
             When ``None``, slippage modelling is disabled.
+        resolved_outcomes: Precomputed mapping from condition_id to
+            ``True`` if YES won. When provided, overrides the
+            within-window last-tick price heuristic for resolution.
 
     Returns:
         A ``GridCell`` with the performance metrics for this combination.
@@ -183,6 +188,7 @@ def _run_single_cell(
             position_outcomes=position_outcomes,
             final_prices=final_prices,
             resolve_ts=resolve_ts,
+            resolved_outcomes=resolved_outcomes,
         )
         wins += cell_wins
         losses += cell_losses
@@ -261,6 +267,8 @@ def run_grid_backtest(
         book_snapshots=book_snapshots,
     )
 
+    resolved_outcomes = compute_resolved_outcomes(all_ticks)
+
     total_combos = len(thresholds) * len(windows)
     logger.info("Running %d grid combinations...", total_combos)
 
@@ -275,6 +283,7 @@ def run_grid_backtest(
                 kelly_frac=kelly_frac,
                 max_position_pct=max_position_pct,
                 max_slippage=max_slippage,
+                resolved_outcomes=resolved_outcomes,
             )
             cells.append(cell)
             logger.info(
