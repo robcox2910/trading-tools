@@ -42,13 +42,37 @@
 
 ## Documentation
 
-Documentation must be kept up to date with every code change. Outdated docs are worse than no docs.
+Documentation must be kept up to date with every code change. Outdated docs are worse than no docs. **Doc updates must be included in the same PR as the code change** — not deferred to a follow-up.
 
-- **Adding/changing CLI flags or commands**: Update the relevant doc in `docs/` (`BACKTESTER.md`, `POLYMARKET.md`, or `GETTING_STARTED.md`) to reflect the new options, defaults, and help text
-- **Adding a new module or app**: Update `docs/ARCHITECTURE.md` project tree and module tables
-- **Adding a new feature**: Update `README.md` feature list and add usage examples
-- **Changing configuration**: Update `docs/GETTING_STARTED.md` and `.env.example` if new env vars are introduced
-- **Adding a new strategy**: Add it to the strategy tables in `docs/BACKTESTER.md` or `docs/POLYMARKET.md`
-- **Changing dependencies**: Note any new prerequisites in `docs/GETTING_STARTED.md` if they require system-level setup
+### What to update
 
-When in doubt, grep the `docs/` directory for references to the code you changed and update any stale content.
+| Change | Files to update |
+|--------|----------------|
+| New/changed CLI flags or commands | `docs/BACKTESTER.md`, `docs/POLYMARKET.md`, or `docs/GETTING_STARTED.md` |
+| New module or application | `docs/ARCHITECTURE.md` project tree and module tables |
+| New user-facing feature | `README.md` feature list and usage examples |
+| New env var or config key | `docs/GETTING_STARTED.md` and `.env.example` |
+| New backtester strategy | Strategy table in `docs/BACKTESTER.md` and `docs/ARCHITECTURE.md` |
+| New Polymarket strategy | Strategy table in `docs/POLYMARKET.md` and `docs/ARCHITECTURE.md` |
+| Changed dependencies | `docs/GETTING_STARTED.md` if they require system-level setup |
+
+### How to verify
+
+Before committing, grep `docs/` for references to the code you changed and update any stale content:
+
+```bash
+grep -r "old_function_name" docs/
+```
+
+### Documentation index
+
+| File | Content |
+|------|---------|
+| `README.md` | Project overview, feature list, quick-start examples |
+| `docs/GETTING_STARTED.md` | Installation, API key setup, env var reference |
+| `docs/BACKTESTER.md` | All backtester strategies, commands, risk management flags |
+| `docs/POLYMARKET.md` | All Polymarket commands (trading, bots, ticks, whales, backtests) |
+| `docs/ARCHITECTURE.md` | Project structure, module responsibilities, design principles |
+| `docs/HTTP_CLIENT_USAGE.md` | Revolut X HTTP client API reference |
+| `CONTRIBUTING.md` | Developer workflow, code standards, PR process |
+| `.env.example` | Template for all environment variables |

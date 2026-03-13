@@ -70,17 +70,23 @@ uv run pre-commit run --all-files
 
 ## Documentation
 
-Keep documentation up to date with every code change. When your PR modifies user-facing behaviour, update the relevant docs:
+Documentation updates must be included **in the same PR** as the code change — not deferred to a follow-up. When your PR modifies user-facing behaviour, update the relevant docs:
 
-| Change | Update |
-|--------|--------|
+| Change | Files to update |
+|--------|----------------|
 | New/changed CLI flags or commands | `docs/BACKTESTER.md`, `docs/POLYMARKET.md`, or `docs/GETTING_STARTED.md` |
 | New module or application | `docs/ARCHITECTURE.md` project tree and tables |
 | New feature | `README.md` feature list and examples |
 | New env var or config | `docs/GETTING_STARTED.md` and `.env.example` |
-| New strategy | Strategy tables in `docs/BACKTESTER.md` or `docs/POLYMARKET.md` |
+| New strategy | Strategy tables in `docs/BACKTESTER.md` or `docs/POLYMARKET.md`, plus `docs/ARCHITECTURE.md` |
 
-Full documentation guide is in [CLAUDE.md](CLAUDE.md) under the Documentation section.
+Before committing, grep `docs/` for references to the code you changed:
+
+```bash
+grep -r "function_or_flag_name" docs/
+```
+
+See [CLAUDE.md](CLAUDE.md) for the full documentation index and update guide.
 
 ## PR Process
 

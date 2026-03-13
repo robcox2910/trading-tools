@@ -181,7 +181,7 @@ Five strategies for Polymarket prediction market trading:
 |----------|-------------|
 | `pm_mean_reversion` | Trade deviations from rolling mean price |
 | `pm_market_making` | Place symmetric bid/ask spreads |
-| `pm_liquidity_hunting` | Exploit order book imbalances |
+| `pm_liquidity_imbalance` | Exploit order book imbalances |
 | `pm_cross_market_arb` | Arbitrage mispricing across correlated markets |
 | `pm_late_snipe` | Snipe high-confidence outcomes near market close |
 

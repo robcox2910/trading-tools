@@ -117,6 +117,7 @@ trading-tools-polymarket tick-collect --series btc-updown-5m
 trading-tools-polymarket whale-add --address 0x... --label "BigTrader"
 trading-tools-polymarket whale-monitor --verbose
 trading-tools-polymarket whale-analyse --address 0x... --days 7
+trading-tools-polymarket whale-correlate --address 0x... --days 1
 ```
 
 See [Polymarket](docs/POLYMARKET.md) for all commands, options, and setup instructions.
