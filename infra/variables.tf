@@ -60,3 +60,20 @@ variable "alert_email" {
   description = "Email address for CloudWatch alarm notifications"
   type        = string
 }
+
+variable "db_username" {
+  description = "Master username for the RDS PostgreSQL instance"
+  type        = string
+  default     = "trading_tools"
+}
+
+variable "db_password" {
+  description = "Master password for the RDS PostgreSQL instance"
+  type        = string
+  sensitive   = true
+}
+
+variable "my_ip" {
+  description = "Developer IP CIDR for direct RDS access (e.g. 194.34.235.0/24)"
+  type        = string
+}

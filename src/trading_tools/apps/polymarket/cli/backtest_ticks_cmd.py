@@ -9,6 +9,7 @@ prediction market prices.
 
 import asyncio
 import logging
+import os
 from decimal import Decimal
 from typing import Annotated
 
@@ -36,7 +37,7 @@ from trading_tools.apps.tick_collector.snapshot_builder import (
 logger = logging.getLogger(__name__)
 
 _MS_PER_SECOND = 1000
-_DEFAULT_DB_URL = "sqlite+aiosqlite:///tick_data.db"
+_DEFAULT_DB_URL = os.environ.get("TICK_DB_URL", "sqlite+aiosqlite:///tick_data.db")
 
 
 class TickBacktestRunner:

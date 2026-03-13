@@ -8,6 +8,7 @@ validation. Display results as threshold x window markdown tables.
 from __future__ import annotations
 
 import asyncio
+import os
 from decimal import Decimal
 from typing import TYPE_CHECKING, Annotated
 
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
     from trading_tools.apps.polymarket.grid_backtest import GridBacktestResult
 
 _MS_PER_SECOND = 1000
-_DEFAULT_DB_URL = "sqlite+aiosqlite:///tick_data.db"
+_DEFAULT_DB_URL = os.environ.get("TICK_DB_URL", "sqlite+aiosqlite:///tick_data.db")
 _WINDOW_MINUTES = 5
 
 _THRESHOLD_START = Decimal("0.55")
