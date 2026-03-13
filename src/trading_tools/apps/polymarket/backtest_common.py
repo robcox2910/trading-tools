@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 _MS_PER_SECOND = 1000
 _ONE = Decimal(1)
+_HALF = Decimal("0.5")
+_HALF_FLOAT = 0.5
 
 
 def configure_verbose_logging() -> None:
@@ -321,11 +323,50 @@ def feed_snapshot_to_strategy(
     return trade
 
 
+def compute_resolved_outcomes(
+    all_ticks: dict[str, list[Tick]],
+) -> dict[str, bool]:
+    """Precompute actual binary outcomes from the final tick of each market.
+
+    For each condition_id, find the very last tick (highest timestamp) and
+    determine whether YES won. The YES asset is identified as the
+    lexicographically smaller asset_id — the same convention used by
+    ``SnapshotBuilder.build_snapshots()``.
+
+    Args:
+        all_ticks: Mapping from condition_id to time-sorted tick lists.
+
+    Returns:
+        Mapping from condition_id to ``True`` if YES won, ``False`` if NO won.
+
+    """
+    outcomes: dict[str, bool] = {}
+
+    for condition_id, ticks in all_ticks.items():
+        if not ticks:
+            continue
+
+        last_tick = max(ticks, key=lambda t: t.timestamp)
+
+        asset_ids = sorted({t.asset_id for t in ticks})
+        yes_asset = asset_ids[0]
+
+        if last_tick.asset_id == yes_asset:
+            outcomes[condition_id] = last_tick.price > _HALF_FLOAT
+        else:
+            # NO asset: price > 0.5 means NO won, so YES lost
+            outcomes[condition_id] = last_tick.price < _HALF_FLOAT
+
+    return outcomes
+
+
 def resolve_positions(
     portfolio: PaperPortfolio,
     position_outcomes: dict[str, str],
     final_prices: dict[str, Decimal],
     resolve_ts: int,
+    *,
+    resolved_outcomes: dict[str, bool] | None = None,
 ) -> tuple[int, int]:
     """Close all open positions at resolution prices.
 
@@ -333,12 +374,22 @@ def resolve_positions(
     price > 0.5 means YES wins (resolve at 1.0), otherwise NO wins
     (resolve at 0.0).
 
+    When ``resolved_outcomes`` is provided, use the precomputed binary
+    outcome (derived from each market's very last tick) instead of the
+    within-window ``final_prices`` proxy. This prevents intermediate
+    windows from using ambiguous mid-market prices as resolution signals.
+
     Args:
         portfolio: Paper portfolio with open positions.
         position_outcomes: Mapping from condition_id to outcome
             (``"Yes"`` or ``"No"``). Entries are consumed (popped).
         final_prices: Final YES price per condition_id for resolution.
+            Used as fallback when ``resolved_outcomes`` is not provided
+            or the condition_id is not in the map.
         resolve_ts: Resolution timestamp in epoch seconds.
+        resolved_outcomes: Precomputed mapping from condition_id to
+            ``True`` if YES won, ``False`` if NO won. When provided,
+            overrides the ``final_prices`` heuristic.
 
     Returns:
         Tuple of ``(wins, losses)`` counts.
@@ -348,8 +399,11 @@ def resolve_positions(
     losses = 0
 
     for cid in list(portfolio.positions):
-        final_yes = final_prices.get(cid, Decimal("0.5"))
-        went_up = final_yes > Decimal("0.5")
+        if resolved_outcomes is not None and cid in resolved_outcomes:
+            went_up = resolved_outcomes[cid]
+        else:
+            final_yes = final_prices.get(cid, _HALF)
+            went_up = final_yes > _HALF
 
         pos = portfolio.positions[cid]
         outcome = position_outcomes.pop(cid, "Yes")

@@ -16,6 +16,7 @@ import typer
 
 from trading_tools.apps.polymarket.backtest_common import (
     build_backtest_result,
+    compute_resolved_outcomes,
     configure_verbose_logging,
     display_result,
     feed_snapshot_to_strategy,
@@ -62,6 +63,7 @@ class TickBacktestRunner:
         *,
         check_liquidity: bool = False,
         max_slippage: Decimal | None = None,
+        resolved_outcomes: dict[str, bool] | None = None,
     ) -> None:
         """Initialize the tick backtest runner.
 
@@ -74,6 +76,9 @@ class TickBacktestRunner:
                 before opening positions. Default ``False``.
             max_slippage: Maximum allowable slippage from the snapshot
                 price. When ``None``, slippage modelling is disabled.
+            resolved_outcomes: Precomputed mapping from condition_id to
+                ``True`` if YES won. When provided, overrides the
+                within-window last-tick price heuristic for resolution.
 
         """
         self._strategy = strategy
@@ -82,6 +87,7 @@ class TickBacktestRunner:
         self._initial_capital = initial_capital
         self._check_liquidity = check_liquidity
         self._max_slippage = max_slippage
+        self._resolved_outcomes = resolved_outcomes
         self._snapshots_processed = 0
         self._windows_processed = 0
         self._wins = 0
@@ -154,6 +160,7 @@ class TickBacktestRunner:
             position_outcomes=self._position_outcomes,
             final_prices=final_prices,
             resolve_ts=resolve_ts,
+            resolved_outcomes=self._resolved_outcomes,
         )
         self._wins += wins
         self._losses += losses
@@ -218,12 +225,14 @@ def _run_tick_backtest(
                 len(snapshots),
             )
 
+    resolved = compute_resolved_outcomes(all_ticks)
     runner = TickBacktestRunner(
         strategy=strategy,
         portfolio=portfolio,
         kelly_frac=kelly_frac,
         initial_capital=capital,
         max_slippage=max_slippage,
+        resolved_outcomes=resolved,
     )
     return runner.replay(window_data)
 

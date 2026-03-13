@@ -8,6 +8,7 @@ import typer
 from trading_tools.apps.polymarket.backtest_common import (
     build_backtest_result,
     compute_order_book_slippage,
+    compute_resolved_outcomes,
     feed_snapshot_to_strategy,
     parse_date,
     resolve_positions,
@@ -15,6 +16,7 @@ from trading_tools.apps.polymarket.backtest_common import (
 from trading_tools.apps.polymarket_bot.models import MarketSnapshot, PaperTradingResult
 from trading_tools.apps.polymarket_bot.portfolio import PaperPortfolio
 from trading_tools.apps.polymarket_bot.strategies.late_snipe import PMLateSnipeStrategy
+from trading_tools.apps.tick_collector.models import Tick
 from trading_tools.clients.polymarket.models import OrderBook, OrderLevel
 from trading_tools.core.models import ZERO, Side
 
@@ -318,6 +320,178 @@ class TestResolvePositions:
 
         assert wins == 0
         assert losses == 0
+
+    def test_resolved_outcomes_overrides_final_prices(self) -> None:
+        """Use resolved_outcomes when provided, ignoring final_prices."""
+        portfolio = PaperPortfolio(_CAPITAL, _MAX_POS_PCT)
+        outcomes: dict[str, str] = {_CONDITION_ID: "Yes"}
+
+        portfolio.open_position(
+            condition_id=_CONDITION_ID,
+            outcome="Yes",
+            side=Side.BUY,
+            price=Decimal("0.85"),
+            quantity=Decimal(10),
+            timestamp=_TIMESTAMP,
+            reason="test",
+            edge=Decimal("0.05"),
+        )
+
+        # final_prices says YES won (0.90 > 0.5), but resolved_outcomes
+        # says NO won — resolved_outcomes should take precedence
+        final_prices = {_CONDITION_ID: Decimal("0.90")}
+        resolved = {_CONDITION_ID: False}
+        wins, losses = resolve_positions(
+            portfolio=portfolio,
+            position_outcomes=outcomes,
+            final_prices=final_prices,
+            resolve_ts=_TIMESTAMP + _FIVE_MINUTES,
+            resolved_outcomes=resolved,
+        )
+
+        assert wins == 0
+        expected_losses = 1
+        assert losses == expected_losses
+
+    def test_resolved_outcomes_none_falls_back_to_final_prices(self) -> None:
+        """Fall back to final_prices when resolved_outcomes is None."""
+        portfolio = PaperPortfolio(_CAPITAL, _MAX_POS_PCT)
+        outcomes: dict[str, str] = {_CONDITION_ID: "Yes"}
+
+        portfolio.open_position(
+            condition_id=_CONDITION_ID,
+            outcome="Yes",
+            side=Side.BUY,
+            price=Decimal("0.85"),
+            quantity=Decimal(10),
+            timestamp=_TIMESTAMP,
+            reason="test",
+            edge=Decimal("0.05"),
+        )
+
+        final_prices = {_CONDITION_ID: Decimal("0.90")}
+        wins, losses = resolve_positions(
+            portfolio=portfolio,
+            position_outcomes=outcomes,
+            final_prices=final_prices,
+            resolve_ts=_TIMESTAMP + _FIVE_MINUTES,
+            resolved_outcomes=None,
+        )
+
+        expected_wins = 1
+        assert wins == expected_wins
+        assert losses == 0
+
+
+_MS_PER_SECOND = 1000
+
+
+def _make_tick(
+    asset_id: str = "asset_aaa",
+    condition_id: str = _CONDITION_ID,
+    price: float = 0.5,
+    timestamp: int = _TIMESTAMP * _MS_PER_SECOND,
+) -> Tick:
+    """Create a Tick instance for testing.
+
+    Args:
+        asset_id: Token identifier.
+        condition_id: Market condition identifier.
+        price: Trade execution price.
+        timestamp: Epoch milliseconds.
+
+    Returns:
+        A new Tick instance.
+
+    """
+    return Tick(
+        asset_id=asset_id,
+        condition_id=condition_id,
+        price=price,
+        size=1.0,
+        side="BUY",
+        fee_rate_bps=0,
+        timestamp=timestamp,
+        received_at=timestamp,
+    )
+
+
+class TestComputeResolvedOutcomes:
+    """Tests for the compute_resolved_outcomes helper."""
+
+    def test_yes_asset_last_tick_above_half(self) -> None:
+        """Return True when the YES asset's last tick is above 0.5."""
+        ticks = [
+            _make_tick(asset_id="asset_aaa", price=0.3, timestamp=1000),
+            _make_tick(asset_id="asset_aaa", price=0.9, timestamp=2000),
+        ]
+        result = compute_resolved_outcomes({_CONDITION_ID: ticks})
+        assert result[_CONDITION_ID] is True
+
+    def test_yes_asset_last_tick_below_half(self) -> None:
+        """Return False when the YES asset's last tick is below 0.5."""
+        ticks = [
+            _make_tick(asset_id="asset_aaa", price=0.9, timestamp=1000),
+            _make_tick(asset_id="asset_aaa", price=0.1, timestamp=2000),
+        ]
+        result = compute_resolved_outcomes({_CONDITION_ID: ticks})
+        assert result[_CONDITION_ID] is False
+
+    def test_no_asset_last_tick_above_half(self) -> None:
+        """Return False when the NO asset's last tick is above 0.5 (YES lost)."""
+        ticks = [
+            _make_tick(asset_id="asset_aaa", price=0.9, timestamp=1000),
+            _make_tick(asset_id="asset_zzz", price=0.9, timestamp=2000),
+        ]
+        result = compute_resolved_outcomes({_CONDITION_ID: ticks})
+        # NO asset at 0.9 → YES lost
+        assert result[_CONDITION_ID] is False
+
+    def test_no_asset_last_tick_below_half(self) -> None:
+        """Return True when the NO asset's last tick is below 0.5 (YES won)."""
+        ticks = [
+            _make_tick(asset_id="asset_aaa", price=0.9, timestamp=1000),
+            _make_tick(asset_id="asset_zzz", price=0.1, timestamp=2000),
+        ]
+        result = compute_resolved_outcomes({_CONDITION_ID: ticks})
+        # NO asset at 0.1 → YES won
+        assert result[_CONDITION_ID] is True
+
+    def test_single_asset_condition(self) -> None:
+        """Handle condition with only one asset_id correctly."""
+        ticks = [
+            _make_tick(asset_id="only_asset", price=0.95, timestamp=1000),
+        ]
+        result = compute_resolved_outcomes({_CONDITION_ID: ticks})
+        # Single asset is the YES asset; price 0.95 > 0.5 → True
+        assert result[_CONDITION_ID] is True
+
+    def test_multiple_ticks_uses_last_by_timestamp(self) -> None:
+        """Use the tick with the highest timestamp, not the last in the list."""
+        ticks = [
+            _make_tick(asset_id="asset_aaa", price=0.95, timestamp=3000),
+            _make_tick(asset_id="asset_aaa", price=0.1, timestamp=1000),
+            _make_tick(asset_id="asset_aaa", price=0.5, timestamp=2000),
+        ]
+        result = compute_resolved_outcomes({_CONDITION_ID: ticks})
+        # Last by timestamp is 3000 with price 0.95 → True
+        assert result[_CONDITION_ID] is True
+
+    def test_empty_tick_list_skipped(self) -> None:
+        """Skip condition_ids with empty tick lists."""
+        result = compute_resolved_outcomes({_CONDITION_ID: []})
+        assert _CONDITION_ID not in result
+
+    def test_multiple_conditions(self) -> None:
+        """Compute outcomes independently for each condition."""
+        cid_a = "cond_a"
+        cid_b = "cond_b"
+        ticks_a = [_make_tick(asset_id="a1", condition_id=cid_a, price=0.95, timestamp=1000)]
+        ticks_b = [_make_tick(asset_id="b1", condition_id=cid_b, price=0.05, timestamp=1000)]
+
+        result = compute_resolved_outcomes({cid_a: ticks_a, cid_b: ticks_b})
+        assert result[cid_a] is True
+        assert result[cid_b] is False
 
 
 class TestBuildBacktestResult:
