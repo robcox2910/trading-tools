@@ -240,6 +240,31 @@ resource "aws_cloudwatch_metric_alarm" "drawdown_alert" {
   }
 }
 
+# RDS storage: alert when less than 2 GB free (90% of 20 GB used)
+resource "aws_cloudwatch_metric_alarm" "rds_storage_low" {
+  alarm_name          = "trading-bot-rds-storage-low"
+  alarm_description   = "RDS free storage below 2 GB (90% full)"
+  comparison_operator = "LessThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  period              = 300
+  threshold           = 2147483648 # 2 GB in bytes
+  statistic           = "Average"
+  treat_missing_data  = "breaching"
+
+  namespace   = "AWS/RDS"
+  metric_name = "FreeStorageSpace"
+  dimensions = {
+    DBInstanceIdentifier = aws_db_instance.trading_tools.id
+  }
+
+  alarm_actions = [aws_sns_topic.trading_alerts.arn]
+  ok_actions    = [aws_sns_topic.trading_alerts.arn]
+
+  tags = {
+    Project = "trading-tools"
+  }
+}
+
 # ---------------------------------------------------------------------------
 # CloudWatch Dashboard
 # ---------------------------------------------------------------------------
@@ -374,6 +399,24 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
             ["TradingBot", "TickCollectorErrorCount", { stat = "Sum", period = 300 }]
           ]
           view = "bar"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 24
+        width  = 12
+        height = 6
+        properties = {
+          title  = "RDS Free Storage (GB)"
+          region = var.aws_region
+          metrics = [
+            ["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", aws_db_instance.trading_tools.id, { stat = "Average", period = 300 }]
+          ]
+          view = "timeSeries"
+          yAxis = {
+            left = { label = "Bytes" }
+          }
         }
       }
     ]
