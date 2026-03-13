@@ -17,6 +17,7 @@ from trading_tools.apps.polymarket.cli.tick_collector_cmd import tick_collect
 from trading_tools.apps.polymarket.cli.trade_cmd import balance, cancel, orders, redeem, trade
 from trading_tools.apps.polymarket.cli.whale_add_cmd import whale_add
 from trading_tools.apps.polymarket.cli.whale_analyse_cmd import whale_analyse
+from trading_tools.apps.polymarket.cli.whale_markets_cmd import whale_markets
 from trading_tools.apps.polymarket.cli.whale_monitor_cmd import whale_monitor
 
 app = typer.Typer(help="Polymarket prediction market tools")
@@ -38,5 +39,6 @@ app.command()(redeem)
 app.command(name="whale-monitor")(whale_monitor)
 app.command(name="whale-add")(whale_add)
 app.command(name="whale-analyse")(whale_analyse)
+app.command(name="whale-markets")(whale_markets)
 
 __all__ = ["app"]
