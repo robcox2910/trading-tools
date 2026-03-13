@@ -177,7 +177,7 @@ trading-tools-polymarket bot --strategy pm_market_making --series btc-updown-5m 
 |----------|-------------|
 | `pm_mean_reversion` | Trade deviations from rolling mean price |
 | `pm_market_making` | Place symmetric bid/ask spreads |
-| `pm_liquidity_hunting` | Exploit order book imbalances |
+| `pm_liquidity_imbalance` | Exploit order book imbalances |
 | `pm_cross_market_arb` | Arbitrage mispricing across correlated markets |
 | `pm_late_snipe` | Snipe high-confidence outcomes near market close |
 
@@ -300,6 +300,21 @@ trading-tools-polymarket whale-analyse --address 0x1234... --days 30
 
 ```bash
 trading-tools-polymarket whale-markets --address 0x1234... --days 1 --min-trades 20
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--address` | *(required)* | Whale proxy wallet address to analyse |
+| `--days` | `1` | Number of days to analyse |
+| `--min-trades` | `10` | Minimum trades per market to include |
+| `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
+
+### `whale-correlate` — Correlate Whale Bets with Spot Price
+
+Correlate a whale's directional bets with actual spot price movement using Binance 1-minute candles. For each market the whale traded, this command determines whether their favoured side matched the actual price direction.
+
+```bash
+trading-tools-polymarket whale-correlate --address 0x1234... --days 1 --min-trades 10
 ```
 
 | Flag | Default | Description |
