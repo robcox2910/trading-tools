@@ -34,7 +34,14 @@ trading-tools/
 │   │   │   └── models.py            # Tick and order book SQLAlchemy models
 │   │   ├── whale_monitor/           # Whale trade monitoring service
 │   │   │   ├── monitor.py           # Polling service
-│   │   │   └── models.py            # Whale and trade SQLAlchemy models
+│   │   │   ├── models.py            # Whale and trade SQLAlchemy models
+│   │   │   ├── repository.py        # Async SQLAlchemy repository for whales and trades
+│   │   │   ├── analyser.py          # Aggregate trades into WhaleAnalysis / MarketBreakdown
+│   │   │   ├── correlator.py        # Cross-reference whale bets with Binance spot price direction
+│   │   │   ├── enricher.py          # Enrich trades with Gamma market metadata and P&L
+│   │   │   ├── leaderboard.py       # Discover profitable traders via leaderboard or market enumeration
+│   │   │   ├── collector.py         # Shared trade-fetching utilities
+│   │   │   └── config.py            # Whale monitor configuration dataclasses
 │   │   └── whale_copy_trader/       # Real-time whale copy-trading service
 │   │       ├── config.py            # WhaleCopyConfig (frozen dataclass)
 │   │       ├── models.py            # CopySignal, SideLeg, OpenPosition, CopyResult
@@ -72,6 +79,7 @@ trading-tools/
 │   ├── GETTING_STARTED.md           # Setup and authentication
 │   ├── BACKTESTER.md                # Backtester reference
 │   ├── POLYMARKET.md                # Polymarket CLI reference
+│   ├── CLIENTS.md                   # Client module public method reference
 │   └── HTTP_CLIENT_USAGE.md         # Revolut X HTTP client API
 ├── infra/                           # Terraform infrastructure (AWS)
 │   ├── main.tf                      # EC2, RDS, security groups, CloudWatch
@@ -115,7 +123,7 @@ Runnable applications and long-lived services. Each application has:
 | `polymarket` | CLI for market queries, trading, bots, tick collection, and whale monitoring |
 | `polymarket_bot` | Paper and live trading engines with fee/slippage modelling and loss limits (consumed by `polymarket` CLI) |
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
-| `whale_monitor` | Polling service that tracks whale trades |
+| `whale_monitor` | Polling service that tracks whale trades, with analysis, per-market breakdown, trade enrichment, and Binance spot correlation |
 | `whale_copy_trader` | Dual-side spread whale copy-trading (paper and live) |
 
 ### `/clients` — API Clients

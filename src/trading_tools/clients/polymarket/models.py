@@ -162,6 +162,30 @@ class Balance:
 
 
 @dataclass(frozen=True)
+class TraderProfile:
+    """A ranked trader entry from the Polymarket leaderboard.
+
+    Represent a single row from ``data-api.polymarket.com/v1/leaderboard``.
+    P&L and volume are in USD as floats; the Data API does not use Decimal
+    precision for these aggregates.
+
+    Args:
+        rank: Leaderboard position (1-indexed string from the API).
+        proxy_wallet: Polygon proxy wallet address (lowercase).
+        name: Display name / username set by the trader.
+        pnl: Gross realised P&L in USD for the requested time period.
+        volume: Total trading volume in USD for the requested time period.
+
+    """
+
+    rank: int
+    proxy_wallet: str
+    name: str
+    pnl: float
+    volume: float
+
+
+@dataclass(frozen=True)
 class RedeemablePosition:
     """A resolved position that can be redeemed for USDC collateral.
 

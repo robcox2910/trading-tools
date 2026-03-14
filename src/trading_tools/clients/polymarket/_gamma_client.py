@@ -80,6 +80,23 @@ class GammaClient:
         }
         return await self._get("/markets", params=params)
 
+    def market_url(self, condition_id: str) -> str:
+        """Return the Gamma API URL for a single market.
+
+        Construct the canonical endpoint that can be used to fetch full
+        metadata for the given condition ID.  The URL is formed by appending
+        ``condition_id`` as a query parameter to the ``/markets`` path.
+
+        Args:
+            condition_id: Unique market condition identifier (hex string).
+
+        Returns:
+            Fully-qualified URL string, e.g.
+            ``https://gamma-api.polymarket.com/markets?condition_id=0xabc...``.
+
+        """
+        return f"{self.base_url}/markets?condition_ids={condition_id}"
+
     async def get_market(self, condition_id: str) -> dict[str, Any]:
         """Fetch a single market by its condition ID.
 

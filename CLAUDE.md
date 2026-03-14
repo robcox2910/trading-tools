@@ -1,5 +1,38 @@
 # Claude Code Instructions
 
+## Development Flow
+
+- After you have completed a given implementation, run the linters, type checker, and any tests for effected areas of the codebase before returning to the user.
+
+### Commands
+
+| Step | Command | Notes |
+|------|---------|-------|
+| Format check | `uv run ruff format --check src/trading_tools tests` | Auto-fix with `--fix` removed |
+| Format fix | `uv run ruff format src/trading_tools tests` | Apply formatting in-place |
+| Lint check | `uv run ruff check src/trading_tools tests` | Auto-fix safe rules with `--fix` |
+| Type check | `uv run pyright src/trading_tools tests` | Strict mode; suppress noisy stubs errors listed below |
+| Tests | `uv run pytest` | Enforces 80% coverage via pytest-cov |
+| Tests (fast) | `uv run pytest tests/apps/whale_monitor/` | Scope to a subdirectory when iterating |
+
+**Pyright noise filter** — pipe output through this grep to surface only genuine errors:
+```
+uv run pyright src/trading_tools tests 2>&1 | grep -v \
+  "reportUnknownMemberType\|reportUnknownVariableType\|reportUnknownArgumentType\
+\|reportMissingTypeStubs\|reportAttributeAccessIssue\|reportUnknownParameterType\
+\|reportUnknownLambdaType"
+```
+
+**Recommended pre-commit sequence:**
+```bash
+uv run ruff format src/trading_tools tests
+uv run ruff check src/trading_tools tests
+uv run pyright src/trading_tools tests   # apply noise filter above
+uv run pytest
+```
+
+- Before pushing to a PR, ensure all of the above commands pass without errors. This is required for CI to pass and for maintainers to review your code. And check whether any of the markdown files within docs/ need to be updated.
+
 ## Code Style
 
 - All public functions, methods, classes, and modules **must** have a docstring
@@ -11,6 +44,7 @@
 - Use imperative mood: "Return the trade." not "Returns the trade."
 - One-line docstrings for truly trivial functions; multi-line with summary + details for everything else
 - Follow the Google docstring convention (D211, D212 selected via ruff)
+- For numeric heavy operations, use numpy or pandas vectorisation instead of loops where possible (PLR2004)
 
 ## Linting
 
@@ -76,3 +110,16 @@ grep -r "old_function_name" docs/
 | `docs/HTTP_CLIENT_USAGE.md` | Revolut X HTTP client API reference |
 | `CONTRIBUTING.md` | Developer workflow, code standards, PR process |
 | `.env.example` | Template for all environment variables |
+
+## Notebooks (`src/users/*/`)
+
+Notebooks live under `src/users/<username>/` and are for exploration, not production code.
+
+- **Reuse core and data first** — before writing any data-fetching logic in a notebook, check whether a function already exists in `trading_tools.core`, `trading_tools.data`, or a client. If an existing function nearly fits but is too narrow, generalise it in the source module first, then call it from the notebook.
+- **Auto-reload must always be on** — every notebook must begin with:
+  ```python
+  %load_ext autoreload
+  %autoreload 2
+  ```
+  This ensures edits to library code are picked up without restarting the kernel.
+- **No duplicate logic** — notebooks must not re-implement anything that already lives in the package. Call the module; don't copy it.

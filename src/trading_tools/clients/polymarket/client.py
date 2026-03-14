@@ -28,6 +28,7 @@ from trading_tools.clients.polymarket.models import (
     OrderRequest,
     OrderResponse,
     RedeemablePosition,
+    TraderProfile,
 )
 
 logger = logging.getLogger(__name__)
@@ -285,6 +286,284 @@ class PolymarketClient:
                     if cid:
                         results.append((cid, end_date))
         return results
+
+    async def get_leaderboard(
+        self,
+        *,
+        limit: int = 100,
+        time_period: str = "ALL",
+        order_by: str = "PNL",
+        category: str = "OVERALL",
+        offset: int = 0,
+    ) -> list[TraderProfile]:
+        """Fetch the Polymarket trader leaderboard from the Data API.
+
+        Query ``data-api.polymarket.com/v1/leaderboard`` which backs the public
+        leaderboard at ``polymarket.com/leaderboard``.  No authentication is
+        required.
+
+        Args:
+            limit: Traders per page (max 50 per API page; this method fetches
+                multiple pages automatically if ``limit`` exceeds 50).
+            time_period: Ranking window.  One of ``"DAY"``, ``"WEEK"``,
+                ``"MONTH"``, ``"ALL"``.
+            order_by: Ranking field.  ``"PNL"`` (gross P&L) or ``"VOL"``
+                (volume).
+            category: Market category filter.  ``"OVERALL"`` covers all
+                markets; other values include ``"CRYPTO"``, ``"POLITICS"``,
+                ``"SPORTS"``, ``"CULTURE"``, ``"FINANCE"``, ``"TECH"``,
+                ``"ECONOMICS"``, ``"WEATHER"``, ``"MENTIONS"``.
+            offset: Starting rank offset for pagination.
+
+        Returns:
+            List of ``TraderProfile`` objects in rank order.
+
+        Raises:
+            PolymarketAPIError: When the Data API returns an error.
+
+        """
+        url = f"{self.DATA_API_URL}/v1/leaderboard"
+        _api_page_size = 50
+        profiles: list[TraderProfile] = []
+        current_offset = offset
+
+        while len(profiles) < limit:
+            batch_size = min(_api_page_size, limit - len(profiles))
+            params: dict[str, str | int] = {
+                "limit": batch_size,
+                "offset": current_offset,
+                "timePeriod": time_period,
+                "orderBy": order_by,
+                "category": category,
+            }
+            try:
+                response = await self._data_client.get(url, params=params)
+            except httpx.HTTPError as exc:
+                raise PolymarketAPIError(
+                    msg=f"Data API request failed: {exc}",
+                    status_code=0,
+                ) from exc
+            if response.status_code >= HTTP_BAD_REQUEST:
+                raise PolymarketAPIError(
+                    msg=f"Data API error: HTTP {response.status_code}",
+                    status_code=response.status_code,
+                )
+            rows: list[dict[str, object]] = response.json()
+            profiles.extend(
+                TraderProfile(
+                    rank=int(r.get("rank") or 0),  # type: ignore[arg-type]
+                    proxy_wallet=str(r["proxyWallet"]).lower(),
+                    name=str(r.get("userName") or ""),
+                    pnl=float(r.get("pnl") or 0),  # type: ignore[arg-type]
+                    volume=float(r.get("vol") or 0),  # type: ignore[arg-type]
+                )
+                for r in rows
+                if r.get("proxyWallet")
+            )
+            if len(rows) < batch_size:
+                break
+            current_offset += batch_size
+
+        return profiles
+
+    async def get_trader_trades_for_market(
+        self,
+        condition_id: str,
+        *,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, object]]:
+        """Fetch a page of all trades in a specific market from the Data API.
+
+        Query ``data-api.polymarket.com/trades?market=<condition_id>`` which
+        returns every trade (all participants) for that market.  Use this to
+        enumerate every wallet address that traded in a given market without
+        needing to know addresses in advance.  No authentication is required.
+
+        Args:
+            condition_id: Market condition ID hex string.
+            limit: Trades per page (max 500).
+            offset: Pagination offset.
+
+        Returns:
+            List of raw trade dicts.  Each includes at minimum:
+            ``proxyWallet``, ``side``, ``price``, ``size``, ``conditionId``,
+            ``timestamp``, ``title``, ``outcome``, ``pseudonym``.
+
+        Raises:
+            PolymarketAPIError: When the Data API returns an error.
+
+        """
+        url = f"{self.DATA_API_URL}/trades"
+        params: dict[str, str | int] = {
+            "market": condition_id,
+            "limit": limit,
+            "offset": offset,
+        }
+        try:
+            response = await self._data_client.get(url, params=params)
+        except httpx.HTTPError as exc:
+            raise PolymarketAPIError(
+                msg=f"Data API request failed: {exc}",
+                status_code=0,
+            ) from exc
+        if response.status_code >= HTTP_BAD_REQUEST:
+            raise PolymarketAPIError(
+                msg=f"Data API error: HTTP {response.status_code}",
+                status_code=response.status_code,
+            )
+        result: list[dict[str, object]] = response.json()
+        return result
+
+    async def get_trader_trades(
+        self,
+        address: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, object]]:
+        """Fetch a page of trades for a given proxy wallet address.
+
+        Query ``data-api.polymarket.com/trades`` for all trades (maker and
+        taker) associated with the address.  Results are newest-first.
+        Paginate by incrementing ``offset`` in steps of ``limit``.
+
+        Args:
+            address: Proxy wallet address to query (hex string).
+            limit: Number of trades per page (max 500).
+            offset: Pagination offset.
+
+        Returns:
+            List of raw trade dictionaries from the Data API.  Each dict
+            contains at minimum: ``transactionHash``, ``side``, ``price``,
+            ``size``, ``timestamp``, ``conditionId``, ``market``, ``outcome``.
+
+        Raises:
+            PolymarketAPIError: When the Data API returns an error.
+
+        """
+        url = f"{self.DATA_API_URL}/trades"
+        params: dict[str, str | int] = {
+            "user": address,
+            "limit": limit,
+            "offset": offset,
+            "takerOnly": "false",
+        }
+        try:
+            response = await self._data_client.get(url, params=params)
+        except httpx.HTTPError as exc:
+            raise PolymarketAPIError(
+                msg=f"Data API request failed: {exc}",
+                status_code=0,
+            ) from exc
+        if response.status_code >= HTTP_BAD_REQUEST:
+            raise PolymarketAPIError(
+                msg=f"Data API error: HTTP {response.status_code}",
+                status_code=response.status_code,
+            )
+        result: list[dict[str, object]] = response.json()
+        return result
+
+    async def get_market_info(
+        self,
+        market: str,
+    ) -> tuple[str, dict[str, object]]:
+        """Resolve a market identifier and return its Gamma API URL and metadata.
+
+        Accept any of the three common Polymarket market identifiers and
+        resolve them to a condition ID, then fetch full market metadata from
+        the Gamma API.
+
+        Accepted forms:
+
+        - Full event URL — ``https://polymarket.com/event/<slug>``
+        - Plain event slug — ``btc-updown-5m-1773444300``
+        - Condition ID hex string — ``0xabc123...``
+
+        Args:
+            market: Market identifier in any of the three accepted forms.
+
+        Returns:
+            2-tuple of ``(url, data)`` where ``url`` is the canonical Gamma
+            API endpoint used and ``data`` is the raw market dict returned by
+            the API.
+
+        Raises:
+            PolymarketAPIError: When the market cannot be resolved or the
+                API returns an error.
+
+        """
+        _POLYMARKET_EVENT_PREFIX = "https://polymarket.com/event/"  # noqa: N806
+        _MIN_CONDITION_ID_LEN = 10  # noqa: N806
+
+        stripped = market.strip()
+        if stripped.startswith(_POLYMARKET_EVENT_PREFIX):
+            stripped = stripped[len(_POLYMARKET_EVENT_PREFIX) :].rstrip("/")
+
+        if stripped.lower().startswith("0x") and len(stripped) >= _MIN_CONDITION_ID_LEN:
+            condition_id = stripped.lower()
+        else:
+            # Treat as a slug — resolve via the events endpoint
+            events = await self._gamma.get_events(slug=stripped, active=False, limit=50)
+            condition_ids = [
+                market_raw.get("conditionId") or market_raw.get("condition_id", "")
+                for event_raw in events
+                for market_raw in event_raw.get("markets", [])
+            ]
+            condition_ids = [c.lower() for c in condition_ids if c]
+            if not condition_ids:
+                raise PolymarketAPIError(
+                    msg=f"No markets found for slug '{stripped}'",
+                    status_code=404,
+                )
+            condition_id = condition_ids[0]
+
+        url = self._gamma.market_url(condition_id)
+        data = await self._gamma.get_market(condition_id)
+        return url, data
+
+    async def lookup_user_address(self, username: str) -> str | None:
+        """Look up a Polymarket proxy wallet address by display name.
+
+        Search the global leaderboard for a trader whose ``userName`` matches
+        the given string (case-insensitive).  The leaderboard endpoint accepts
+        a ``userName`` query parameter that filters results server-side,
+        reducing the number of rows returned.
+
+        Args:
+            username: Polymarket display name / pseudonym to search for.
+
+        Returns:
+            Lowercase proxy wallet address if found, or ``None`` if no
+            matching trader is on the leaderboard.
+
+        """
+        url = f"{self.DATA_API_URL}/v1/leaderboard"
+        params: dict[str, str | int] = {
+            "userName": username,
+            "limit": 10,
+            "offset": 0,
+            "timePeriod": "ALL",
+            "orderBy": "PNL",
+        }
+        try:
+            response = await self._data_client.get(url, params=params)
+        except httpx.RequestError as exc:
+            raise PolymarketAPIError(
+                msg=f"Data API request failed: {exc}",
+                status_code=0,
+            ) from exc
+        if response.status_code >= HTTP_BAD_REQUEST:
+            raise PolymarketAPIError(
+                msg=f"Data API error: HTTP {response.status_code}",
+                status_code=response.status_code,
+            )
+        rows: list[dict[str, object]] = response.json()
+        for row in rows:
+            if str(row.get("userName", "")).lower() == username.lower():
+                proxy = str(row.get("proxyWallet", ""))
+                return proxy.lower() if proxy else None
+        return None
 
     def _require_auth(self) -> None:
         """Raise an error if the client is not authenticated.

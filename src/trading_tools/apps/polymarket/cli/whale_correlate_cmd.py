@@ -12,7 +12,7 @@ from typing import Annotated
 import typer
 
 from trading_tools.apps.polymarket.cli._helpers import require_whale_db_url
-from trading_tools.apps.whale_monitor.analyser import analyse_markets
+from trading_tools.apps.whale_monitor.analyser import MarketBreakdown, analyse_markets
 from trading_tools.apps.whale_monitor.correlator import (
     correlate_markets,
     format_correlated_analysis,
@@ -57,13 +57,31 @@ def whale_correlate(
             return
 
         markets = analyse_markets(trades, min_trades=min_trades)
-        if not markets:
+        if markets.empty:
             typer.echo("No markets found matching the criteria.")
             return
 
+        market_list = [
+            MarketBreakdown(
+                condition_id=str(row.condition_id),
+                title=str(row.title),
+                slug=str(row.slug),
+                up_volume=float(row.up_volume),  # type: ignore[arg-type]
+                down_volume=float(row.down_volume),  # type: ignore[arg-type]
+                up_size=float(row.up_size),  # type: ignore[arg-type]
+                down_size=float(row.down_size),  # type: ignore[arg-type]
+                trade_count=int(row.trade_count),  # type: ignore[arg-type]
+                bias_ratio=float(row.bias_ratio),  # type: ignore[arg-type]
+                favoured_side=str(row.favoured_side),
+                first_trade_ts=int(row.first_trade_ts),  # type: ignore[arg-type]
+                last_trade_ts=int(row.last_trade_ts),  # type: ignore[arg-type]
+            )
+            for row in markets.itertuples(index=False)
+        ]
+
         async with BinanceClient() as client:
             provider = BinanceCandleProvider(client)
-            correlated = await correlate_markets(markets, provider)
+            correlated = await correlate_markets(market_list, provider)
 
         typer.echo(format_correlated_analysis(correlated))
 
