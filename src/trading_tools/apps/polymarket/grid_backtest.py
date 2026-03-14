@@ -9,6 +9,7 @@ for quick visual comparison.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -272,29 +273,38 @@ def run_grid_backtest(
     total_combos = len(thresholds) * len(windows)
     logger.info("Running %d grid combinations...", total_combos)
 
+    combos = [(t, w) for t in sorted(thresholds) for w in sorted(windows, reverse=True)]
+
     cells: list[GridCell] = []
-    for threshold in sorted(thresholds):
-        for window_seconds in sorted(windows, reverse=True):
-            cell = _run_single_cell(
-                window_data=window_data,
-                threshold=threshold,
-                window_seconds=window_seconds,
-                capital=capital,
-                kelly_frac=kelly_frac,
-                max_position_pct=max_position_pct,
-                max_slippage=max_slippage,
-                resolved_outcomes=resolved_outcomes,
-            )
+    with ProcessPoolExecutor() as executor:
+        futures = {
+            executor.submit(
+                _run_single_cell,
+                window_data,
+                t,
+                w,
+                capital,
+                kelly_frac,
+                max_position_pct,
+                max_slippage,
+                resolved_outcomes,
+            ): (t, w)
+            for t, w in combos
+        }
+        for future in as_completed(futures):
+            cell = future.result()
             cells.append(cell)
             logger.info(
                 "[%d/%d] threshold=%.2f window=%ds → return=%.2f%% trades=%d",
                 len(cells),
                 total_combos,
-                threshold,
-                window_seconds,
+                cell.threshold,
+                cell.window_seconds,
                 cell.return_pct,
                 cell.total_trades,
             )
+
+    cells.sort(key=lambda c: (c.threshold, -c.window_seconds))
 
     total_conditions = len(all_ticks)
     total_ticks = sum(len(t) for t in all_ticks.values())

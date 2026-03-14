@@ -11,6 +11,7 @@ strategy per fold is the one with the highest value of a chosen metric
 (e.g. total return) on the training window.
 """
 
+import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -207,13 +208,9 @@ async def _find_best_strategy(
         Tuple of (best strategy name from STRATEGY_NAMES, its BacktestResult).
 
     """
-    best_name = STRATEGY_NAMES[0]
-    best_result: BacktestResult | None = None
-    best_value = Decimal("-Infinity")
-
     provider = _SliceProvider(candles)
 
-    for name in STRATEGY_NAMES:
+    async def _eval(name: str) -> tuple[str, BacktestResult]:
         strategy = build_strategy(name, **strategy_params)  # type: ignore[arg-type]
         engine = BacktestEngine(
             provider=provider,
@@ -222,14 +219,11 @@ async def _find_best_strategy(
             execution_config=execution_config,
             risk_config=risk_config,
         )
-        result = await engine.run(symbol, interval, 0, 2**53)
-        value = result.metrics.get(sort_metric, Decimal(0))
-        if best_result is None or value > best_value:
-            best_value = value
-            best_name = name
-            best_result = result
+        return name, await engine.run(symbol, interval, 0, 2**53)
 
-    if best_result is None:  # pragma: no cover — STRATEGY_NAMES is never empty
-        msg = "No strategies registered"
-        raise RuntimeError(msg)
-    return best_name, best_result
+    all_results = await asyncio.gather(*[_eval(n) for n in STRATEGY_NAMES])
+
+    return max(
+        all_results,
+        key=lambda pair: pair[1].metrics.get(sort_metric, Decimal(0)),
+    )
