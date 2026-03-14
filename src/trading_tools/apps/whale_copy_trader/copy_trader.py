@@ -20,8 +20,10 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.clients.polymarket.models import OrderRequest
-from trading_tools.core.models import ZERO
+from trading_tools.core.models import ZERO, Interval
+from trading_tools.data.providers.binance import BinanceCandleProvider
 
 from .models import CopyResult, CopySignal
 from .signal_detector import SignalDetector
@@ -37,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 _HEARTBEAT_INTERVAL = 60
 _MIDPOINT_FALLBACK = Decimal("0.50")
+_WIN_PRICE = Decimal("1.0")
+_LOSS_PRICE = Decimal("0.0")
 
 
 def _empty_str_set() -> set[str]:
@@ -75,6 +79,7 @@ class WhaleCopyTrader:
     live: bool = False
     client: PolymarketClient | None = None
     _detector: SignalDetector | None = field(default=None, repr=False)
+    _binance: BinanceClient | None = field(default=None, repr=False)
     _acted_on: set[str] = field(default_factory=_empty_str_set, repr=False)
     _positions: dict[str, CopyResult] = field(default_factory=_empty_result_dict, repr=False)
     _results: list[CopyResult] = field(default_factory=_empty_result_list, repr=False)
@@ -98,6 +103,7 @@ class WhaleCopyTrader:
             lookback_seconds=self.config.lookback_seconds,
             min_time_to_start=self.config.min_time_to_start,
         )
+        self._binance = BinanceClient()
         self._running = True
         mode = "LIVE" if self.live else "PAPER"
         logger.info(
@@ -125,6 +131,7 @@ class WhaleCopyTrader:
         finally:
             self._running = False
             self._log_summary()
+            await self._binance.close()
 
     def stop(self) -> None:
         """Signal the polling loop to stop after the current cycle."""
@@ -285,20 +292,16 @@ class WhaleCopyTrader:
     async def _close_expired_positions(self) -> None:
         """Close positions whose market windows have expired.
 
-        For 5-minute markets, Polymarket auto-redeems winners, so closing
-        is mainly for P&L tracking. Paper mode estimates exit price as
-        1.0 for the favoured side (winner) or 0.0 (loser) since these
-        are binary outcomes.
+        Fetch actual spot price from Binance 1-min candles to determine
+        whether the whale's directional bet was correct. Binary outcome:
+        1.0 if correct (win), 0.0 if wrong (loss).
         """
         now = int(time.time())
         expired = [cid for cid, pos in self._positions.items() if pos.signal.window_end_ts <= now]
 
         for cid in expired:
             pos = self._positions.pop(cid)
-            # Binary outcome: winner pays 1.0, loser pays 0.0
-            # We assume the whale is correct (79% historical accuracy)
-            # Actual P&L settles when the market resolves
-            exit_price = Decimal("1.0")
+            exit_price = await self._resolve_outcome(pos.signal)
             pnl = (exit_price - pos.entry_price) * pos.quantity
 
             closed = CopyResult(
@@ -313,14 +316,71 @@ class WhaleCopyTrader:
                 order_id=pos.order_id,
             )
             self._results.append(closed)
+            outcome = "WIN" if exit_price == _WIN_PRICE else "LOSS"
             logger.info(
-                "%s CLOSE %s pnl=%.4f entry=%.4f exit=%.4f",
+                "%s CLOSE %s %s pnl=%.4f entry=%.4f exit=%.4f side=%s asset=%s",
                 "PAPER" if pos.is_paper else "LIVE",
                 cid[:12],
+                outcome,
                 pnl,
                 pos.entry_price,
                 exit_price,
+                pos.signal.favoured_side,
+                pos.signal.asset,
             )
+
+    async def _resolve_outcome(self, signal: CopySignal) -> Decimal:
+        """Determine whether the whale's directional bet was correct.
+
+        Fetch Binance 1-min candles for the market window and compare
+        the opening price against the closing price. If the price moved
+        in the whale's favoured direction, the bet wins (1.0); otherwise
+        it loses (0.0).
+
+        Args:
+            signal: The copy signal with asset, side, and window timestamps.
+
+        Returns:
+            ``Decimal("1.0")`` for a correct bet, ``Decimal("0.0")`` otherwise.
+
+        """
+        assert self._binance is not None  # noqa: S101
+
+        try:
+            provider = BinanceCandleProvider(self._binance)
+            candles = await provider.get_candles(
+                signal.asset,
+                Interval.M1,
+                signal.window_start_ts,
+                signal.window_end_ts,
+            )
+        except Exception:
+            logger.warning("Failed to fetch candles for %s, assuming win", signal.asset)
+            return _WIN_PRICE
+
+        if not candles:
+            logger.warning("No candles for %s window, assuming win", signal.asset)
+            return _WIN_PRICE
+
+        open_price = candles[0].open
+        close_price = candles[-1].close
+        price_went_up = close_price > open_price
+
+        whale_correct = (signal.favoured_side == "Up" and price_went_up) or (
+            signal.favoured_side == "Down" and not price_went_up
+        )
+
+        logger.info(
+            "  SPOT %s open=%.2f close=%.2f direction=%s whale_side=%s → %s",
+            signal.asset,
+            open_price,
+            close_price,
+            "Up" if price_went_up else "Down",
+            signal.favoured_side,
+            "CORRECT" if whale_correct else "WRONG",
+        )
+
+        return _WIN_PRICE if whale_correct else _LOSS_PRICE
 
     def _maybe_log_heartbeat(self) -> None:
         """Log a heartbeat message if the interval has elapsed."""
