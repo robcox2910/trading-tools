@@ -96,18 +96,21 @@ class WhaleCopyTrader:
             min_bias=self.config.min_bias,
             min_trades=self.config.min_trades,
             lookback_seconds=self.config.lookback_seconds,
+            min_time_to_start=self.config.min_time_to_start,
         )
         self._running = True
         mode = "LIVE" if self.live else "PAPER"
         logger.info(
             "whale-copy started mode=%s address=%s poll=%ds"
-            " lookback=%ds min_bias=%.1f min_trades=%d capital=$%s max_pos=%s%%",
+            " lookback=%ds min_bias=%.1f min_trades=%d"
+            " min_time_to_start=%ds capital=$%s max_pos=%s%%",
             mode,
             self.config.whale_address,
             self.config.poll_interval,
             self.config.lookback_seconds,
             self.config.min_bias,
             self.config.min_trades,
+            self.config.min_time_to_start,
             self.config.capital,
             self.config.max_position_pct * 100,
         )
