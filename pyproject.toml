@@ -12,6 +12,9 @@ dependencies = [
     "asyncpg>=0.30.0",
     "cryptography>=46.0.5",
     "httpx>=0.28.1",
+    "notebook>=7.5.5",
+    "pandas>=3.0.1",
+    "pandera>=0.21",
     "plotly>=6.0.0",
     "py-clob-client>=0.34.0",
     "python-dotenv>=1.2.1",
@@ -55,6 +58,7 @@ packages = ["src/trading_tools"]
 line-length = 100
 target-version = "py313"
 src = ["src", "tests"]
+exclude = ["src/users"]
 
 [tool.ruff.lint]
 select = [
@@ -133,6 +137,7 @@ omit = [
     "*/tests/*",
     "*/__pycache__/*",
     "*/.venv/*",
+    "*/users/*",
 ]
 
 [tool.coverage.report]
@@ -145,6 +150,7 @@ skip_covered = false
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
 include = ["src", "tests"]
+exclude = ["src/users"]
 venvPath = "."
 venv = ".venv"
 
@@ -159,5 +165,6 @@ version_provider = "scm"
 [dependency-groups]
 dev = [
     "commitizen>=4.4.0",
+    "pandas-stubs>=3.0.0.260204",
     "pip-audit>=2.10.0",
 ]
