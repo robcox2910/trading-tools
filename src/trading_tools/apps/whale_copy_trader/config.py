@@ -22,6 +22,7 @@ class WhaleCopyConfig:
         lookback_seconds: Rolling window size for trade accumulation.
         min_bias: Minimum bias ratio to trigger a copy signal.
         min_trades: Minimum trade count per market to trigger a signal.
+        min_time_to_start: Minimum seconds before window opens to act on a signal.
         capital: Starting capital for paper mode (USDC).
         max_position_pct: Maximum fraction of capital per single trade.
         use_market_orders: Use market orders for fastest execution.
@@ -30,9 +31,10 @@ class WhaleCopyConfig:
 
     whale_address: str
     poll_interval: int = 5
-    lookback_seconds: int = 3600
-    min_bias: Decimal = Decimal("1.5")
-    min_trades: int = 3
+    lookback_seconds: int = 300
+    min_bias: Decimal = Decimal("1.3")
+    min_trades: int = 2
+    min_time_to_start: int = 60
     capital: Decimal = Decimal(100)
     max_position_pct: Decimal = Decimal("0.10")
     use_market_orders: bool = True

@@ -8,10 +8,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from trading_tools.apps.whale_copy_trader.signal_detector import SignalDetector
+from trading_tools.apps.whale_monitor.correlator import parse_time_window
 from trading_tools.apps.whale_monitor.models import WhaleTrade
 
 _ADDRESS = "0xwhale"
 _COLLECTED_AT = 1700000000000
+_SECONDS_BEFORE_START = 30
 
 # Use a timestamp far in the future to ensure windows are "in the future"
 _FUTURE_TS = 4_000_000_000
@@ -78,6 +80,7 @@ class TestSignalDetector:
             min_bias=Decimal("1.5"),
             min_trades=3,
             lookback_seconds=300,
+            min_time_to_start=60,
         )
 
     @pytest.mark.asyncio
@@ -213,3 +216,44 @@ class TestSignalDetector:
         # Should have called with start_ts > _FUTURE_TS
         call_args = mock_repo.get_trades.call_args
         assert call_args[0][1] == _FUTURE_TS + 1
+
+    @pytest.mark.asyncio
+    async def test_filters_too_soon_windows(
+        self, mock_repo: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Skip markets whose window starts sooner than min_time_to_start.
+
+        Use monkeypatch to set time.time() to 30 seconds before the parsed
+        window start so the market is not expired but starts too soon.
+        """
+        # Parse the window to find the exact start_ts
+        window = parse_time_window("Bitcoin Up or Down - March 13, 6PM ET", _FUTURE_TS)
+        assert window is not None
+        window_start = window[0]
+
+        # Set "now" to 30s before window opens (less than min_time_to_start=60)
+        fake_now = window_start - _SECONDS_BEFORE_START
+        monkeypatch.setattr("time.time", lambda: fake_now)
+
+        detector = SignalDetector(
+            repo=mock_repo,
+            whale_address=_ADDRESS,
+            min_bias=Decimal("1.5"),
+            min_trades=3,
+            lookback_seconds=300,
+            min_time_to_start=60,
+        )
+        trades = [
+            _make_trade(
+                outcome="Up",
+                size=100.0,
+                price=0.70,
+                tx_hash=f"tx_{i}",
+                timestamp=fake_now,
+            )
+            for i in range(4)
+        ]
+        mock_repo.get_trades = AsyncMock(return_value=trades)
+
+        signals = await detector.detect_signals()
+        assert signals == []

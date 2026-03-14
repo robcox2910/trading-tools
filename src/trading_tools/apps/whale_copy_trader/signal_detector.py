@@ -25,6 +25,7 @@ from trading_tools.apps.whale_monitor.correlator import parse_asset, parse_time_
 from .models import CopySignal
 
 if TYPE_CHECKING:
+    from trading_tools.apps.whale_monitor.analyser import MarketBreakdown
     from trading_tools.apps.whale_monitor.models import WhaleTrade
     from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
@@ -51,6 +52,7 @@ class SignalDetector:
         min_bias: Minimum bias ratio to emit a signal.
         min_trades: Minimum trades per market to consider.
         lookback_seconds: Rolling window duration in seconds.
+        min_time_to_start: Minimum seconds before window opens to act.
 
     """
 
@@ -59,6 +61,7 @@ class SignalDetector:
     min_bias: Decimal
     min_trades: int
     lookback_seconds: int
+    min_time_to_start: int = 60
     _last_seen_ts: int = 0
     _trades: deque[WhaleTrade] = field(default_factory=_empty_deque)
 
@@ -104,56 +107,20 @@ class SignalDetector:
 
         breakdowns = analyse_markets(list(self._trades), min_trades=self.min_trades)
 
-        signals: list[CopySignal] = []
-        skipped_asset = 0
-        skipped_window = 0
-        skipped_expired = 0
-        skipped_bias = 0
-
-        for bd in breakdowns:
-            if bd.bias_ratio < float(self.min_bias):
-                skipped_bias += 1
-                continue
-
-            asset = parse_asset(bd.title)
-            if asset is None:
-                skipped_asset += 1
-                continue
-
-            window = parse_time_window(bd.title, bd.first_trade_ts)
-            if window is None:
-                skipped_window += 1
-                continue
-
-            _start_ts, end_ts = window
-            if end_ts <= now:
-                skipped_expired += 1
-                continue
-
-            signals.append(
-                CopySignal(
-                    condition_id=bd.condition_id,
-                    title=bd.title,
-                    asset=asset,
-                    favoured_side=bd.favoured_side,
-                    bias_ratio=Decimal(str(bd.bias_ratio)),
-                    trade_count=bd.trade_count,
-                    window_start_ts=_start_ts,
-                    window_end_ts=end_ts,
-                    detected_at=now,
-                )
-            )
+        signals, skip_counts = self._filter_breakdowns(breakdowns, now)
 
         if breakdowns:
             logger.info(
                 "ANALYSE %d markets → %d signals"
-                " (skipped: %d low-bias, %d non-BTC/ETH, %d no-window, %d expired)",
+                " (skipped: %d low-bias, %d non-BTC/ETH, %d no-window,"
+                " %d expired, %d too-soon)",
                 len(breakdowns),
                 len(signals),
-                skipped_bias,
-                skipped_asset,
-                skipped_window,
-                skipped_expired,
+                skip_counts["bias"],
+                skip_counts["asset"],
+                skip_counts["window"],
+                skip_counts["expired"],
+                skip_counts["too_soon"],
             )
             for sig in signals:
                 logger.info(
@@ -166,6 +133,67 @@ class SignalDetector:
                 )
 
         return signals
+
+    def _filter_breakdowns(
+        self,
+        breakdowns: list[MarketBreakdown],
+        now: int,
+    ) -> tuple[list[CopySignal], dict[str, int]]:
+        """Filter market breakdowns into actionable copy signals.
+
+        Apply threshold filters (bias, asset, time window, expiry,
+        min_time_to_start) and return qualifying signals with skip counts.
+
+        Args:
+            breakdowns: Per-market bias analysis results.
+            now: Current UTC epoch seconds.
+
+        Returns:
+            Tuple of (signals, skip_counts dict).
+
+        """
+        signals: list[CopySignal] = []
+        skips = {"bias": 0, "asset": 0, "window": 0, "expired": 0, "too_soon": 0}
+
+        for bd in breakdowns:
+            if bd.bias_ratio < float(self.min_bias):
+                skips["bias"] += 1
+                continue
+
+            asset = parse_asset(bd.title)
+            if asset is None:
+                skips["asset"] += 1
+                continue
+
+            window = parse_time_window(bd.title, bd.first_trade_ts)
+            if window is None:
+                skips["window"] += 1
+                continue
+
+            start_ts, end_ts = window
+            if end_ts <= now:
+                skips["expired"] += 1
+                continue
+
+            if start_ts - now < self.min_time_to_start:
+                skips["too_soon"] += 1
+                continue
+
+            signals.append(
+                CopySignal(
+                    condition_id=bd.condition_id,
+                    title=bd.title,
+                    asset=asset,
+                    favoured_side=bd.favoured_side,
+                    bias_ratio=Decimal(str(bd.bias_ratio)),
+                    trade_count=bd.trade_count,
+                    window_start_ts=start_ts,
+                    window_end_ts=end_ts,
+                    detected_at=now,
+                )
+            )
+
+        return signals, skips
 
     @property
     def window_size(self) -> int:

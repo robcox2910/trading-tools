@@ -22,9 +22,10 @@ from trading_tools.apps.whale_copy_trader.copy_trader import WhaleCopyTrader
 from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
 _DEFAULT_POLL_INTERVAL = 5
-_DEFAULT_LOOKBACK = 3600
-_DEFAULT_MIN_BIAS = "1.5"
-_DEFAULT_MIN_TRADES = 3
+_DEFAULT_LOOKBACK = 300
+_DEFAULT_MIN_BIAS = "1.3"
+_DEFAULT_MIN_TRADES = 2
+_DEFAULT_MIN_TIME_TO_START = 60
 _DEFAULT_CAPITAL = "100"
 _DEFAULT_MAX_POSITION_PCT = "0.10"
 _LIVE_WARNING_DELAY = 2
@@ -44,6 +45,9 @@ def whale_copy(
     min_trades: Annotated[
         int, typer.Option(help="Minimum trades per market to trigger a signal")
     ] = _DEFAULT_MIN_TRADES,
+    min_time_to_start: Annotated[
+        int, typer.Option(help="Min seconds before window opens to act on signal")
+    ] = _DEFAULT_MIN_TIME_TO_START,
     capital: Annotated[
         str, typer.Option(help="Starting capital in USDC (paper mode)")
     ] = _DEFAULT_CAPITAL,
@@ -73,6 +77,7 @@ def whale_copy(
         lookback_seconds=lookback,
         min_bias=Decimal(min_bias),
         min_trades=min_trades,
+        min_time_to_start=min_time_to_start,
         capital=Decimal(capital),
         max_position_pct=Decimal(max_position_pct),
     )
