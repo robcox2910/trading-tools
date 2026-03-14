@@ -175,7 +175,7 @@ class SignalDetector:
                 skips["expired"] += 1
                 continue
 
-            if start_ts - now < self.min_time_to_start:
+            if self.min_time_to_start > 0 and 0 < start_ts - now < self.min_time_to_start:
                 skips["too_soon"] += 1
                 continue
 
