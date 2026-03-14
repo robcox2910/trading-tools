@@ -28,6 +28,7 @@ _DEFAULT_MIN_TRADES = 2
 _DEFAULT_MIN_TIME_TO_START = 0
 _DEFAULT_CAPITAL = "100"
 _DEFAULT_MAX_POSITION_PCT = "0.10"
+_DEFAULT_MAX_BIAS_SCALE = "3.0"
 _LIVE_WARNING_DELAY = 2
 
 
@@ -54,6 +55,9 @@ def whale_copy(
     max_position_pct: Annotated[
         str, typer.Option(help="Max fraction of capital per trade (e.g. 0.10)")
     ] = _DEFAULT_MAX_POSITION_PCT,
+    max_bias_scale: Annotated[
+        str, typer.Option(help="Max bias scaling multiplier for position sizing")
+    ] = _DEFAULT_MAX_BIAS_SCALE,
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
@@ -80,6 +84,7 @@ def whale_copy(
         min_time_to_start=min_time_to_start,
         capital=Decimal(capital),
         max_position_pct=Decimal(max_position_pct),
+        max_bias_scale=Decimal(max_bias_scale),
     )
 
     if confirm_live:

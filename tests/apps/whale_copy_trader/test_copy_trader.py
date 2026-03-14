@@ -12,6 +12,7 @@ from trading_tools.apps.whale_copy_trader.config import WhaleCopyConfig
 from trading_tools.apps.whale_copy_trader.copy_trader import (
     WhaleCopyTrader,
     _find_token_for_side,
+    _parse_gamma_price,
 )
 from trading_tools.apps.whale_copy_trader.models import CopySignal
 from trading_tools.clients.polymarket.models import Market, MarketToken, OrderResponse
@@ -19,14 +20,22 @@ from trading_tools.clients.polymarket.models import Market, MarketToken, OrderRe
 _ADDRESS = "0xwhale"
 _FUTURE_TS = 4_000_000_000
 _PAST_TS = 1_000_000_000
-_EXPECTED_PAPER_PRICE = Decimal("0.50")
-_EXPECTED_PAPER_QTY = Decimal("20.00")
+_EXPECTED_PAPER_PRICE = Decimal("0.72")
+_EXPECTED_PAPER_QTY = Decimal("26.71")
 _EXPECTED_LIVE_PRICE = Decimal("0.60")
 _EXPECTED_EXIT_PRICE = Decimal("1.0")
 _EXPECTED_POLL_INTERVAL = 10
 _EXPECTED_MIN_TRADES = 5
 _EXPECTED_POLL_COUNT_AFTER_DEDUP = 2
 _EXPECTED_MULTI_SIGNAL_COUNT = 2
+_DEFAULT_BIAS = Decimal("2.5")
+_DEFAULT_MIN_BIAS = Decimal("1.5")
+_DEFAULT_BIAS_SCALE = _DEFAULT_BIAS / _DEFAULT_MIN_BIAS
+
+_GAMMA_MARKET_DATA = {
+    "outcomes": '["Up","Down"]',
+    "outcomePrices": '["0.72","0.28"]',
+}
 
 
 def _make_config(**overrides: object) -> WhaleCopyConfig:
@@ -43,10 +52,11 @@ def _make_config(**overrides: object) -> WhaleCopyConfig:
         "whale_address": _ADDRESS,
         "poll_interval": 1,
         "lookback_seconds": 300,
-        "min_bias": Decimal("1.5"),
+        "min_bias": _DEFAULT_MIN_BIAS,
         "min_trades": 3,
         "capital": Decimal(100),
         "max_position_pct": Decimal("0.10"),
+        "max_bias_scale": Decimal("3.0"),
     }
     defaults.update(overrides)
     return WhaleCopyConfig(**defaults)  # type: ignore[arg-type]
@@ -73,12 +83,20 @@ def _make_signal(
         title="Bitcoin Up or Down - March 13, 6PM ET",
         asset="BTC-USD",
         favoured_side=favoured_side,
-        bias_ratio=Decimal("2.5"),
+        bias_ratio=_DEFAULT_BIAS,
         trade_count=5,
         window_start_ts=_FUTURE_TS - 300,
         window_end_ts=window_end_ts,
         detected_at=int(time.time()),
     )
+
+
+def _mock_gamma() -> AsyncMock:
+    """Create a mock GammaClient returning standard market data."""
+    gamma = AsyncMock()
+    gamma.get_market = AsyncMock(return_value=_GAMMA_MARKET_DATA)
+    gamma.close = AsyncMock()
+    return gamma
 
 
 class TestWhaleCopyTrader:
@@ -94,10 +112,12 @@ class TestWhaleCopyTrader:
     @pytest.fixture
     def trader(self, mock_repo: AsyncMock) -> WhaleCopyTrader:
         """Create a WhaleCopyTrader in paper mode."""
-        return WhaleCopyTrader(
+        t = WhaleCopyTrader(
             config=_make_config(),
             repo=mock_repo,
         )
+        t._gamma = _mock_gamma()
+        return t
 
     @pytest.mark.asyncio
     async def test_poll_cycle_no_signals(self, trader: WhaleCopyTrader) -> None:
@@ -125,6 +145,35 @@ class TestWhaleCopyTrader:
         assert pos.is_paper
         assert pos.entry_price == _EXPECTED_PAPER_PRICE
         assert pos.quantity > Decimal(0)
+
+    @pytest.mark.asyncio
+    async def test_paper_uses_gamma_price(self, trader: WhaleCopyTrader) -> None:
+        """Use real Gamma API price instead of hardcoded midpoint."""
+        signal = _make_signal()
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        pos = trader.positions["cond_a"]
+        # Gamma returns 0.72 for "Up", not 0.50 midpoint
+        assert pos.entry_price == Decimal("0.72")
+
+    @pytest.mark.asyncio
+    async def test_paper_falls_back_to_midpoint(self, trader: WhaleCopyTrader) -> None:
+        """Fall back to 0.50 midpoint when Gamma API fails."""
+        signal = _make_signal()
+        assert trader._gamma is not None
+        trader._gamma.get_market = AsyncMock(side_effect=RuntimeError("API down"))
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        pos = trader.positions["cond_a"]
+        assert pos.entry_price == Decimal("0.50")
 
     @pytest.mark.asyncio
     async def test_skips_already_acted_on(self, trader: WhaleCopyTrader) -> None:
@@ -229,18 +278,94 @@ class TestWhaleCopyTrader:
         assert "cond_b" in trader.acted_on
 
     @pytest.mark.asyncio
-    async def test_compute_quantity(self, trader: WhaleCopyTrader) -> None:
-        """Compute correct position size from config."""
-        # capital=100, max_position_pct=0.10 → max_spend=10
-        # price=0.50 → quantity = 10/0.50 = 20.00
+    async def test_compute_quantity_with_bias_scaling(self, trader: WhaleCopyTrader) -> None:
+        """Compute correct bias-scaled position size.
+
+        capital=100, max_position_pct=0.10 -> base_spend=10
+        bias=2.5, min_bias=1.5 -> scale=2.5/1.5=1.6667
+        price=0.50 -> quantity = (10 * 1.6667) / 0.50 = 33.33
+        """
+        _expected_qty = Decimal("33.33")
+        qty = trader._compute_quantity(Decimal("0.50"), _DEFAULT_BIAS)
+        assert qty == _expected_qty
+
+    @pytest.mark.asyncio
+    async def test_compute_quantity_caps_at_max_scale(self, trader: WhaleCopyTrader) -> None:
+        """Cap bias scaling at max_bias_scale.
+
+        capital=100, max_position_pct=0.10 -> base_spend=10
+        bias=100.0, min_bias=1.5 -> raw_scale=66.67, capped at 3.0
+        price=0.50 -> quantity = (10 * 3.0) / 0.50 = 60.00
+        """
+        _expected_capped_qty = Decimal("60.00")
+        qty = trader._compute_quantity(Decimal("0.50"), Decimal("100.0"))
+        assert qty == _expected_capped_qty
+
+    @pytest.mark.asyncio
+    async def test_compute_quantity_no_bias(self, trader: WhaleCopyTrader) -> None:
+        """Use base size when no bias_ratio provided.
+
+        capital=100, max_position_pct=0.10 -> base_spend=10
+        scale=1.0 (no bias)
+        price=0.50 -> quantity = 10 / 0.50 = 20.00
+        """
+        _expected_base_qty = Decimal("20.00")
         qty = trader._compute_quantity(Decimal("0.50"))
-        assert qty == _EXPECTED_PAPER_QTY
+        assert qty == _expected_base_qty
 
     @pytest.mark.asyncio
     async def test_compute_quantity_zero_price(self, trader: WhaleCopyTrader) -> None:
         """Return zero quantity for zero or negative price."""
         assert trader._compute_quantity(Decimal(0)) == Decimal(0)
         assert trader._compute_quantity(Decimal(-1)) == Decimal(0)
+
+
+class TestParseGammaPrice:
+    """Tests for the _parse_gamma_price helper."""
+
+    def test_parses_up_price(self) -> None:
+        """Return the Up token price from valid Gamma data."""
+        market = {
+            "outcomes": '["Up","Down"]',
+            "outcomePrices": '["0.72","0.28"]',
+        }
+        assert _parse_gamma_price(market, "Up") == Decimal("0.72")
+
+    def test_parses_down_price(self) -> None:
+        """Return the Down token price from valid Gamma data."""
+        market = {
+            "outcomes": '["Up","Down"]',
+            "outcomePrices": '["0.72","0.28"]',
+        }
+        assert _parse_gamma_price(market, "Down") == Decimal("0.28")
+
+    def test_returns_midpoint_for_missing_side(self) -> None:
+        """Fall back to midpoint when the favoured side is not in outcomes."""
+        market = {
+            "outcomes": '["Yes","No"]',
+            "outcomePrices": '["0.60","0.40"]',
+        }
+        assert _parse_gamma_price(market, "Up") == Decimal("0.50")
+
+    def test_returns_midpoint_for_invalid_json(self) -> None:
+        """Fall back to midpoint when outcome data is invalid JSON."""
+        market = {
+            "outcomes": "not json",
+            "outcomePrices": "not json",
+        }
+        assert _parse_gamma_price(market, "Up") == Decimal("0.50")
+
+    def test_returns_midpoint_for_missing_fields(self) -> None:
+        """Fall back to midpoint when market dict lacks outcome fields."""
+        assert _parse_gamma_price({}, "Up") == Decimal("0.50")
+
+    def test_returns_midpoint_for_non_string_fields(self) -> None:
+        """Fall back to midpoint when outcome fields are not strings."""
+        market = {
+            "outcomes": ["Up", "Down"],
+            "outcomePrices": [0.72, 0.28],
+        }
+        assert _parse_gamma_price(market, "Up") == Decimal("0.50")
 
 
 class TestFindTokenForSide:

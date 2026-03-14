@@ -14,6 +14,7 @@ Performance design:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from trading_tools.clients.binance.client import BinanceClient
+from trading_tools.clients.polymarket._gamma_client import GammaClient
 from trading_tools.clients.polymarket.models import OrderRequest
 from trading_tools.core.models import ZERO, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
@@ -29,6 +31,8 @@ from .models import CopyResult, CopySignal
 from .signal_detector import SignalDetector
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from trading_tools.apps.whale_monitor.repository import WhaleRepository
     from trading_tools.clients.polymarket.client import PolymarketClient
     from trading_tools.clients.polymarket.models import MarketToken
@@ -80,6 +84,7 @@ class WhaleCopyTrader:
     client: PolymarketClient | None = None
     _detector: SignalDetector | None = field(default=None, repr=False)
     _binance: BinanceClient | None = field(default=None, repr=False)
+    _gamma: GammaClient | None = field(default=None, repr=False)
     _acted_on: set[str] = field(default_factory=_empty_str_set, repr=False)
     _positions: dict[str, CopyResult] = field(default_factory=_empty_result_dict, repr=False)
     _results: list[CopyResult] = field(default_factory=_empty_result_list, repr=False)
@@ -104,6 +109,7 @@ class WhaleCopyTrader:
             min_time_to_start=self.config.min_time_to_start,
         )
         self._binance = BinanceClient()
+        self._gamma = GammaClient()
         self._running = True
         mode = "LIVE" if self.live else "PAPER"
         logger.info(
@@ -132,6 +138,7 @@ class WhaleCopyTrader:
             self._running = False
             self._log_summary()
             await self._binance.close()
+            await self._gamma.close()
 
     def stop(self) -> None:
         """Signal the polling loop to stop after the current cycle."""
@@ -170,21 +177,22 @@ class WhaleCopyTrader:
         if self.live and self.client is not None:
             await self._handle_live_signal(signal, now)
         else:
-            self._handle_paper_signal(signal, now)
+            await self._handle_paper_signal(signal, now)
 
-    def _handle_paper_signal(self, signal: CopySignal, now: int) -> None:
+    async def _handle_paper_signal(self, signal: CopySignal, now: int) -> None:
         """Open a paper position for the given signal.
 
-        Compute position size from config capital and max_position_pct,
-        using the inverse of bias_ratio as an estimated market price.
+        Fetch real token prices from the Gamma API and compute a
+        bias-scaled position size. Fall back to the midpoint if the
+        API call fails.
 
         Args:
             signal: The copy signal to simulate.
             now: Current UTC epoch seconds.
 
         """
-        price = _estimate_entry_price()
-        quantity = self._compute_quantity(price)
+        price = await self._fetch_gamma_price(signal)
+        quantity = self._compute_quantity(price, signal.bias_ratio)
 
         if quantity <= ZERO:
             logger.warning("Skipping %s: quantity too small", signal.condition_id[:12])
@@ -235,7 +243,7 @@ class WhaleCopyTrader:
             return
 
         price = token.price if token.price > ZERO else _MIDPOINT_FALLBACK
-        quantity = self._compute_quantity(price)
+        quantity = self._compute_quantity(price, signal.bias_ratio)
 
         if quantity <= ZERO:
             logger.warning("Skipping %s: quantity too small", signal.condition_id[:12])
@@ -274,11 +282,16 @@ class WhaleCopyTrader:
             response.order_id,
         )
 
-    def _compute_quantity(self, price: Decimal) -> Decimal:
-        """Compute position size in tokens from config capital limits.
+    def _compute_quantity(self, price: Decimal, bias_ratio: Decimal = ZERO) -> Decimal:
+        """Compute bias-scaled position size in tokens.
+
+        Scale the base position (capital * max_position_pct) by the whale's
+        conviction strength. Stronger bias = bigger bet, capped at
+        ``config.max_bias_scale``.
 
         Args:
-            price: Estimated entry price per token.
+            price: Entry price per token.
+            bias_ratio: Whale's bias ratio for this signal.
 
         Returns:
             Number of tokens to buy, or zero if price is non-positive.
@@ -286,8 +299,38 @@ class WhaleCopyTrader:
         """
         if price <= ZERO:
             return ZERO
-        max_spend = self.config.capital * self.config.max_position_pct
-        return (max_spend / price).quantize(Decimal("0.01"))
+        base_spend = self.config.capital * self.config.max_position_pct
+
+        scale = Decimal("1.0")
+        if bias_ratio > ZERO and self.config.min_bias > ZERO:
+            scale = min(bias_ratio / self.config.min_bias, self.config.max_bias_scale)
+
+        spend = base_spend * scale
+        return (spend / price).quantize(Decimal("0.01"))
+
+    async def _fetch_gamma_price(self, signal: CopySignal) -> Decimal:
+        """Fetch the real token price for the favoured side from the Gamma API.
+
+        Query the public Polymarket Gamma API for market data and extract
+        the outcome price matching the whale's favoured side. Fall back to
+        the midpoint if the API call fails or the side cannot be matched.
+
+        Args:
+            signal: The copy signal with condition_id and favoured_side.
+
+        Returns:
+            Token price as a Decimal.
+
+        """
+        assert self._gamma is not None  # noqa: S101
+
+        try:
+            market = await self._gamma.get_market(signal.condition_id)
+        except Exception:
+            logger.warning("Gamma API failed for %s, using midpoint", signal.condition_id[:12])
+            return _MIDPOINT_FALLBACK
+
+        return _parse_gamma_price(market, signal.favoured_side)
 
     async def _close_expired_positions(self) -> None:
         """Close positions whose market windows have expired.
@@ -433,16 +476,39 @@ class WhaleCopyTrader:
         return self._poll_count
 
 
-def _estimate_entry_price() -> Decimal:
-    """Estimate an entry price for paper trading.
+def _parse_gamma_price(market: Mapping[str, object], favoured_side: str) -> Decimal:
+    """Extract the token price for a given side from Gamma API market data.
 
-    Use the midpoint fallback since we don't have live order book
-    data in paper mode.
+    Parse the ``outcomes`` and ``outcomePrices`` fields (both JSON-encoded
+    strings) to find the price matching the favoured side. Return the
+    midpoint fallback if parsing fails or the side is not found.
+
+    Args:
+        market: Raw market dictionary from ``GammaClient.get_market()``.
+        favoured_side: ``"Up"`` or ``"Down"``.
 
     Returns:
-        Estimated entry price as a Decimal.
+        Token price for the favoured side, or ``0.50`` as fallback.
 
     """
+    try:
+        outcomes_raw = market.get("outcomes")
+        prices_raw = market.get("outcomePrices")
+
+        if not isinstance(outcomes_raw, str) or not isinstance(prices_raw, str):
+            return _MIDPOINT_FALLBACK
+
+        outcomes: list[str] = json.loads(outcomes_raw)
+        prices: list[str] = json.loads(prices_raw)
+
+        for outcome, price_str in zip(outcomes, prices, strict=False):
+            if outcome == favoured_side:
+                price = Decimal(price_str)
+                if price > ZERO:
+                    return price
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+
     return _MIDPOINT_FALLBACK
 
 

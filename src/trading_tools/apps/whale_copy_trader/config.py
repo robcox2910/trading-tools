@@ -25,6 +25,7 @@ class WhaleCopyConfig:
         min_time_to_start: Minimum seconds before window opens to act on a signal.
         capital: Starting capital for paper mode (USDC).
         max_position_pct: Maximum fraction of capital per single trade.
+        max_bias_scale: Maximum multiplier for bias-proportional position sizing.
         use_market_orders: Use market orders for fastest execution.
 
     """
@@ -37,4 +38,5 @@ class WhaleCopyConfig:
     min_time_to_start: int = 0
     capital: Decimal = Decimal(100)
     max_position_pct: Decimal = Decimal("0.10")
+    max_bias_scale: Decimal = Decimal("3.0")
     use_market_orders: bool = True
