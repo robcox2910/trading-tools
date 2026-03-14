@@ -31,10 +31,10 @@ class WhaleCopyConfig:
 
     whale_address: str
     poll_interval: int = 5
-    lookback_seconds: int = 300
+    lookback_seconds: int = 900
     min_bias: Decimal = Decimal("1.3")
     min_trades: int = 2
-    min_time_to_start: int = 60
+    min_time_to_start: int = 0
     capital: Decimal = Decimal(100)
     max_position_pct: Decimal = Decimal("0.10")
     use_market_orders: bool = True
