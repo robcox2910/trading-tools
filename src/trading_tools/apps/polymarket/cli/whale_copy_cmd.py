@@ -20,7 +20,7 @@ from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
 _DEFAULT_DB_URL = os.environ.get("WHALE_DB_URL", "sqlite+aiosqlite:///whale_data.db")
 _DEFAULT_POLL_INTERVAL = 5
-_DEFAULT_LOOKBACK = 300
+_DEFAULT_LOOKBACK = 3600
 _DEFAULT_MIN_BIAS = "1.5"
 _DEFAULT_MIN_TRADES = 3
 _DEFAULT_CAPITAL = "100"

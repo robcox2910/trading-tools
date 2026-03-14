@@ -30,7 +30,7 @@ class WhaleCopyConfig:
 
     whale_address: str
     poll_interval: int = 5
-    lookback_seconds: int = 300
+    lookback_seconds: int = 3600
     min_bias: Decimal = Decimal("1.5")
     min_trades: int = 3
     capital: Decimal = Decimal(100)
