@@ -95,7 +95,7 @@ class GammaClient:
         """
         markets: list[dict[str, Any]] = await self._get(
             "/markets",
-            params={"condition_id": condition_id},
+            params={"condition_ids": condition_id},
         )
         if not markets:
             raise PolymarketAPIError(
