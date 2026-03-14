@@ -22,6 +22,8 @@ _DEFAULT_SNIPE_WINDOW = 60
 _DEFAULT_MAX_HISTORY = 500
 _DEFAULT_MIN_EDGE = Decimal("0.005")
 _DEFAULT_DRAWDOWN_ALERT_PCT = Decimal(-20)
+_DEFAULT_FEE_RATE = Decimal("0.02")
+_DEFAULT_MAX_LOSS_PCT = Decimal(-100)
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,10 @@ class BotConfig:
         min_edge: Minimum probability edge over market price required
             to open a position. Ensures the Kelly-estimated probability
             exceeds the buy price by at least this amount.
+        fee_rate: Taker fee rate applied to every open and close
+            (e.g. 0.02 for a 2 %% Polymarket taker fee).
+        max_loss_pct: Stop the bot when drawdown reaches this percentage
+            (e.g. -20 stops at 20 %% loss).  Default -100 (disabled).
         series_slugs: Series slugs for periodic market re-discovery
             (e.g. ``("btc-updown-5m",)``). When set, the engine rotates
             markets each time the 5-minute window changes.
@@ -111,6 +117,8 @@ class BotConfig:
     max_history: int = _DEFAULT_MAX_HISTORY
     min_edge: Decimal = _DEFAULT_MIN_EDGE
     drawdown_alert_pct: Decimal = _DEFAULT_DRAWDOWN_ALERT_PCT
+    fee_rate: Decimal = _DEFAULT_FEE_RATE
+    max_loss_pct: Decimal = _DEFAULT_MAX_LOSS_PCT
     markets: tuple[str, ...] = ()
     market_end_times: tuple[tuple[str, str], ...] = ()
     series_slugs: tuple[str, ...] = ()
@@ -133,6 +141,7 @@ class PaperTrade:
         reason: Human-readable explanation of why the trade was made.
         estimated_edge: Strategy's estimated probability edge over market price.
         slippage: Price slippage from order book VWAP fill (0 when not modelled).
+        fee_paid: Fee amount deducted for this trade (0 when fees disabled).
 
     """
 
@@ -145,6 +154,7 @@ class PaperTrade:
     reason: str
     estimated_edge: Decimal
     slippage: Decimal = ZERO
+    fee_paid: Decimal = ZERO
 
 
 def _empty_metrics() -> dict[str, Decimal]:
