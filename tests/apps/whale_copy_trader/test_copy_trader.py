@@ -9,7 +9,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from trading_tools.apps.whale_copy_trader.config import WhaleCopyConfig
-from trading_tools.apps.whale_copy_trader.copy_trader import WhaleCopyTrader, _find_token_for_side
+from trading_tools.apps.whale_copy_trader.copy_trader import (
+    WhaleCopyTrader,
+    _find_token_for_side,
+)
 from trading_tools.apps.whale_copy_trader.models import CopySignal
 from trading_tools.clients.polymarket.models import Market, MarketToken, OrderResponse
 
@@ -146,7 +149,12 @@ class TestWhaleCopyTrader:
         """Close positions when the market window expires."""
         signal = _make_signal(window_end_ts=_PAST_TS)
 
-        with patch.object(trader, "_detector") as mock_detector:
+        with (
+            patch.object(trader, "_detector") as mock_detector,
+            patch.object(
+                trader, "_resolve_outcome", new_callable=AsyncMock, return_value=Decimal("1.0")
+            ),
+        ):
             mock_detector.detect_signals = AsyncMock(return_value=[signal])
             trader._detector = mock_detector
             await trader._poll_cycle()
@@ -161,7 +169,12 @@ class TestWhaleCopyTrader:
         """Track P&L correctly for paper trades."""
         signal = _make_signal(window_end_ts=_PAST_TS)
 
-        with patch.object(trader, "_detector") as mock_detector:
+        with (
+            patch.object(trader, "_detector") as mock_detector,
+            patch.object(
+                trader, "_resolve_outcome", new_callable=AsyncMock, return_value=Decimal("1.0")
+            ),
+        ):
             mock_detector.detect_signals = AsyncMock(return_value=[signal])
             trader._detector = mock_detector
             await trader._poll_cycle()
@@ -170,6 +183,27 @@ class TestWhaleCopyTrader:
         expected_pnl = (_EXPECTED_EXIT_PRICE - _EXPECTED_PAPER_PRICE) * result.quantity
         assert result.pnl == expected_pnl
         assert result.exit_price == _EXPECTED_EXIT_PRICE
+
+    @pytest.mark.asyncio
+    async def test_loss_when_whale_wrong(self, trader: WhaleCopyTrader) -> None:
+        """Record a loss when the whale's direction is wrong."""
+        signal = _make_signal(window_end_ts=_PAST_TS)
+
+        with (
+            patch.object(trader, "_detector") as mock_detector,
+            patch.object(
+                trader, "_resolve_outcome", new_callable=AsyncMock, return_value=Decimal("0.0")
+            ),
+        ):
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        result = trader.results[0]
+        assert result.exit_price == Decimal("0.0")
+        expected_loss = (Decimal("0.0") - _EXPECTED_PAPER_PRICE) * result.quantity
+        assert result.pnl == expected_loss
+        assert result.pnl < Decimal(0)
 
     @pytest.mark.asyncio
     async def test_stop_signals_shutdown(self, trader: WhaleCopyTrader) -> None:
