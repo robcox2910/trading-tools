@@ -22,10 +22,10 @@ from trading_tools.apps.whale_copy_trader.copy_trader import WhaleCopyTrader
 from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
 _DEFAULT_POLL_INTERVAL = 5
-_DEFAULT_LOOKBACK = 300
+_DEFAULT_LOOKBACK = 900
 _DEFAULT_MIN_BIAS = "1.3"
 _DEFAULT_MIN_TRADES = 2
-_DEFAULT_MIN_TIME_TO_START = 60
+_DEFAULT_MIN_TIME_TO_START = 0
 _DEFAULT_CAPITAL = "100"
 _DEFAULT_MAX_POSITION_PCT = "0.10"
 _LIVE_WARNING_DELAY = 2
