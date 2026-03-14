@@ -173,6 +173,13 @@ class TestSignalDetector:
         assert sig.asset == "BTC-USD"
         assert sig.favoured_side == "Up"
         assert sig.bias_ratio > Decimal("1.5")
+        # Volume split: Up volume = 3*100*0.70=210, Down volume = 10*0.30=3
+        # up_pct ≈ 210/213 ≈ 0.986
+        assert sig.up_volume_pct > Decimal("0.9")
+        assert sig.down_volume_pct < Decimal("0.1")
+        assert (sig.up_volume_pct + sig.down_volume_pct).quantize(Decimal("0.01")) == Decimal(
+            "1.00"
+        )
 
     @pytest.mark.asyncio
     async def test_detects_eth_signal(self, detector: SignalDetector, mock_repo: AsyncMock) -> None:

@@ -185,6 +185,10 @@ class SignalDetector:
                 skips["too_soon"] += 1
                 continue
 
+            total_vol = bd.up_volume + bd.down_volume
+            up_pct = Decimal(str(bd.up_volume / total_vol)) if total_vol > 0 else Decimal("0.5")
+            down_pct = Decimal(1) - up_pct
+
             signals.append(
                 CopySignal(
                     condition_id=bd.condition_id,
@@ -196,6 +200,8 @@ class SignalDetector:
                     window_start_ts=start_ts,
                     window_end_ts=end_ts,
                     detected_at=now,
+                    up_volume_pct=up_pct,
+                    down_volume_pct=down_pct,
                 )
             )
 

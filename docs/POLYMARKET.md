@@ -333,7 +333,9 @@ trading-tools-polymarket whale-correlate --address 0x1234... --days 1 --min-trad
 
 ### `whale-copy` — Copy Whale Bets in Real-Time
 
-Run a polling service that detects a whale's directional bias on BTC/ETH 5-minute markets and copies them. Paper mode by default; pass `--confirm-live` for real orders.
+Run a polling service that detects a whale's directional bias on BTC/ETH 5-minute markets and copies them with **dual-side spread capture**. Paper mode by default; pass `--confirm-live` for real orders.
+
+The bot buys **both** Up and Down tokens for each market, splitting capital according to the whale's volume allocation. The favoured side gets more capital (directional tilt), while the unfavoured side provides hedging and spread capture. When prices sum to less than $1.00 this creates guaranteed profit regardless of outcome.
 
 The service uses **incremental polling** for minimal latency: only new trades since the last poll are fetched, and a rolling window of trades is maintained in memory.
 
@@ -364,6 +366,7 @@ trading-tools-polymarket whale-copy \
 | `--min-trades` | `3` | Minimum trades per market to trigger a signal |
 | `--capital` | `100` | Starting capital in USDC (paper mode) |
 | `--max-position-pct` | `0.10` | Max fraction of capital per single trade |
+| `--min-unfavoured-pct` | `0.15` | Floor for unfavoured side allocation (0.0-1.0) |
 | `--confirm-live` | `false` | **Required flag** for live trading |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
@@ -373,9 +376,10 @@ trading-tools-polymarket whale-copy \
 1. Poll `whale_trades` table incrementally (only new trades since last check)
 2. Group by `condition_id`, compute bias via `analyse_markets()`
 3. Filter: BTC/ETH asset only, future time window, bias > threshold, trades >= min
-4. Paper: log signal, open virtual position at midpoint price
-5. Live: fetch market tokens from CLOB, place market order for fastest fill
-6. Close positions when the market window expires
+4. Compute dual-side allocation: split capital by whale's Up/Down volume ratio (with `min_unfavoured_pct` floor)
+5. Paper: open virtual dual-side position at Gamma API prices
+6. Live: fetch market tokens from CLOB, place limit orders for both sides
+7. Close positions when the market window expires; P&L = winning_qty - total_cost
 
 **Heartbeat:** Logs status every 60 seconds (poll count, open positions, P&L) for CloudWatch monitoring.
 
