@@ -116,9 +116,15 @@ class TestBotConfig:
         assert config.series_slugs == ()
 
     def test_fee_rate_default(self) -> None:
-        """Test that fee_rate defaults to 2 %% (0.02)."""
+        """Test that fee_rate defaults to 0.25 (Polymarket crypto rate parameter)."""
         config = BotConfig()
-        assert config.fee_rate == Decimal("0.02")
+        assert config.fee_rate == Decimal("0.25")
+
+    def test_fee_exponent_default(self) -> None:
+        """Test that fee_exponent defaults to 2 (Polymarket crypto exponent)."""
+        config = BotConfig()
+        expected_exponent = 2
+        assert config.fee_exponent == expected_exponent
 
     def test_max_loss_pct_default(self) -> None:
         """Test that max_loss_pct defaults to -100 (effectively disabled)."""

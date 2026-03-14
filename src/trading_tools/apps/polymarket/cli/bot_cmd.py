@@ -58,7 +58,10 @@ def bot(  # noqa: PLR0913
     snipe_window: Annotated[
         int, typer.Option(help="Seconds before market end to start sniping")
     ] = 60,
-    fee_rate: Annotated[float, typer.Option(help="Taker fee rate (e.g. 0.02 for 2%%)")] = 0.02,
+    fee_rate: Annotated[
+        float, typer.Option(help="Fee rate parameter (0.25=crypto, 0.0175=sports, 0=disabled)")
+    ] = 0.25,
+    fee_exponent: Annotated[int, typer.Option(help="Fee exponent (2=crypto, 1=sports)")] = 2,
     max_loss_pct: Annotated[
         float, typer.Option(help="Stop bot at this drawdown %% (e.g. -20)")
     ] = -100.0,
@@ -95,6 +98,7 @@ def bot(  # noqa: PLR0913
             snipe_threshold=snipe_threshold,
             snipe_window=snipe_window,
             fee_rate=fee_rate,
+            fee_exponent=fee_exponent,
             max_loss_pct=max_loss_pct,
         )
     )
@@ -118,6 +122,7 @@ async def _bot(  # noqa: PLR0913
     snipe_threshold: float,
     snipe_window: int,
     fee_rate: float,
+    fee_exponent: int,
     max_loss_pct: float,
 ) -> None:
     """Run the paper trading bot asynchronously.
@@ -138,7 +143,8 @@ async def _bot(  # noqa: PLR0913
         min_edge: Minimum edge for cross-market arb.
         snipe_threshold: Price threshold for late snipe strategy.
         snipe_window: Window in seconds before market end for sniping.
-        fee_rate: Taker fee rate (e.g. 0.02 for 2 %%).
+        fee_rate: Fee rate parameter in the polynomial formula.
+        fee_exponent: Exponent in the polynomial fee formula.
         max_loss_pct: Stop bot at this drawdown percentage (e.g. -20).
 
     """
@@ -189,6 +195,7 @@ async def _bot(  # noqa: PLR0913
         max_position_pct=Decimal(str(max_position_pct)),
         kelly_fraction=Decimal(str(kelly_frac)),
         fee_rate=Decimal(str(fee_rate)),
+        fee_exponent=fee_exponent,
         max_loss_pct=Decimal(str(max_loss_pct)),
         markets=market_ids,
         market_end_times=market_end_times,

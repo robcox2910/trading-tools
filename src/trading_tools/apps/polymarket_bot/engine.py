@@ -64,7 +64,9 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
                 if not provided.
 
         """
-        portfolio = PaperPortfolio(config.initial_capital, config.max_position_pct, config.fee_rate)
+        portfolio = PaperPortfolio(
+            config.initial_capital, config.max_position_pct, config.fee_rate, config.fee_exponent
+        )
         super().__init__(client, strategy, config, portfolio, feed)
 
     async def run(self, *, max_ticks: int | None = None) -> PaperTradingResult:

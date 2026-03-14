@@ -573,7 +573,8 @@ class TestLossLimit:
             kelly_fraction=Decimal("0.5"),
             max_history=100,
             markets=(_CONDITION_ID,),
-            fee_rate=Decimal("0.02"),
+            fee_rate=Decimal("0.25"),
+            fee_exponent=2,
             max_loss_pct=Decimal(-5),
         )
         feed = _mock_feed(events)
@@ -618,7 +619,8 @@ class TestFeeMetrics:
             kelly_fraction=Decimal("0.25"),
             max_history=100,
             markets=(_CONDITION_ID,),
-            fee_rate=Decimal("0.02"),
+            fee_rate=Decimal("0.25"),
+            fee_exponent=2,
         )
         feed = _mock_feed(events)
         engine = PaperTradingEngine(client, strategy, config, feed=feed)
