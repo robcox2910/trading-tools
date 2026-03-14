@@ -37,9 +37,9 @@ trading-tools/
 │   │   │   └── models.py            # Whale and trade SQLAlchemy models
 │   │   └── whale_copy_trader/       # Real-time whale copy-trading service
 │   │       ├── config.py            # WhaleCopyConfig (frozen dataclass)
-│   │       ├── models.py            # CopySignal, CopyResult
+│   │       ├── models.py            # CopySignal, SideLeg, OpenPosition, CopyResult
 │   │       ├── signal_detector.py   # Incremental polling and signal detection
-│   │       └── copy_trader.py       # Copy-trading engine (paper + live)
+│   │       └── copy_trader.py       # Dual-side spread copy-trading engine
 │   ├── clients/                     # External API clients
 │   │   ├── revolut_x/               # Revolut X API client
 │   │   │   ├── auth/                # Ed25519 authentication
@@ -116,7 +116,7 @@ Runnable applications and long-lived services. Each application has:
 | `polymarket_bot` | Paper and live trading engines with fee/slippage modelling and loss limits (consumed by `polymarket` CLI) |
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
 | `whale_monitor` | Polling service that tracks whale trades |
-| `whale_copy_trader` | Real-time whale copy-trading (paper and live) |
+| `whale_copy_trader` | Dual-side spread whale copy-trading (paper and live) |
 
 ### `/clients` — API Clients
 

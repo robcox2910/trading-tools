@@ -29,6 +29,7 @@ class WhaleCopyConfig:
         topup_bias_delta: Minimum bias increase to trigger a top-up.
         max_window_seconds: Maximum market window duration to trade (0 = no limit).
         use_market_orders: Use market orders (FOK) instead of limit orders (GTC).
+        min_unfavoured_pct: Floor for unfavoured side allocation (0.0-1.0).
 
     """
 
@@ -44,3 +45,4 @@ class WhaleCopyConfig:
     topup_bias_delta: Decimal = Decimal("0.5")
     max_window_seconds: int = 0
     use_market_orders: bool = False
+    min_unfavoured_pct: Decimal = Decimal("0.15")

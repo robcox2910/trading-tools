@@ -1,7 +1,15 @@
 """Core copy-trading engine that mirrors whale bets in real-time.
 
 Run a tight polling loop that detects whale directional bias signals and
-either simulates (paper) or executes (live) copy trades on Polymarket.
+either simulates (paper) or executes (live) dual-side spread trades on
+Polymarket.
+
+Dual-side spread capture:
+- Buy BOTH Up and Down tokens, splitting capital by the whale's volume
+  allocation. The favoured side gets more capital (directional tilt), the
+  unfavoured side provides hedging and spread capture.
+- At resolution the winning side pays $1.00/token, the losing side $0.00.
+  P&L = winning_leg_quantity - total_cost_basis.
 
 Dynamic position management:
 - OPEN: first time a market signals above threshold.
@@ -33,7 +41,7 @@ from trading_tools.clients.polymarket.models import OrderRequest
 from trading_tools.core.models import ZERO, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
-from .models import CopyResult, CopySignal, OpenPosition
+from .models import CopyResult, CopySignal, OpenPosition, SideLeg
 from .signal_detector import SignalDetector
 
 if TYPE_CHECKING:
@@ -51,6 +59,8 @@ _HEARTBEAT_INTERVAL = 60
 _MIDPOINT_FALLBACK = Decimal("0.50")
 _WIN_PRICE = Decimal("1.0")
 _LOSS_PRICE = Decimal("0.0")
+_MIN_TOKEN_QTY = Decimal(5)
+_ONE = Decimal(1)
 
 
 def _empty_position_dict() -> dict[str, OpenPosition]:
@@ -71,8 +81,8 @@ class WhaleCopyTrader:
     signals, and either log virtual trades (paper mode) or place real
     orders (live mode) via the Polymarket CLOB API.
 
-    Dynamically manage positions: open new ones, top-up when the whale
-    doubles down, flip when the whale reverses direction.
+    Dynamically manage dual-side positions: open new ones, top-up when
+    the whale doubles down, flip when the whale reverses direction.
 
     Attributes:
         config: Immutable service configuration.
@@ -120,7 +130,7 @@ class WhaleCopyTrader:
             "whale-copy started mode=%s address=%s poll=%ds"
             " lookback=%ds min_bias=%.1f min_trades=%d"
             " min_time_to_start=%ds capital=$%s max_pos=%s%%"
-            " topup_delta=%.1f",
+            " topup_delta=%.1f min_unfavoured=%.0f%%",
             mode,
             self.config.whale_address,
             self.config.poll_interval,
@@ -131,6 +141,7 @@ class WhaleCopyTrader:
             self.config.capital,
             self.config.max_position_pct * 100,
             self.config.topup_bias_delta,
+            self.config.min_unfavoured_pct * 100,
         )
 
         try:
@@ -185,7 +196,7 @@ class WhaleCopyTrader:
             await self._open_position(signal)
             return
 
-        if signal.favoured_side != existing.side:
+        if signal.favoured_side != existing.favoured_side:
             await self._flip_position(existing, signal)
             return
 
@@ -194,7 +205,7 @@ class WhaleCopyTrader:
             await self._topup_position(existing, signal)
 
     async def _open_position(self, signal: CopySignal) -> None:
-        """Open a new position for a market not yet traded.
+        """Open a new dual-side position for a market not yet traded.
 
         Args:
             signal: The copy signal to act on.
@@ -208,43 +219,49 @@ class WhaleCopyTrader:
             await self._open_paper(signal, now)
 
     async def _open_paper(self, signal: CopySignal, now: int) -> None:
-        """Open a paper position for a new signal.
+        """Open a paper dual-side position for a new signal.
 
         Args:
             signal: The copy signal to simulate.
             now: Current UTC epoch seconds.
 
         """
-        price = await self._fetch_gamma_price(signal)
-        quantity = self._compute_quantity(price, signal.bias_ratio)
+        prices = await self._fetch_gamma_prices(signal)
+        allocation = self._compute_spread_allocation(prices, signal)
 
-        if quantity <= ZERO:
-            logger.warning("Skipping %s: quantity too small", signal.condition_id[:12])
+        if allocation is None:
+            logger.warning("Skipping %s: both sides below minimum", signal.condition_id[:12])
             return
 
+        up_leg, down_leg = allocation
         pos = OpenPosition(
             signal=signal,
-            side=signal.favoured_side,
-            entry_price=price,
-            quantity=quantity,
-            cost_basis=price * quantity,
+            favoured_side=signal.favoured_side,
+            up_leg=up_leg,
+            down_leg=down_leg,
             entry_time=now,
             last_bias=signal.bias_ratio,
             is_paper=True,
         )
         self._positions[signal.condition_id] = pos
+        spread = prices["Up"] + prices["Down"]
         logger.info(
-            "PAPER OPEN %s side=%s price=%.4f qty=%.2f asset=%s bias=%.1f",
+            "PAPER OPEN %s favoured=%s spread=%.4f"
+            " up=[%.4f x %.2f] down=[%.4f x %.2f] cost=$%.4f asset=%s bias=%.1f",
             signal.condition_id[:12],
             signal.favoured_side,
-            price,
-            quantity,
+            spread,
+            up_leg.entry_price if up_leg else ZERO,
+            up_leg.quantity if up_leg else ZERO,
+            down_leg.entry_price if down_leg else ZERO,
+            down_leg.quantity if down_leg else ZERO,
+            pos.total_cost_basis,
             signal.asset,
             signal.bias_ratio,
         )
 
     async def _open_live(self, signal: CopySignal, now: int) -> None:
-        """Place a real market order for a new signal.
+        """Place real orders for both sides of a new signal.
 
         Args:
             signal: The copy signal to execute.
@@ -259,44 +276,66 @@ class WhaleCopyTrader:
             logger.exception("Failed to fetch market %s", signal.condition_id[:12])
             return
 
-        token = _find_token_for_side(market.tokens, signal.favoured_side)
-        if token is None:
-            logger.warning(
-                "No token found for side=%s in %s", signal.favoured_side, signal.condition_id[:12]
-            )
+        tokens_by_side = {t.outcome: t for t in market.tokens}
+        prices = _prices_from_tokens(tokens_by_side)
+        allocation = self._compute_spread_allocation(prices, signal)
+
+        if allocation is None:
+            logger.warning("Skipping %s: both sides below minimum", signal.condition_id[:12])
             return
 
-        price = token.price if token.price > ZERO else _MIDPOINT_FALLBACK
-        quantity = self._compute_quantity(price, signal.bias_ratio)
+        up_leg, down_leg = allocation
 
-        if quantity <= ZERO:
-            logger.warning("Skipping %s: quantity too small", signal.condition_id[:12])
-            return
+        # Place orders for each leg
+        up_leg = await self._place_leg_order(up_leg, tokens_by_side.get("Up"))
+        down_leg = await self._place_leg_order(down_leg, tokens_by_side.get("Down"))
 
-        response = await self._place_order(token.token_id, price, quantity)
-        if response is None:
+        if up_leg is None and down_leg is None:
+            logger.warning("Both leg orders failed for %s", signal.condition_id[:12])
             return
 
         pos = OpenPosition(
             signal=signal,
-            side=signal.favoured_side,
-            entry_price=price,
-            quantity=quantity,
-            cost_basis=price * quantity,
+            favoured_side=signal.favoured_side,
+            up_leg=up_leg,
+            down_leg=down_leg,
             entry_time=now,
             last_bias=signal.bias_ratio,
             is_paper=False,
-            order_ids=[response],
         )
         self._positions[signal.condition_id] = pos
         logger.info(
-            "LIVE OPEN %s side=%s price=%.4f qty=%.2f order=%s",
+            "LIVE OPEN %s favoured=%s cost=$%.4f orders=%s",
             signal.condition_id[:12],
             signal.favoured_side,
-            price,
-            quantity,
-            response,
+            pos.total_cost_basis,
+            pos.all_order_ids,
         )
+
+    async def _place_leg_order(
+        self,
+        leg: SideLeg | None,
+        token: MarketToken | None,
+    ) -> SideLeg | None:
+        """Place a live order for a single leg and attach the order ID.
+
+        Args:
+            leg: The side leg to place, or ``None`` to skip.
+            token: The CLOB token for this side.
+
+        Returns:
+            The leg with order ID attached, or ``None`` if skipped or failed.
+
+        """
+        if leg is None or token is None:
+            return None
+
+        response = await self._place_order(token.token_id, leg.entry_price, leg.quantity)
+        if response is None:
+            return None
+
+        leg.order_ids.append(response)
+        return leg
 
     async def _topup_position(self, pos: OpenPosition, signal: CopySignal) -> None:
         """Add to an existing position when whale increases conviction.
@@ -312,35 +351,43 @@ class WhaleCopyTrader:
             await self._topup_paper(pos, signal)
 
     async def _topup_paper(self, pos: OpenPosition, signal: CopySignal) -> None:
-        """Add a paper fill to an existing position.
+        """Add paper fills to both legs of an existing position.
 
         Args:
             pos: The existing open position.
             signal: The new signal with increased bias.
 
         """
-        price = await self._fetch_gamma_price(signal)
-        quantity = self._compute_quantity(price, signal.bias_ratio)
+        prices = await self._fetch_gamma_prices(signal)
+        allocation = self._compute_spread_allocation(prices, signal)
 
-        if quantity <= ZERO:
+        if allocation is None:
             return
 
-        pos.add_fill(price, quantity)
+        new_up, new_down = allocation
+        if new_up and pos.up_leg:
+            pos.up_leg.add_fill(new_up.entry_price, new_up.quantity)
+        elif new_up and pos.up_leg is None:
+            pos.up_leg = new_up
+
+        if new_down and pos.down_leg:
+            pos.down_leg.add_fill(new_down.entry_price, new_down.quantity)
+        elif new_down and pos.down_leg is None:
+            pos.down_leg = new_down
+
+        old_bias = pos.last_bias
         pos.last_bias = signal.bias_ratio
         pos.signal = signal
         logger.info(
-            "PAPER TOPUP %s side=%s price=%.4f +qty=%.2f total_qty=%.2f bias=%.1f→%.1f",
+            "PAPER TOPUP %s cost=$%.4f bias=%.1f→%.1f",
             signal.condition_id[:12],
-            signal.favoured_side,
-            price,
-            quantity,
-            pos.quantity,
-            pos.last_bias - (signal.bias_ratio - pos.last_bias),
+            pos.total_cost_basis,
+            old_bias,
             signal.bias_ratio,
         )
 
     async def _topup_live(self, pos: OpenPosition, signal: CopySignal) -> None:
-        """Place a live top-up order for an existing position.
+        """Place live top-up orders for both legs of an existing position.
 
         Args:
             pos: The existing open position.
@@ -355,40 +402,58 @@ class WhaleCopyTrader:
             logger.exception("Failed to fetch market for top-up %s", signal.condition_id[:12])
             return
 
-        token = _find_token_for_side(market.tokens, signal.favoured_side)
-        if token is None:
+        tokens_by_side = {t.outcome: t for t in market.tokens}
+        prices = _prices_from_tokens(tokens_by_side)
+        allocation = self._compute_spread_allocation(prices, signal)
+
+        if allocation is None:
             return
 
-        price = token.price if token.price > ZERO else _MIDPOINT_FALLBACK
-        quantity = self._compute_quantity(price, signal.bias_ratio)
+        new_up, new_down = allocation
 
-        if quantity <= ZERO:
-            return
+        if new_up:
+            up_token = tokens_by_side.get("Up")
+            if up_token:
+                resp = await self._place_order(
+                    up_token.token_id, new_up.entry_price, new_up.quantity
+                )
+                if resp:
+                    if pos.up_leg:
+                        pos.up_leg.add_fill(new_up.entry_price, new_up.quantity)
+                        pos.up_leg.order_ids.append(resp)
+                    else:
+                        new_up.order_ids.append(resp)
+                        pos.up_leg = new_up
 
-        response = await self._place_order(token.token_id, price, quantity)
-        if response is None:
-            return
+        if new_down:
+            down_token = tokens_by_side.get("Down")
+            if down_token:
+                resp = await self._place_order(
+                    down_token.token_id, new_down.entry_price, new_down.quantity
+                )
+                if resp:
+                    if pos.down_leg:
+                        pos.down_leg.add_fill(new_down.entry_price, new_down.quantity)
+                        pos.down_leg.order_ids.append(resp)
+                    else:
+                        new_down.order_ids.append(resp)
+                        pos.down_leg = new_down
 
-        pos.add_fill(price, quantity)
         pos.last_bias = signal.bias_ratio
         pos.signal = signal
-        pos.order_ids.append(response)
         logger.info(
-            "LIVE TOPUP %s side=%s price=%.4f +qty=%.2f total_qty=%.2f order=%s",
+            "LIVE TOPUP %s cost=$%.4f orders=%s",
             signal.condition_id[:12],
-            signal.favoured_side,
-            price,
-            quantity,
-            pos.quantity,
-            response,
+            pos.total_cost_basis,
+            pos.all_order_ids,
         )
 
     async def _flip_position(self, pos: OpenPosition, signal: CopySignal) -> None:
-        """Close existing position and open in the opposite direction.
+        """Close existing dual-side position and open in the opposite direction.
 
         The whale has reversed their directional bet. Close the current
-        position at a loss (exit=0.0 since we're on the wrong side now)
-        and open a new position in the new direction.
+        position at a total loss of cost basis and open a new dual-side
+        position in the new direction.
 
         Args:
             pos: The existing position to close.
@@ -396,21 +461,22 @@ class WhaleCopyTrader:
 
         """
         cid = signal.condition_id
-        exit_price = _LOSS_PRICE
-        pnl = (exit_price - pos.entry_price) * pos.quantity
+        pnl = -pos.total_cost_basis
         now = int(time.time())
 
         closed = CopyResult(
             signal=pos.signal,
-            side=pos.side,
-            entry_price=pos.entry_price,
-            quantity=pos.quantity,
+            favoured_side=pos.favoured_side,
+            up_entry=pos.up_leg.entry_price if pos.up_leg else None,
+            up_qty=pos.up_leg.quantity if pos.up_leg else None,
+            down_entry=pos.down_leg.entry_price if pos.down_leg else None,
+            down_qty=pos.down_leg.quantity if pos.down_leg else None,
+            total_cost_basis=pos.total_cost_basis,
             entry_time=pos.entry_time,
-            exit_price=exit_price,
             exit_time=now,
             pnl=pnl,
             is_paper=pos.is_paper,
-            order_ids=tuple(pos.order_ids),
+            order_ids=tuple(pos.all_order_ids),
         )
         self._results.append(closed)
         del self._positions[cid]
@@ -419,7 +485,7 @@ class WhaleCopyTrader:
             "%s FLIP %s %s→%s pnl=%.4f (closing old side)",
             "PAPER" if pos.is_paper else "LIVE",
             cid[:12],
-            pos.side,
+            pos.favoured_side,
             signal.favoured_side,
             pnl,
         )
@@ -457,44 +523,98 @@ class WhaleCopyTrader:
 
         return response.order_id
 
-    def _compute_quantity(self, price: Decimal, bias_ratio: Decimal = ZERO) -> Decimal:
-        """Compute bias-scaled position size in tokens.
+    def _compute_spread_allocation(
+        self,
+        prices: dict[str, Decimal],
+        signal: CopySignal,
+    ) -> tuple[SideLeg | None, SideLeg | None] | None:
+        """Compute dual-side allocation split by whale volume percentages.
 
-        Scale the base position (capital * max_position_pct) by the whale's
-        conviction strength. Stronger bias = bigger bet, capped at
-        ``config.max_bias_scale``.
+        Scale the base position by bias, split by the whale's Up/Down
+        allocation, enforce the ``min_unfavoured_pct`` floor, and convert
+        to token quantities. Legs below ``_MIN_TOKEN_QTY`` (5 tokens)
+        are dropped. Return ``None`` if both legs are below minimum.
 
         Args:
-            price: Entry price per token.
-            bias_ratio: Whale's bias ratio for this signal.
+            prices: Token prices keyed by side (``"Up"`` and ``"Down"``).
+            signal: The copy signal with volume allocation split.
 
         Returns:
-            Number of tokens to buy, or zero if price is non-positive.
+            Tuple of (up_leg, down_leg) or ``None`` if both below minimum.
 
         """
-        if price <= ZERO:
-            return ZERO
+        up_price = prices.get("Up", _MIDPOINT_FALLBACK)
+        down_price = prices.get("Down", _MIDPOINT_FALLBACK)
+
+        if up_price <= ZERO or down_price <= ZERO:
+            return None
+
         base_spend = self.config.capital * self.config.max_position_pct
-
         scale = Decimal("1.0")
-        if bias_ratio > ZERO and self.config.min_bias > ZERO:
-            scale = min(bias_ratio / self.config.min_bias, self.config.max_bias_scale)
+        if signal.bias_ratio > ZERO and self.config.min_bias > ZERO:
+            scale = min(signal.bias_ratio / self.config.min_bias, self.config.max_bias_scale)
+        total_spend = base_spend * scale
 
-        spend = base_spend * scale
-        return (spend / price).quantize(Decimal("0.01"))
+        # Apply whale volume split with min_unfavoured_pct floor
+        up_pct = signal.up_volume_pct
+        down_pct = signal.down_volume_pct
 
-    async def _fetch_gamma_price(self, signal: CopySignal) -> Decimal:
-        """Fetch the real token price for the favoured side from the Gamma API.
+        unfavoured_pct = down_pct if signal.favoured_side == "Up" else up_pct
+        floor = self.config.min_unfavoured_pct
+
+        if unfavoured_pct < floor:
+            if signal.favoured_side == "Up":
+                down_pct = floor
+                up_pct = _ONE - floor
+            else:
+                up_pct = floor
+                down_pct = _ONE - floor
+
+        up_spend = total_spend * up_pct
+        down_spend = total_spend * down_pct
+
+        up_qty = (up_spend / up_price).quantize(Decimal("0.01"))
+        down_qty = (down_spend / down_price).quantize(Decimal("0.01"))
+
+        up_leg = (
+            SideLeg(side="Up", entry_price=up_price, quantity=up_qty, cost_basis=up_spend)
+            if up_qty >= _MIN_TOKEN_QTY
+            else None
+        )
+        down_leg = (
+            SideLeg(side="Down", entry_price=down_price, quantity=down_qty, cost_basis=down_spend)
+            if down_qty >= _MIN_TOKEN_QTY
+            else None
+        )
+
+        spread = up_price + down_price
+        logger.info(
+            "  SPREAD %s up_pct=%.0f%% down_pct=%.0f%% spread=%.4f up_qty=%.2f down_qty=%.2f",
+            signal.condition_id[:12],
+            up_pct * 100,
+            down_pct * 100,
+            spread,
+            up_qty,
+            down_qty,
+        )
+
+        if up_leg is None and down_leg is None:
+            return None
+
+        return up_leg, down_leg
+
+    async def _fetch_gamma_prices(self, signal: CopySignal) -> dict[str, Decimal]:
+        """Fetch token prices for both sides from the Gamma API.
 
         Query the public Polymarket Gamma API for market data and extract
-        the outcome price matching the whale's favoured side. Fall back to
-        the midpoint if the API call fails or the side cannot be matched.
+        both Up and Down outcome prices. If only one side is found, derive
+        the other as ``1.0 - price``. Fall back to midpoints on failure.
 
         Args:
-            signal: The copy signal with condition_id and favoured_side.
+            signal: The copy signal with condition_id.
 
         Returns:
-            Token price as a Decimal.
+            Dict mapping ``"Up"`` and ``"Down"`` to their token prices.
 
         """
         assert self._gamma is not None  # noqa: S101
@@ -503,64 +623,66 @@ class WhaleCopyTrader:
             market = await self._gamma.get_market(signal.condition_id)
         except Exception:
             logger.warning("Gamma API failed for %s, using midpoint", signal.condition_id[:12])
-            return _MIDPOINT_FALLBACK
+            return {"Up": _MIDPOINT_FALLBACK, "Down": _MIDPOINT_FALLBACK}
 
-        return _parse_gamma_price(market, signal.favoured_side)
+        return _parse_gamma_prices(market)
 
     async def _close_expired_positions(self) -> None:
         """Close positions whose market windows have expired.
 
         Fetch actual spot price from Binance 1-min candles to determine
-        whether the whale's directional bet was correct. Binary outcome:
-        1.0 if correct (win), 0.0 if wrong (loss).
+        whether the whale's directional bet was correct. For dual-side
+        positions, P&L = winning_qty - total_cost_basis.
         """
         now = int(time.time())
         expired = [cid for cid, pos in self._positions.items() if pos.signal.window_end_ts <= now]
 
         for cid in expired:
             pos = self._positions.pop(cid)
-            exit_price = await self._resolve_outcome(pos)
-            pnl = (exit_price - pos.entry_price) * pos.quantity
+            winning_side = await self._resolve_outcome(pos)
+            pnl = _compute_dual_side_pnl(pos, winning_side)
 
             closed = CopyResult(
                 signal=pos.signal,
-                side=pos.side,
-                entry_price=pos.entry_price,
-                quantity=pos.quantity,
+                favoured_side=pos.favoured_side,
+                up_entry=pos.up_leg.entry_price if pos.up_leg else None,
+                up_qty=pos.up_leg.quantity if pos.up_leg else None,
+                down_entry=pos.down_leg.entry_price if pos.down_leg else None,
+                down_qty=pos.down_leg.quantity if pos.down_leg else None,
+                total_cost_basis=pos.total_cost_basis,
                 entry_time=pos.entry_time,
-                exit_price=exit_price,
                 exit_time=now,
+                winning_side=winning_side,
                 pnl=pnl,
                 is_paper=pos.is_paper,
-                order_ids=tuple(pos.order_ids),
+                order_ids=tuple(pos.all_order_ids),
             )
             self._results.append(closed)
-            outcome = "WIN" if exit_price == _WIN_PRICE else "LOSS"
+            outcome = "WIN" if pnl > ZERO else "LOSS"
             logger.info(
-                "%s CLOSE %s %s pnl=%.4f entry=%.4f exit=%.4f side=%s asset=%s",
+                "%s CLOSE %s %s pnl=%.4f cost=$%.4f winning=%s favoured=%s asset=%s",
                 "PAPER" if pos.is_paper else "LIVE",
                 cid[:12],
                 outcome,
                 pnl,
-                pos.entry_price,
-                exit_price,
-                pos.side,
+                pos.total_cost_basis,
+                winning_side,
+                pos.favoured_side,
                 pos.signal.asset,
             )
 
-    async def _resolve_outcome(self, pos: OpenPosition) -> Decimal:
-        """Determine whether the whale's directional bet was correct.
+    async def _resolve_outcome(self, pos: OpenPosition) -> str:
+        """Determine which side won based on Binance spot price movement.
 
         Fetch Binance 1-min candles for the market window and compare
-        the opening price against the closing price. If the price moved
-        in the whale's favoured direction, the bet wins (1.0); otherwise
-        it loses (0.0).
+        the opening price against the closing price. Return ``"Up"`` if
+        price went up, ``"Down"`` otherwise.
 
         Args:
-            pos: The open position with signal, side, and window timestamps.
+            pos: The open position with signal and window timestamps.
 
         Returns:
-            ``Decimal("1.0")`` for a correct bet, ``Decimal("0.0")`` otherwise.
+            ``"Up"`` if price went up, ``"Down"`` otherwise.
 
         """
         assert self._binance is not None  # noqa: S101
@@ -575,32 +697,28 @@ class WhaleCopyTrader:
                 signal.window_end_ts,
             )
         except Exception:
-            logger.warning("Failed to fetch candles for %s, assuming win", signal.asset)
-            return _WIN_PRICE
+            logger.warning("Failed to fetch candles for %s, assuming Up", signal.asset)
+            return "Up"
 
         if not candles:
-            logger.warning("No candles for %s window, assuming win", signal.asset)
-            return _WIN_PRICE
+            logger.warning("No candles for %s window, assuming Up", signal.asset)
+            return "Up"
 
         open_price = candles[0].open
         close_price = candles[-1].close
         price_went_up = close_price > open_price
-
-        whale_correct = (pos.side == "Up" and price_went_up) or (
-            pos.side == "Down" and not price_went_up
-        )
+        winning_side = "Up" if price_went_up else "Down"
 
         logger.info(
-            "  SPOT %s open=%.2f close=%.2f direction=%s whale_side=%s → %s",
+            "  SPOT %s open=%.2f close=%.2f direction=%s favoured=%s",
             signal.asset,
             open_price,
             close_price,
-            "Up" if price_went_up else "Down",
-            pos.side,
-            "CORRECT" if whale_correct else "WRONG",
+            winning_side,
+            pos.favoured_side,
         )
 
-        return _WIN_PRICE if whale_correct else _LOSS_PRICE
+        return winning_side
 
     def _maybe_log_heartbeat(self) -> None:
         """Log a heartbeat message if the interval has elapsed."""
@@ -646,19 +764,41 @@ class WhaleCopyTrader:
         return self._poll_count
 
 
-def _parse_gamma_price(market: Mapping[str, object], favoured_side: str) -> Decimal:
-    """Extract the token price for a given side from Gamma API market data.
+def _compute_dual_side_pnl(pos: OpenPosition, winning_side: str) -> Decimal:
+    """Compute P&L for a dual-side position at resolution.
+
+    The winning side pays $1.00 per token, the losing side pays $0.00.
+    P&L = winning_leg_quantity - total_cost_basis.
+
+    Args:
+        pos: The open position with up/down legs.
+        winning_side: Which side won (``"Up"`` or ``"Down"``).
+
+    Returns:
+        Realised P&L in USDC.
+
+    """
+    winning_qty = ZERO
+    if winning_side == "Up" and pos.up_leg:
+        winning_qty = pos.up_leg.quantity
+    elif winning_side == "Down" and pos.down_leg:
+        winning_qty = pos.down_leg.quantity
+
+    return winning_qty - pos.total_cost_basis
+
+
+def _parse_gamma_prices(market: Mapping[str, object]) -> dict[str, Decimal]:
+    """Extract token prices for both sides from Gamma API market data.
 
     Parse the ``outcomes`` and ``outcomePrices`` fields (both JSON-encoded
-    strings) to find the price matching the favoured side. Return the
-    midpoint fallback if parsing fails or the side is not found.
+    strings) to build a dict of side→price. If only one side is found,
+    derive the other as ``1.0 - price``. Fall back to midpoints on failure.
 
     Args:
         market: Raw market dictionary from ``GammaClient.get_market()``.
-        favoured_side: ``"Up"`` or ``"Down"``.
 
     Returns:
-        Token price for the favoured side, or ``0.50`` as fallback.
+        Dict mapping ``"Up"`` and ``"Down"`` to their Decimal prices.
 
     """
     try:
@@ -666,37 +806,55 @@ def _parse_gamma_price(market: Mapping[str, object], favoured_side: str) -> Deci
         prices_raw = market.get("outcomePrices")
 
         if not isinstance(outcomes_raw, str) or not isinstance(prices_raw, str):
-            return _MIDPOINT_FALLBACK
+            return {"Up": _MIDPOINT_FALLBACK, "Down": _MIDPOINT_FALLBACK}
 
         outcomes: list[str] = json.loads(outcomes_raw)
-        prices: list[str] = json.loads(prices_raw)
+        prices_list: list[str] = json.loads(prices_raw)
 
-        for outcome, price_str in zip(outcomes, prices, strict=False):
-            if outcome == favoured_side:
-                price = Decimal(price_str)
-                if price > ZERO:
-                    return price
+        result: dict[str, Decimal] = {}
+        for outcome, price_str in zip(outcomes, prices_list, strict=False):
+            price = Decimal(price_str)
+            if price > ZERO:
+                result[outcome] = price
+
+        # Derive missing side from the other
+        if "Up" in result and "Down" not in result:
+            result["Down"] = _ONE - result["Up"]
+        elif "Down" in result and "Up" not in result:
+            result["Up"] = _ONE - result["Down"]
+
+        if "Up" in result and "Down" in result:
+            return result
     except (json.JSONDecodeError, ValueError, TypeError):
         pass
 
-    return _MIDPOINT_FALLBACK
+    return {"Up": _MIDPOINT_FALLBACK, "Down": _MIDPOINT_FALLBACK}
 
 
-def _find_token_for_side(
-    tokens: tuple[MarketToken, ...],
-    favoured_side: str,
-) -> MarketToken | None:
-    """Find the market token matching the favoured side.
+def _prices_from_tokens(tokens_by_side: dict[str, MarketToken]) -> dict[str, Decimal]:
+    """Extract prices from CLOB tokens, deriving missing sides.
 
     Args:
-        tokens: Tuple of ``MarketToken`` objects from the CLOB.
-        favoured_side: ``"Up"`` or ``"Down"``.
+        tokens_by_side: Market tokens keyed by outcome name.
 
     Returns:
-        The matching ``MarketToken``, or ``None`` if not found.
+        Dict mapping ``"Up"`` and ``"Down"`` to their Decimal prices.
 
     """
-    for token in tokens:
-        if token.outcome == favoured_side:
-            return token
-    return None
+    prices: dict[str, Decimal] = {}
+    for side in ("Up", "Down"):
+        token = tokens_by_side.get(side)
+        if token and token.price > ZERO:
+            prices[side] = token.price
+
+    if "Up" in prices and "Down" not in prices:
+        prices["Down"] = _ONE - prices["Up"]
+    elif "Down" in prices and "Up" not in prices:
+        prices["Up"] = _ONE - prices["Down"]
+
+    if "Up" not in prices:
+        prices["Up"] = _MIDPOINT_FALLBACK
+    if "Down" not in prices:
+        prices["Down"] = _MIDPOINT_FALLBACK
+
+    return prices
