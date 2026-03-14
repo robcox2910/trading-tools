@@ -113,7 +113,7 @@ Runnable applications and long-lived services. Each application has:
 | `fetcher` | Download historical OHLCV data from Revolut X or Binance |
 | `backtester` | Run strategies against candle data, compare, simulate, and optimise |
 | `polymarket` | CLI for market queries, trading, bots, tick collection, and whale monitoring |
-| `polymarket_bot` | Paper and live trading engines (consumed by `polymarket` CLI) |
+| `polymarket_bot` | Paper and live trading engines with fee/slippage modelling and loss limits (consumed by `polymarket` CLI) |
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
 | `whale_monitor` | Polling service that tracks whale trades |
 | `whale_copy_trader` | Real-time whale copy-trading (paper and live) |

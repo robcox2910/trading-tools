@@ -530,3 +530,102 @@ class TestMarketRotation:
             await engine._rotate_markets()
 
         feed.update_subscription.assert_called_once()
+
+
+class TestSlippageEstimation:
+    """Tests for slippage estimation from order book spread."""
+
+    @pytest.mark.asyncio
+    async def test_slippage_estimated_from_spread(self) -> None:
+        """Verify trade's slippage equals half the order book spread."""
+        # Feed stable prices then a sharp drop to trigger mean reversion BUY
+        prices = ["0.60"] * 6 + ["0.40"]
+        events = [_make_ws_event(price=p) for p in prices]
+        # Order book has spread=0.02 → slippage should be 0.01
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy(period=5, z_threshold=Decimal("1.5"))
+        config = _make_config()
+        feed = _mock_feed(events)
+        engine = PaperTradingEngine(client, strategy, config, feed=feed)
+
+        result = await engine.run(max_ticks=len(prices))
+
+        buy_trades = [t for t in result.trades if t.side == Side.BUY]
+        assert len(buy_trades) > 0
+        expected_slippage = Decimal("0.01")
+        assert buy_trades[0].slippage == expected_slippage
+
+
+class TestLossLimit:
+    """Tests for max loss percentage limit."""
+
+    @pytest.mark.asyncio
+    async def test_loss_limit_stops_bot(self) -> None:
+        """Verify bot stops early when drawdown exceeds max_loss_pct."""
+        # Drop price to trigger a BUY, then drop further to create a loss
+        prices = ["0.60"] * 6 + ["0.40"] + ["0.01"] * 10
+        events = [_make_ws_event(price=p) for p in prices]
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy(period=5, z_threshold=Decimal("1.5"))
+        config = BotConfig(
+            initial_capital=_INITIAL_CAPITAL,
+            max_position_pct=Decimal("0.5"),
+            kelly_fraction=Decimal("0.5"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+            fee_rate=Decimal("0.02"),
+            max_loss_pct=Decimal(-5),
+        )
+        feed = _mock_feed(events)
+        engine = PaperTradingEngine(client, strategy, config, feed=feed)
+
+        result = await engine.run(max_ticks=len(prices))
+
+        # Should have stopped before processing all ticks
+        assert result.snapshots_processed < len(prices)
+
+    @pytest.mark.asyncio
+    async def test_loss_limit_disabled_by_default(self) -> None:
+        """Verify default max_loss_pct=-100 never triggers a stop."""
+        prices = ["0.60"] * 6 + ["0.40"] + ["0.01"] * 5
+        events = [_make_ws_event(price=p) for p in prices]
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy(period=5, z_threshold=Decimal("1.5"))
+        config = _make_config()
+        feed = _mock_feed(events)
+        engine = PaperTradingEngine(client, strategy, config, feed=feed)
+
+        result = await engine.run(max_ticks=len(prices))
+
+        # All ticks should be processed
+        expected_ticks = len(prices)
+        assert result.snapshots_processed == expected_ticks
+
+
+class TestFeeMetrics:
+    """Tests for fee and slippage metrics in result."""
+
+    @pytest.mark.asyncio
+    async def test_fee_metrics_in_result(self) -> None:
+        """Verify result.metrics contains total_fees when trades exist."""
+        prices = ["0.60"] * 6 + ["0.40"]
+        events = [_make_ws_event(price=p) for p in prices]
+        client = _mock_client()
+        strategy = PMMeanReversionStrategy(period=5, z_threshold=Decimal("1.5"))
+        config = BotConfig(
+            initial_capital=_INITIAL_CAPITAL,
+            max_position_pct=Decimal("0.1"),
+            kelly_fraction=Decimal("0.25"),
+            max_history=100,
+            markets=(_CONDITION_ID,),
+            fee_rate=Decimal("0.02"),
+        )
+        feed = _mock_feed(events)
+        engine = PaperTradingEngine(client, strategy, config, feed=feed)
+
+        result = await engine.run(max_ticks=len(prices))
+
+        if result.trades:
+            assert "total_fees" in result.metrics
+            assert "total_slippage" in result.metrics
+            assert result.metrics["total_fees"] >= Decimal(0)

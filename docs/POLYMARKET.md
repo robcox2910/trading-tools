@@ -141,7 +141,7 @@ Redeems winning positions on-chain via the CTF contract. Requires POL for gas fe
 
 ### `bot` — Paper Trading Bot
 
-Run a simulated trading bot against live market data. No real trades are placed.
+Run a simulated trading bot against live market data. No real trades are placed. Fees (default 2% taker fee) and order book slippage are modelled for realistic P&L. Use `--max-loss-pct` to auto-stop the bot on excessive drawdown.
 
 ```bash
 # Default: mean reversion strategy
@@ -171,6 +171,8 @@ trading-tools-polymarket bot --strategy pm_market_making --series btc-updown-5m 
 | `--min-edge` | `0.02` | Minimum edge (cross-market arb) |
 | `--snipe-threshold` | `0.8` | Price threshold for late snipe (0.5–1.0) |
 | `--snipe-window` | `60` | Seconds before market end to start sniping |
+| `--fee-rate` | `0.02` | Taker fee rate (e.g. 0.02 for 2%) |
+| `--max-loss-pct` | `-100` | Stop bot at this drawdown % (e.g. -20 for 20% loss limit) |
 | `--verbose`, `-v` | `false` | Enable tick-by-tick logging |
 
 **Available strategies:**

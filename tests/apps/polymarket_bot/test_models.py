@@ -115,6 +115,16 @@ class TestBotConfig:
         assert config.markets == ()
         assert config.series_slugs == ()
 
+    def test_fee_rate_default(self) -> None:
+        """Test that fee_rate defaults to 2 %% (0.02)."""
+        config = BotConfig()
+        assert config.fee_rate == Decimal("0.02")
+
+    def test_max_loss_pct_default(self) -> None:
+        """Test that max_loss_pct defaults to -100 (effectively disabled)."""
+        config = BotConfig()
+        assert config.max_loss_pct == Decimal(-100)
+
     def test_custom_values(self) -> None:
         """Test creating BotConfig with custom values."""
         config = BotConfig(
@@ -153,6 +163,20 @@ class TestPaperTrade:
         assert trade.side == Side.BUY
         assert trade.token_outcome == "Yes"
         assert trade.estimated_edge == Decimal("0.05")
+
+    def test_fee_paid_defaults_to_zero(self) -> None:
+        """Test that fee_paid defaults to ZERO when not specified."""
+        trade = PaperTrade(
+            condition_id=_CONDITION_ID,
+            token_outcome="Yes",
+            side=Side.BUY,
+            quantity=Decimal(100),
+            price=Decimal("0.65"),
+            timestamp=_TIMESTAMP,
+            reason="test",
+            estimated_edge=ZERO,
+        )
+        assert trade.fee_paid == ZERO
 
     def test_frozen(self) -> None:
         """Test that PaperTrade is immutable."""
