@@ -16,6 +16,8 @@ Some commands require no authentication (market queries), while trading and bot 
 | Live trading bot | Yes |
 | Tick collection | No |
 | Whale monitoring | No |
+| Whale copy-trading (paper) | No |
+| Whale copy-trading (live) | Yes |
 
 ## Market Queries
 
@@ -323,6 +325,56 @@ trading-tools-polymarket whale-correlate --address 0x1234... --days 1 --min-trad
 | `--days` | `1` | Number of days to analyse |
 | `--min-trades` | `10` | Minimum trades per market to include |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
+
+## Whale Copy-Trading
+
+### `whale-copy` — Copy Whale Bets in Real-Time
+
+Run a polling service that detects a whale's directional bias on BTC/ETH 5-minute markets and copies them. Paper mode by default; pass `--confirm-live` for real orders.
+
+The service uses **incremental polling** for minimal latency: only new trades since the last poll are fetched, and a rolling window of trades is maintained in memory.
+
+```bash
+# Paper mode (default) — log signals, track virtual P&L
+trading-tools-polymarket whale-copy \
+  --address 0xa45f... \
+  --poll-interval 5 \
+  --min-bias 1.5 \
+  --min-trades 3 \
+  --capital 100 \
+  -v
+
+# Live mode — place real market orders on Polymarket
+trading-tools-polymarket whale-copy \
+  --address 0xa45f... \
+  --capital 100 \
+  --max-position-pct 0.10 \
+  --confirm-live
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--address` | *(required)* | Whale proxy wallet address to copy |
+| `--poll-interval` | `5` | Seconds between DB polls (lower = faster) |
+| `--lookback` | `300` | Rolling window in seconds for trade accumulation |
+| `--min-bias` | `1.5` | Minimum bias ratio to trigger a copy signal |
+| `--min-trades` | `3` | Minimum trades per market to trigger a signal |
+| `--capital` | `100` | Starting capital in USDC (paper mode) |
+| `--max-position-pct` | `0.10` | Max fraction of capital per single trade |
+| `--confirm-live` | `false` | **Required flag** for live trading |
+| `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
+| `--verbose`, `-v` | `false` | Enable DEBUG logging |
+
+**Signal detection pipeline:**
+
+1. Poll `whale_trades` table incrementally (only new trades since last check)
+2. Group by `condition_id`, compute bias via `analyse_markets()`
+3. Filter: BTC/ETH asset only, future time window, bias > threshold, trades >= min
+4. Paper: log signal, open virtual position at midpoint price
+5. Live: fetch market tokens from CLOB, place market order for fastest fill
+6. Close positions when the market window expires
+
+**Heartbeat:** Logs status every 60 seconds (poll count, open positions, P&L) for CloudWatch monitoring.
 
 ## Backtesting Polymarket Strategies
 

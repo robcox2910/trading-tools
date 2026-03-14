@@ -32,9 +32,14 @@ trading-tools/
 │   │   ├── tick_collector/          # Real-time WebSocket tick streaming
 │   │   │   ├── collector.py         # WebSocket consumer and DB writer
 │   │   │   └── models.py            # Tick and order book SQLAlchemy models
-│   │   └── whale_monitor/           # Whale trade monitoring service
-│   │       ├── monitor.py           # Polling service
-│   │       └── models.py            # Whale and trade SQLAlchemy models
+│   │   ├── whale_monitor/           # Whale trade monitoring service
+│   │   │   ├── monitor.py           # Polling service
+│   │   │   └── models.py            # Whale and trade SQLAlchemy models
+│   │   └── whale_copy_trader/       # Real-time whale copy-trading service
+│   │       ├── config.py            # WhaleCopyConfig (frozen dataclass)
+│   │       ├── models.py            # CopySignal, CopyResult
+│   │       ├── signal_detector.py   # Incremental polling and signal detection
+│   │       └── copy_trader.py       # Copy-trading engine (paper + live)
 │   ├── clients/                     # External API clients
 │   │   ├── revolut_x/               # Revolut X API client
 │   │   │   ├── auth/                # Ed25519 authentication
@@ -111,6 +116,7 @@ Runnable applications and long-lived services. Each application has:
 | `polymarket_bot` | Paper and live trading engines (consumed by `polymarket` CLI) |
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
 | `whale_monitor` | Polling service that tracks whale trades |
+| `whale_copy_trader` | Real-time whale copy-trading (paper and live) |
 
 ### `/clients` — API Clients
 
@@ -283,7 +289,8 @@ tests/
 │   ├── polymarket/
 │   ├── polymarket_bot/
 │   ├── tick_collector/
-│   └── whale_monitor/
+│   ├── whale_monitor/
+│   └── whale_copy_trader/
 ├── clients/
 │   ├── revolut_x/
 │   ├── polymarket/
