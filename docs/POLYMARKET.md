@@ -356,7 +356,7 @@ trading-tools-polymarket whale-copy \
 |------|---------|-------------|
 | `--address` | *(required)* | Whale proxy wallet address to copy |
 | `--poll-interval` | `5` | Seconds between DB polls (lower = faster) |
-| `--lookback` | `300` | Rolling window in seconds for trade accumulation |
+| `--lookback` | `3600` | Rolling window in seconds for trade accumulation |
 | `--min-bias` | `1.5` | Minimum bias ratio to trigger a copy signal |
 | `--min-trades` | `3` | Minimum trades per market to trigger a signal |
 | `--capital` | `100` | Starting capital in USDC (paper mode) |

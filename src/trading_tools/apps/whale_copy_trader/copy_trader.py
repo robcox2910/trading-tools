@@ -100,10 +100,16 @@ class WhaleCopyTrader:
         self._running = True
         mode = "LIVE" if self.live else "PAPER"
         logger.info(
-            "whale-copy started mode=%s address=%s poll=%ds",
+            "whale-copy started mode=%s address=%s poll=%ds"
+            " lookback=%ds min_bias=%.1f min_trades=%d capital=$%s max_pos=%s%%",
             mode,
             self.config.whale_address,
             self.config.poll_interval,
+            self.config.lookback_seconds,
+            self.config.min_bias,
+            self.config.min_trades,
+            self.config.capital,
+            self.config.max_position_pct * 100,
         )
 
         try:
@@ -319,9 +325,13 @@ class WhaleCopyTrader:
         if now - self._last_heartbeat >= _HEARTBEAT_INTERVAL:
             self._last_heartbeat = now
             total_pnl = sum(r.pnl for r in self._results)
+            assert self._detector is not None  # noqa: S101
+            window_trades = self._detector.window_size
             logger.info(
-                "HEARTBEAT polls=%d open=%d closed=%d pnl=%.4f",
+                "HEARTBEAT polls=%d window_trades=%d signals=%d open=%d closed=%d pnl=$%.2f",
                 self._poll_count,
+                window_trades,
+                len(self._acted_on),
                 len(self._positions),
                 len(self._results),
                 total_pnl,

@@ -12,6 +12,7 @@ Performance notes:
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -26,6 +27,8 @@ from .models import CopySignal
 if TYPE_CHECKING:
     from trading_tools.apps.whale_monitor.models import WhaleTrade
     from trading_tools.apps.whale_monitor.repository import WhaleRepository
+
+logger = logging.getLogger(__name__)
 
 
 def _empty_deque() -> deque[WhaleTrade]:
@@ -79,31 +82,52 @@ class SignalDetector:
         if new_trades:
             self._trades.extend(new_trades)
             self._last_seen_ts = max(t.timestamp for t in new_trades)
+            logger.info(
+                "POLL +%d new trades (window=%d total)",
+                len(new_trades),
+                len(self._trades),
+            )
+        else:
+            logger.debug("POLL no new trades (window=%d total)", len(self._trades))
 
         cutoff = now - self.lookback_seconds
+        trimmed = 0
         while self._trades and self._trades[0].timestamp < cutoff:
             self._trades.popleft()
+            trimmed += 1
+        if trimmed:
+            logger.debug("Trimmed %d expired trades from window", trimmed)
 
         if not self._trades:
+            logger.debug("Empty rolling window — nothing to analyse")
             return []
 
         breakdowns = analyse_markets(list(self._trades), min_trades=self.min_trades)
 
         signals: list[CopySignal] = []
+        skipped_asset = 0
+        skipped_window = 0
+        skipped_expired = 0
+        skipped_bias = 0
+
         for bd in breakdowns:
             if bd.bias_ratio < float(self.min_bias):
+                skipped_bias += 1
                 continue
 
             asset = parse_asset(bd.title)
             if asset is None:
+                skipped_asset += 1
                 continue
 
             window = parse_time_window(bd.title, bd.first_trade_ts)
             if window is None:
+                skipped_window += 1
                 continue
 
             _start_ts, end_ts = window
             if end_ts <= now:
+                skipped_expired += 1
                 continue
 
             signals.append(
@@ -120,4 +144,30 @@ class SignalDetector:
                 )
             )
 
+        if breakdowns:
+            logger.info(
+                "ANALYSE %d markets → %d signals"
+                " (skipped: %d low-bias, %d non-BTC/ETH, %d no-window, %d expired)",
+                len(breakdowns),
+                len(signals),
+                skipped_bias,
+                skipped_asset,
+                skipped_window,
+                skipped_expired,
+            )
+            for sig in signals:
+                logger.info(
+                    "  SIGNAL %s side=%s bias=%.1f:1 trades=%d asset=%s",
+                    sig.title[:50],
+                    sig.favoured_side,
+                    sig.bias_ratio,
+                    sig.trade_count,
+                    sig.asset,
+                )
+
         return signals
+
+    @property
+    def window_size(self) -> int:
+        """Return the number of trades in the current rolling window."""
+        return len(self._trades)
