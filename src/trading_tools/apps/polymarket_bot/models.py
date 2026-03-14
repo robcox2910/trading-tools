@@ -22,7 +22,8 @@ _DEFAULT_SNIPE_WINDOW = 60
 _DEFAULT_MAX_HISTORY = 500
 _DEFAULT_MIN_EDGE = Decimal("0.005")
 _DEFAULT_DRAWDOWN_ALERT_PCT = Decimal(-20)
-_DEFAULT_FEE_RATE = Decimal("0.02")
+_DEFAULT_FEE_RATE = Decimal("0.25")
+_DEFAULT_FEE_EXPONENT = 2
 _DEFAULT_MAX_LOSS_PCT = Decimal(-100)
 
 
@@ -97,8 +98,12 @@ class BotConfig:
         min_edge: Minimum probability edge over market price required
             to open a position. Ensures the Kelly-estimated probability
             exceeds the buy price by at least this amount.
-        fee_rate: Taker fee rate applied to every open and close
-            (e.g. 0.02 for a 2 %% Polymarket taker fee).
+        fee_rate: Rate parameter in the Polymarket polynomial fee formula
+            ``C * p * feeRate * (p(1-p))^exponent``. Use 0.25 for crypto
+            markets, 0.0175 for sports, or 0 to disable fees.
+        fee_exponent: Exponent in the polynomial fee formula. Use 2 for
+            crypto markets (max ~1.56 %% at p=0.50) or 1 for sports
+            (max ~0.44 %% at p=0.50).
         max_loss_pct: Stop the bot when drawdown reaches this percentage
             (e.g. -20 stops at 20 %% loss).  Default -100 (disabled).
         series_slugs: Series slugs for periodic market re-discovery
@@ -118,6 +123,7 @@ class BotConfig:
     min_edge: Decimal = _DEFAULT_MIN_EDGE
     drawdown_alert_pct: Decimal = _DEFAULT_DRAWDOWN_ALERT_PCT
     fee_rate: Decimal = _DEFAULT_FEE_RATE
+    fee_exponent: int = _DEFAULT_FEE_EXPONENT
     max_loss_pct: Decimal = _DEFAULT_MAX_LOSS_PCT
     markets: tuple[str, ...] = ()
     market_end_times: tuple[tuple[str, str], ...] = ()

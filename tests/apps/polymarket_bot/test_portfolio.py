@@ -180,19 +180,24 @@ class TestClosePosition:
         assert _CONDITION_A not in portfolio.positions
 
 
-_FEE_RATE = Decimal("0.02")
+_FEE_RATE = Decimal("0.25")
+_FEE_EXPONENT = 2
 
 
 class TestFeeDeduction:
-    """Tests for fee deduction on opens and closes."""
+    """Tests for polynomial fee deduction on opens and closes.
+
+    Fee formula: C * p * feeRate * (p * (1 - p))^exponent
+    With rate=0.25 and exponent=2 (crypto defaults).
+    """
 
     @pytest.fixture
     def fee_portfolio(self) -> PaperPortfolio:
-        """Create a portfolio with a 2 %% fee rate."""
-        return PaperPortfolio(_INITIAL_CAPITAL, _MAX_POSITION_PCT, _FEE_RATE)
+        """Create a portfolio with crypto polynomial fee parameters."""
+        return PaperPortfolio(_INITIAL_CAPITAL, _MAX_POSITION_PCT, _FEE_RATE, _FEE_EXPONENT)
 
     def test_open_position_deducts_fee(self, fee_portfolio: PaperPortfolio) -> None:
-        """Test that opening a position deducts cost plus fee from cash."""
+        """Test that opening a position deducts cost plus polynomial fee from cash."""
         trade = fee_portfolio.open_position(
             condition_id=_CONDITION_A,
             outcome="Yes",
@@ -204,12 +209,13 @@ class TestFeeDeduction:
             edge=Decimal("0.05"),
         )
         assert trade is not None
-        # cost = 0.50 * 100 = 50, fee = 50 * 0.02 = 1, total = 51
-        expected_cash = Decimal(949)
+        # fee = 100 * 0.50 * 0.25 * (0.50 * 0.50)^2 = 0.78125
+        # cost = 50 + 0.78125 = 50.78125
+        expected_cash = Decimal("949.218750000000")
         assert fee_portfolio.capital == expected_cash
 
     def test_close_position_deducts_fee(self, fee_portfolio: PaperPortfolio) -> None:
-        """Test that closing a position deducts fee from gross proceeds."""
+        """Test that closing a position deducts polynomial fee from gross proceeds."""
         fee_portfolio.open_position(
             condition_id=_CONDITION_A,
             outcome="Yes",
@@ -220,11 +226,11 @@ class TestFeeDeduction:
             reason="buy",
             edge=Decimal("0.05"),
         )
-        # After open: cash = 1000 - 51 = 949
         trade = fee_portfolio.close_position(_CONDITION_A, Decimal("0.70"), _TIMESTAMP + 100)
         assert trade is not None
-        # gross proceeds = 0.70 * 100 = 70, fee = 70 * 0.02 = 1.4, net = 68.6
-        expected_cash = Decimal(949) + Decimal("68.6")
+        # close fee = 100 * 0.70 * 0.25 * (0.70 * 0.30)^2 = 0.77175
+        # net = 70 - 0.77175 = 69.22825
+        expected_cash = Decimal("949.218750000000") + Decimal("69.228250000000")
         assert fee_portfolio.capital == expected_cash
 
     def test_fee_recorded_on_open_trade(self, fee_portfolio: PaperPortfolio) -> None:
@@ -240,7 +246,8 @@ class TestFeeDeduction:
             edge=Decimal("0.05"),
         )
         assert trade is not None
-        assert trade.fee_paid == Decimal(1)
+        expected_fee = Decimal("0.781250000000")
+        assert trade.fee_paid == expected_fee
 
     def test_fee_recorded_on_close_trade(self, fee_portfolio: PaperPortfolio) -> None:
         """Test that the fee_paid field is set correctly on close trades."""
@@ -256,15 +263,17 @@ class TestFeeDeduction:
         )
         trade = fee_portfolio.close_position(_CONDITION_A, Decimal("0.70"), _TIMESTAMP + 100)
         assert trade is not None
-        assert trade.fee_paid == Decimal("1.4")
+        expected_fee = Decimal("0.771750000000")
+        assert trade.fee_paid == expected_fee
 
     def test_max_quantity_accounts_for_fees(self, fee_portfolio: PaperPortfolio) -> None:
-        """Test that max_quantity_for includes fees in effective price."""
+        """Test that max_quantity_for includes polynomial fees in effective price."""
         # max allocation = 1000 * 0.1 = 100
-        # effective price = 0.50 * 1.02 = 0.51
-        # max qty = floor(100 / 0.51) = 196
+        # fee_per_token = 0.50 * 0.25 * (0.25)^2 = 0.0078125
+        # effective price = 0.5078125
+        # max qty = floor(100 / 0.5078125) = 197
         qty = fee_portfolio.max_quantity_for(Decimal("0.50"))
-        expected_qty = Decimal(196)
+        expected_qty = Decimal(197)
         assert qty == expected_qty
 
     def test_total_fees_property(self, fee_portfolio: PaperPortfolio) -> None:
@@ -280,8 +289,8 @@ class TestFeeDeduction:
             edge=Decimal("0.05"),
         )
         fee_portfolio.close_position(_CONDITION_A, Decimal("0.70"), _TIMESTAMP + 100)
-        # open fee = 1.0, close fee = 1.4
-        expected_total = Decimal("2.4")
+        # open fee = 0.78125, close fee = 0.77175
+        expected_total = Decimal("1.553000000000")
         assert fee_portfolio.total_fees == expected_total
 
     def test_zero_fee_rate_unchanged(self) -> None:
@@ -300,6 +309,53 @@ class TestFeeDeduction:
         # No fee → cash = 1000 - 50 = 950
         assert port.capital == Decimal(950)
         assert port.total_fees == ZERO
+
+    def test_fee_zero_at_extremes(self) -> None:
+        """Test that fees approach zero at price extremes (p near 0 or 1)."""
+        port = PaperPortfolio(_INITIAL_CAPITAL, Decimal(1), _FEE_RATE, _FEE_EXPONENT)
+        # At p=0.99: fee = 100 * 0.99 * 0.25 * (0.99 * 0.01)^2 ~= 0.002426
+        trade_high = port.open_position(
+            condition_id=_CONDITION_A,
+            outcome="Yes",
+            side=Side.BUY,
+            price=Decimal("0.99"),
+            quantity=Decimal(100),
+            timestamp=_TIMESTAMP,
+            reason="extreme high",
+            edge=Decimal("0.01"),
+        )
+        assert trade_high is not None
+        assert trade_high.fee_paid < Decimal("0.01")
+
+    def test_fee_max_at_midpoint(self) -> None:
+        """Test that fees are highest at p=0.50 compared to other prices."""
+        port_mid = PaperPortfolio(_INITIAL_CAPITAL, Decimal(1), _FEE_RATE, _FEE_EXPONENT)
+        port_high = PaperPortfolio(_INITIAL_CAPITAL, Decimal(1), _FEE_RATE, _FEE_EXPONENT)
+        qty = Decimal(100)
+
+        trade_mid = port_mid.open_position(
+            condition_id=_CONDITION_A,
+            outcome="Yes",
+            side=Side.BUY,
+            price=Decimal("0.50"),
+            quantity=qty,
+            timestamp=_TIMESTAMP,
+            reason="midpoint",
+            edge=Decimal("0.05"),
+        )
+        trade_high = port_high.open_position(
+            condition_id=_CONDITION_A,
+            outcome="Yes",
+            side=Side.BUY,
+            price=Decimal("0.80"),
+            quantity=qty,
+            timestamp=_TIMESTAMP,
+            reason="high price",
+            edge=Decimal("0.05"),
+        )
+        assert trade_mid is not None
+        assert trade_high is not None
+        assert trade_mid.fee_paid > trade_high.fee_paid
 
 
 class TestMarkToMarket:
