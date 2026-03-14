@@ -62,6 +62,7 @@ class SignalDetector:
     min_trades: int
     lookback_seconds: int
     min_time_to_start: int = 60
+    max_window_seconds: int = 0
     _last_seen_ts: int = 0
     _trades: deque[WhaleTrade] = field(default_factory=_empty_deque)
 
@@ -113,13 +114,14 @@ class SignalDetector:
             logger.info(
                 "ANALYSE %d markets → %d signals"
                 " (skipped: %d low-bias, %d non-BTC/ETH, %d no-window,"
-                " %d expired, %d too-soon)",
+                " %d expired, %d too-long, %d too-soon)",
                 len(breakdowns),
                 len(signals),
                 skip_counts["bias"],
                 skip_counts["asset"],
                 skip_counts["window"],
                 skip_counts["expired"],
+                skip_counts["too_long"],
                 skip_counts["too_soon"],
             )
             for sig in signals:
@@ -153,7 +155,7 @@ class SignalDetector:
 
         """
         signals: list[CopySignal] = []
-        skips = {"bias": 0, "asset": 0, "window": 0, "expired": 0, "too_soon": 0}
+        skips = {"bias": 0, "asset": 0, "window": 0, "expired": 0, "too_long": 0, "too_soon": 0}
 
         for bd in breakdowns:
             if bd.bias_ratio < float(self.min_bias):
@@ -173,6 +175,10 @@ class SignalDetector:
             start_ts, end_ts = window
             if end_ts <= now:
                 skips["expired"] += 1
+                continue
+
+            if self.max_window_seconds > 0 and end_ts - start_ts > self.max_window_seconds:
+                skips["too_long"] += 1
                 continue
 
             if self.min_time_to_start > 0 and 0 < start_ts - now < self.min_time_to_start:
