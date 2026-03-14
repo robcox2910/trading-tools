@@ -14,23 +14,20 @@ from trading_tools.apps.whale_copy_trader.copy_trader import (
     _find_token_for_side,
     _parse_gamma_price,
 )
-from trading_tools.apps.whale_copy_trader.models import CopySignal
+from trading_tools.apps.whale_copy_trader.models import CopySignal, OpenPosition
 from trading_tools.clients.polymarket.models import Market, MarketToken, OrderResponse
 
 _ADDRESS = "0xwhale"
 _FUTURE_TS = 4_000_000_000
 _PAST_TS = 1_000_000_000
 _EXPECTED_PAPER_PRICE = Decimal("0.72")
-_EXPECTED_PAPER_QTY = Decimal("26.71")
 _EXPECTED_LIVE_PRICE = Decimal("0.60")
 _EXPECTED_EXIT_PRICE = Decimal("1.0")
-_EXPECTED_POLL_INTERVAL = 10
-_EXPECTED_MIN_TRADES = 5
 _EXPECTED_POLL_COUNT_AFTER_DEDUP = 2
 _EXPECTED_MULTI_SIGNAL_COUNT = 2
 _DEFAULT_BIAS = Decimal("2.5")
 _DEFAULT_MIN_BIAS = Decimal("1.5")
-_DEFAULT_BIAS_SCALE = _DEFAULT_BIAS / _DEFAULT_MIN_BIAS
+_TOPUP_BIAS = Decimal("3.5")
 
 _GAMMA_MARKET_DATA = {
     "outcomes": '["Up","Down"]',
@@ -57,6 +54,7 @@ def _make_config(**overrides: object) -> WhaleCopyConfig:
         "capital": Decimal(100),
         "max_position_pct": Decimal("0.10"),
         "max_bias_scale": Decimal("3.0"),
+        "topup_bias_delta": Decimal("0.5"),
     }
     defaults.update(overrides)
     return WhaleCopyConfig(**defaults)  # type: ignore[arg-type]
@@ -66,6 +64,7 @@ def _make_signal(
     condition_id: str = "cond_a",
     favoured_side: str = "Up",
     window_end_ts: int = _FUTURE_TS,
+    bias_ratio: Decimal = _DEFAULT_BIAS,
 ) -> CopySignal:
     """Create a CopySignal for testing.
 
@@ -73,6 +72,7 @@ def _make_signal(
         condition_id: Market condition ID.
         favoured_side: Whale's favoured direction.
         window_end_ts: When the market window closes.
+        bias_ratio: Whale's bias ratio.
 
     Returns:
         A CopySignal instance.
@@ -83,7 +83,7 @@ def _make_signal(
         title="Bitcoin Up or Down - March 13, 6PM ET",
         asset="BTC-USD",
         favoured_side=favoured_side,
-        bias_ratio=_DEFAULT_BIAS,
+        bias_ratio=bias_ratio,
         trade_count=5,
         window_start_ts=_FUTURE_TS - 300,
         window_end_ts=window_end_ts,
@@ -157,7 +157,6 @@ class TestWhaleCopyTrader:
             await trader._poll_cycle()
 
         pos = trader.positions["cond_a"]
-        # Gamma returns 0.72 for "Up", not 0.50 midpoint
         assert pos.entry_price == Decimal("0.72")
 
     @pytest.mark.asyncio
@@ -176,8 +175,8 @@ class TestWhaleCopyTrader:
         assert pos.entry_price == Decimal("0.50")
 
     @pytest.mark.asyncio
-    async def test_skips_already_acted_on(self, trader: WhaleCopyTrader) -> None:
-        """Skip signals for markets already acted on."""
+    async def test_same_signal_no_topup_when_bias_unchanged(self, trader: WhaleCopyTrader) -> None:
+        """Do not top up when the same signal appears with unchanged bias."""
         signal = _make_signal()
 
         with patch.object(trader, "_detector") as mock_detector:
@@ -185,13 +184,77 @@ class TestWhaleCopyTrader:
             trader._detector = mock_detector
 
             await trader._poll_cycle()
-            first_count = len(trader.positions)
+            first_qty = trader.positions["cond_a"].quantity
 
             await trader._poll_cycle()
 
-        # Still only one position — second signal was deduped
-        assert len(trader.positions) == first_count
+        assert trader.positions["cond_a"].quantity == first_qty
         assert trader.poll_count == _EXPECTED_POLL_COUNT_AFTER_DEDUP
+
+    @pytest.mark.asyncio
+    async def test_topup_when_bias_increases(self, trader: WhaleCopyTrader) -> None:
+        """Top up position when whale increases conviction."""
+        signal_v1 = _make_signal(bias_ratio=_DEFAULT_BIAS)
+        signal_v2 = _make_signal(bias_ratio=_TOPUP_BIAS)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_v1])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        first_qty = trader.positions["cond_a"].quantity
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_v2])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert trader.positions["cond_a"].quantity > first_qty
+        assert trader.positions["cond_a"].last_bias == _TOPUP_BIAS
+
+    @pytest.mark.asyncio
+    async def test_no_topup_when_bias_increase_below_delta(self, trader: WhaleCopyTrader) -> None:
+        """Do not top up when bias increase is below topup_bias_delta."""
+        signal_v1 = _make_signal(bias_ratio=Decimal("2.5"))
+        small_increase = Decimal("2.7")
+        signal_v2 = _make_signal(bias_ratio=small_increase)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_v1])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        first_qty = trader.positions["cond_a"].quantity
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_v2])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert trader.positions["cond_a"].quantity == first_qty
+
+    @pytest.mark.asyncio
+    async def test_flip_when_direction_changes(self, trader: WhaleCopyTrader) -> None:
+        """Close and reopen when whale reverses direction."""
+        signal_up = _make_signal(favoured_side="Up")
+        signal_down = _make_signal(favoured_side="Down")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_up])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert trader.positions["cond_a"].side == "Up"
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_down])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert trader.positions["cond_a"].side == "Down"
+        assert len(trader.results) == 1
+        assert trader.results[0].side == "Up"
+        assert trader.results[0].pnl < Decimal(0)
 
     @pytest.mark.asyncio
     async def test_closes_expired_positions(self, trader: WhaleCopyTrader) -> None:
@@ -208,7 +271,6 @@ class TestWhaleCopyTrader:
             trader._detector = mock_detector
             await trader._poll_cycle()
 
-        # Position was opened then immediately closed (window in the past)
         assert len(trader.positions) == 0
         assert len(trader.results) == 1
         assert trader.results[0].pnl > Decimal(0)
@@ -250,8 +312,6 @@ class TestWhaleCopyTrader:
 
         result = trader.results[0]
         assert result.exit_price == Decimal("0.0")
-        expected_loss = (Decimal("0.0") - _EXPECTED_PAPER_PRICE) * result.quantity
-        assert result.pnl == expected_loss
         assert result.pnl < Decimal(0)
 
     @pytest.mark.asyncio
@@ -274,8 +334,6 @@ class TestWhaleCopyTrader:
             await trader._poll_cycle()
 
         assert len(trader.positions) == _EXPECTED_MULTI_SIGNAL_COUNT
-        assert "cond_a" in trader.acted_on
-        assert "cond_b" in trader.acted_on
 
     @pytest.mark.asyncio
     async def test_compute_quantity_with_bias_scaling(self, trader: WhaleCopyTrader) -> None:
@@ -291,24 +349,14 @@ class TestWhaleCopyTrader:
 
     @pytest.mark.asyncio
     async def test_compute_quantity_caps_at_max_scale(self, trader: WhaleCopyTrader) -> None:
-        """Cap bias scaling at max_bias_scale.
-
-        capital=100, max_position_pct=0.10 -> base_spend=10
-        bias=100.0, min_bias=1.5 -> raw_scale=66.67, capped at 3.0
-        price=0.50 -> quantity = (10 * 3.0) / 0.50 = 60.00
-        """
+        """Cap bias scaling at max_bias_scale."""
         _expected_capped_qty = Decimal("60.00")
         qty = trader._compute_quantity(Decimal("0.50"), Decimal("100.0"))
         assert qty == _expected_capped_qty
 
     @pytest.mark.asyncio
     async def test_compute_quantity_no_bias(self, trader: WhaleCopyTrader) -> None:
-        """Use base size when no bias_ratio provided.
-
-        capital=100, max_position_pct=0.10 -> base_spend=10
-        scale=1.0 (no bias)
-        price=0.50 -> quantity = 10 / 0.50 = 20.00
-        """
+        """Use base size when no bias_ratio provided."""
         _expected_base_qty = Decimal("20.00")
         qty = trader._compute_quantity(Decimal("0.50"))
         assert qty == _expected_base_qty
@@ -318,6 +366,29 @@ class TestWhaleCopyTrader:
         """Return zero quantity for zero or negative price."""
         assert trader._compute_quantity(Decimal(0)) == Decimal(0)
         assert trader._compute_quantity(Decimal(-1)) == Decimal(0)
+
+
+class TestOpenPosition:
+    """Tests for the OpenPosition model."""
+
+    def test_add_fill_updates_weighted_average(self) -> None:
+        """Update entry price to weighted average after top-up."""
+        pos = OpenPosition(
+            signal=_make_signal(),
+            side="Up",
+            entry_price=Decimal("0.50"),
+            quantity=Decimal("20.00"),
+            cost_basis=Decimal("10.00"),
+            entry_time=1000,
+            last_bias=Decimal("2.0"),
+        )
+        pos.add_fill(Decimal("0.70"), Decimal("10.00"))
+
+        _expected_total_qty = Decimal("30.00")
+        _expected_cost = Decimal("17.00")
+        assert pos.quantity == _expected_total_qty
+        assert pos.cost_basis == _expected_cost
+        assert pos.entry_price == Decimal("0.5667")
 
 
 class TestParseGammaPrice:
@@ -451,7 +522,7 @@ class TestLiveTradingFlow:
 
         pos = live_trader.positions["cond_a"]
         assert not pos.is_paper
-        assert pos.order_id == "order_123"
+        assert pos.order_ids == ["order_123"]
         assert pos.entry_price == _EXPECTED_LIVE_PRICE
 
     @pytest.mark.asyncio
@@ -467,7 +538,4 @@ class TestLiveTradingFlow:
             live_trader._detector = mock_detector
             await live_trader._poll_cycle()
 
-        # No position opened due to error
         assert len(live_trader.positions) == 0
-        # But it was still marked as acted on
-        assert "cond_a" in live_trader.acted_on

@@ -26,6 +26,7 @@ class WhaleCopyConfig:
         capital: Starting capital for paper mode (USDC).
         max_position_pct: Maximum fraction of capital per single trade.
         max_bias_scale: Maximum multiplier for bias-proportional position sizing.
+        topup_bias_delta: Minimum bias increase to trigger a top-up.
         use_market_orders: Use market orders for fastest execution.
 
     """
@@ -39,4 +40,5 @@ class WhaleCopyConfig:
     capital: Decimal = Decimal(100)
     max_position_pct: Decimal = Decimal("0.10")
     max_bias_scale: Decimal = Decimal("3.0")
+    topup_bias_delta: Decimal = Decimal("0.5")
     use_market_orders: bool = True

@@ -40,7 +40,7 @@ STRATEGY_NAMES = (
 )
 
 
-def build_strategy(  # noqa: PLR0913
+def build_strategy(
     name: str,
     *,
     short_period: int,
