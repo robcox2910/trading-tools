@@ -13,7 +13,7 @@ Performance design:
 - 5-second default poll interval for minimal latency on 5-minute markets.
 - Incremental signal detection (see ``SignalDetector``).
 - Pre-authenticated client: Polymarket connection established at startup.
-- Market orders by default: fastest fill, no limit queue waiting.
+- GTC limit orders by default: matches whale's order style for better fills.
 - Async throughout: no blocking calls in the hot path.
 """
 
@@ -69,7 +69,7 @@ class WhaleCopyTrader:
 
     Poll the database for new whale trades, detect directional bias
     signals, and either log virtual trades (paper mode) or place real
-    market orders (live mode) via the Polymarket CLOB API.
+    orders (live mode) via the Polymarket CLOB API.
 
     Dynamically manage positions: open new ones, top-up when the whale
     doubles down, flip when the whale reverses direction.
@@ -426,7 +426,7 @@ class WhaleCopyTrader:
         await self._open_position(signal)
 
     async def _place_order(self, token_id: str, price: Decimal, quantity: Decimal) -> str | None:
-        """Place a market order and return the order ID, or None on failure.
+        """Place an order and return the order ID, or None on failure.
 
         Args:
             token_id: CLOB token ID for the outcome.
