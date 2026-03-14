@@ -6,16 +6,15 @@ sizing asymmetry that aggregate stats hide.
 """
 
 import asyncio
-import os
 import time
 from typing import Annotated
 
 import typer
 
+from trading_tools.apps.polymarket.cli._helpers import require_whale_db_url
 from trading_tools.apps.whale_monitor.analyser import analyse_markets, format_market_analysis
 from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
-_DEFAULT_DB_URL = os.environ.get("WHALE_DB_URL", "sqlite+aiosqlite:///whale_data.db")
 _DEFAULT_DAYS = 1
 _DEFAULT_MIN_TRADES = 10
 _SECONDS_PER_DAY = 86400
@@ -27,7 +26,7 @@ def whale_markets(
     min_trades: Annotated[
         int, typer.Option(help="Minimum trades per market to include")
     ] = _DEFAULT_MIN_TRADES,
-    db_url: Annotated[str, typer.Option(help="SQLAlchemy async DB URL")] = _DEFAULT_DB_URL,
+    db_url: Annotated[str, typer.Option(help="SQLAlchemy async DB URL")] = "",
 ) -> None:
     """Analyse a whale's per-market directional bets.
 
@@ -35,9 +34,10 @@ def whale_markets(
     and output a per-market breakdown showing volume on each side,
     bias ratios, and the favoured direction for each market.
     """
+    resolved_db_url = db_url or require_whale_db_url()
 
     async def _analyse() -> None:
-        repo = WhaleRepository(db_url)
+        repo = WhaleRepository(resolved_db_url)
         await repo.init_db()
 
         now = int(time.time())

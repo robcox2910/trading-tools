@@ -6,16 +6,15 @@ statistics, and hourly activity patterns.
 """
 
 import asyncio
-import os
 import time
 from typing import Annotated
 
 import typer
 
+from trading_tools.apps.polymarket.cli._helpers import require_whale_db_url
 from trading_tools.apps.whale_monitor.analyser import analyse_trades, format_analysis
 from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
-_DEFAULT_DB_URL = os.environ.get("WHALE_DB_URL", "sqlite+aiosqlite:///whale_data.db")
 _DEFAULT_DAYS = 7
 _SECONDS_PER_DAY = 86400
 
@@ -23,7 +22,7 @@ _SECONDS_PER_DAY = 86400
 def whale_analyse(
     address: Annotated[str, typer.Option(help="Whale proxy wallet address to analyse")],
     days: Annotated[int, typer.Option(help="Number of days to analyse")] = _DEFAULT_DAYS,
-    db_url: Annotated[str, typer.Option(help="SQLAlchemy async DB URL")] = _DEFAULT_DB_URL,
+    db_url: Annotated[str, typer.Option(help="SQLAlchemy async DB URL")] = "",
 ) -> None:
     """Analyse a whale's trading strategy from stored data.
 
@@ -31,9 +30,10 @@ def whale_analyse(
     and output a formatted analysis covering market types, side bias,
     outcome distribution, sizing, and timing patterns.
     """
+    resolved_db_url = db_url or require_whale_db_url()
 
     async def _analyse() -> None:
-        repo = WhaleRepository(db_url)
+        repo = WhaleRepository(resolved_db_url)
         await repo.init_db()
 
         now = int(time.time())
