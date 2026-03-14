@@ -3,6 +3,12 @@
 Run a tight polling loop that detects whale directional bias signals and
 either simulates (paper) or executes (live) copy trades on Polymarket.
 
+Dynamic position management:
+- OPEN: first time a market signals above threshold.
+- TOP-UP: whale increases conviction (bias rises by ``topup_bias_delta``).
+- FLIP: whale reverses direction — close existing, open opposite.
+- CLOSE: market window expires — resolve P&L via Binance spot prices.
+
 Performance design:
 - 5-second default poll interval for minimal latency on 5-minute markets.
 - Incremental signal detection (see ``SignalDetector``).
@@ -27,7 +33,7 @@ from trading_tools.clients.polymarket.models import OrderRequest
 from trading_tools.core.models import ZERO, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
-from .models import CopyResult, CopySignal
+from .models import CopyResult, CopySignal, OpenPosition
 from .signal_detector import SignalDetector
 
 if TYPE_CHECKING:
@@ -47,13 +53,8 @@ _WIN_PRICE = Decimal("1.0")
 _LOSS_PRICE = Decimal("0.0")
 
 
-def _empty_str_set() -> set[str]:
-    """Return an empty set[str] for dataclass default_factory."""
-    return set()
-
-
-def _empty_result_dict() -> dict[str, CopyResult]:
-    """Return an empty dict[str, CopyResult] for dataclass default_factory."""
+def _empty_position_dict() -> dict[str, OpenPosition]:
+    """Return an empty dict[str, OpenPosition] for dataclass default_factory."""
     return {}
 
 
@@ -70,6 +71,9 @@ class WhaleCopyTrader:
     signals, and either log virtual trades (paper mode) or place real
     market orders (live mode) via the Polymarket CLOB API.
 
+    Dynamically manage positions: open new ones, top-up when the whale
+    doubles down, flip when the whale reverses direction.
+
     Attributes:
         config: Immutable service configuration.
         repo: Async repository for whale trade queries.
@@ -85,8 +89,7 @@ class WhaleCopyTrader:
     _detector: SignalDetector | None = field(default=None, repr=False)
     _binance: BinanceClient | None = field(default=None, repr=False)
     _gamma: GammaClient | None = field(default=None, repr=False)
-    _acted_on: set[str] = field(default_factory=_empty_str_set, repr=False)
-    _positions: dict[str, CopyResult] = field(default_factory=_empty_result_dict, repr=False)
+    _positions: dict[str, OpenPosition] = field(default_factory=_empty_position_dict, repr=False)
     _results: list[CopyResult] = field(default_factory=_empty_result_list, repr=False)
     _poll_count: int = field(default=0, repr=False)
     _running: bool = field(default=False, repr=False)
@@ -115,7 +118,8 @@ class WhaleCopyTrader:
         logger.info(
             "whale-copy started mode=%s address=%s poll=%ds"
             " lookback=%ds min_bias=%.1f min_trades=%d"
-            " min_time_to_start=%ds capital=$%s max_pos=%s%%",
+            " min_time_to_start=%ds capital=$%s max_pos=%s%%"
+            " topup_delta=%.1f",
             mode,
             self.config.whale_address,
             self.config.poll_interval,
@@ -125,6 +129,7 @@ class WhaleCopyTrader:
             self.config.min_time_to_start,
             self.config.capital,
             self.config.max_position_pct * 100,
+            self.config.topup_bias_delta,
         )
 
         try:
@@ -147,44 +152,62 @@ class WhaleCopyTrader:
     async def _poll_cycle(self) -> None:
         """Execute one poll-detect-act cycle.
 
-        Detect new signals, handle any that haven't been acted on,
-        and close expired positions.
+        Detect new signals, decide whether to open, top-up, or flip
+        each one, and close expired positions.
         """
         assert self._detector is not None  # noqa: S101
         self._poll_count += 1
 
         signals = await self._detector.detect_signals()
         for signal in signals:
-            if signal.condition_id not in self._acted_on:
-                await self._handle_signal(signal)
+            await self._process_signal(signal)
 
         await self._close_expired_positions()
 
-    async def _handle_signal(self, signal: CopySignal) -> None:
-        """Open a position for a new copy signal.
+    async def _process_signal(self, signal: CopySignal) -> None:
+        """Decide the correct action for a signal and execute it.
 
-        Paper mode: compute position size and log the virtual trade.
-        Live mode: fetch market tokens, find the matching outcome,
-        and place a market order via the CLOB.
+        Three possible actions:
+        - **OPEN**: no existing position for this market.
+        - **FLIP**: existing position in the opposite direction.
+        - **TOP-UP**: same direction but bias increased by at least
+          ``topup_bias_delta``.
+
+        Args:
+            signal: The copy signal to process.
+
+        """
+        cid = signal.condition_id
+        existing = self._positions.get(cid)
+
+        if existing is None:
+            await self._open_position(signal)
+            return
+
+        if signal.favoured_side != existing.side:
+            await self._flip_position(existing, signal)
+            return
+
+        bias_increase = signal.bias_ratio - existing.last_bias
+        if bias_increase >= self.config.topup_bias_delta:
+            await self._topup_position(existing, signal)
+
+    async def _open_position(self, signal: CopySignal) -> None:
+        """Open a new position for a market not yet traded.
 
         Args:
             signal: The copy signal to act on.
 
         """
-        self._acted_on.add(signal.condition_id)
         now = int(time.time())
 
         if self.live and self.client is not None:
-            await self._handle_live_signal(signal, now)
+            await self._open_live(signal, now)
         else:
-            await self._handle_paper_signal(signal, now)
+            await self._open_paper(signal, now)
 
-    async def _handle_paper_signal(self, signal: CopySignal, now: int) -> None:
-        """Open a paper position for the given signal.
-
-        Fetch real token prices from the Gamma API and compute a
-        bias-scaled position size. Fall back to the midpoint if the
-        API call fails.
+    async def _open_paper(self, signal: CopySignal, now: int) -> None:
+        """Open a paper position for a new signal.
 
         Args:
             signal: The copy signal to simulate.
@@ -198,14 +221,17 @@ class WhaleCopyTrader:
             logger.warning("Skipping %s: quantity too small", signal.condition_id[:12])
             return
 
-        result = CopyResult(
+        pos = OpenPosition(
             signal=signal,
+            side=signal.favoured_side,
             entry_price=price,
             quantity=quantity,
+            cost_basis=price * quantity,
             entry_time=now,
+            last_bias=signal.bias_ratio,
             is_paper=True,
         )
-        self._positions[signal.condition_id] = result
+        self._positions[signal.condition_id] = pos
         logger.info(
             "PAPER OPEN %s side=%s price=%.4f qty=%.2f asset=%s bias=%.1f",
             signal.condition_id[:12],
@@ -216,11 +242,8 @@ class WhaleCopyTrader:
             signal.bias_ratio,
         )
 
-    async def _handle_live_signal(self, signal: CopySignal, now: int) -> None:
-        """Place a real market order for the given signal.
-
-        Fetch market tokens from the CLOB, find the token matching the
-        whale's favoured side, and place a BUY market order.
+    async def _open_live(self, signal: CopySignal, now: int) -> None:
+        """Place a real market order for a new signal.
 
         Args:
             signal: The copy signal to execute.
@@ -249,9 +272,176 @@ class WhaleCopyTrader:
             logger.warning("Skipping %s: quantity too small", signal.condition_id[:12])
             return
 
+        response = await self._place_order(token.token_id, price, quantity)
+        if response is None:
+            return
+
+        pos = OpenPosition(
+            signal=signal,
+            side=signal.favoured_side,
+            entry_price=price,
+            quantity=quantity,
+            cost_basis=price * quantity,
+            entry_time=now,
+            last_bias=signal.bias_ratio,
+            is_paper=False,
+            order_ids=[response],
+        )
+        self._positions[signal.condition_id] = pos
+        logger.info(
+            "LIVE OPEN %s side=%s price=%.4f qty=%.2f order=%s",
+            signal.condition_id[:12],
+            signal.favoured_side,
+            price,
+            quantity,
+            response,
+        )
+
+    async def _topup_position(self, pos: OpenPosition, signal: CopySignal) -> None:
+        """Add to an existing position when whale increases conviction.
+
+        Args:
+            pos: The existing open position to top up.
+            signal: The new signal with increased bias.
+
+        """
+        if self.live and self.client is not None:
+            await self._topup_live(pos, signal)
+        else:
+            await self._topup_paper(pos, signal)
+
+    async def _topup_paper(self, pos: OpenPosition, signal: CopySignal) -> None:
+        """Add a paper fill to an existing position.
+
+        Args:
+            pos: The existing open position.
+            signal: The new signal with increased bias.
+
+        """
+        price = await self._fetch_gamma_price(signal)
+        quantity = self._compute_quantity(price, signal.bias_ratio)
+
+        if quantity <= ZERO:
+            return
+
+        pos.add_fill(price, quantity)
+        pos.last_bias = signal.bias_ratio
+        pos.signal = signal
+        logger.info(
+            "PAPER TOPUP %s side=%s price=%.4f +qty=%.2f total_qty=%.2f bias=%.1f→%.1f",
+            signal.condition_id[:12],
+            signal.favoured_side,
+            price,
+            quantity,
+            pos.quantity,
+            pos.last_bias - (signal.bias_ratio - pos.last_bias),
+            signal.bias_ratio,
+        )
+
+    async def _topup_live(self, pos: OpenPosition, signal: CopySignal) -> None:
+        """Place a live top-up order for an existing position.
+
+        Args:
+            pos: The existing open position.
+            signal: The new signal with increased bias.
+
+        """
+        assert self.client is not None  # noqa: S101
+
+        try:
+            market = await self.client.get_market(signal.condition_id)
+        except Exception:
+            logger.exception("Failed to fetch market for top-up %s", signal.condition_id[:12])
+            return
+
+        token = _find_token_for_side(market.tokens, signal.favoured_side)
+        if token is None:
+            return
+
+        price = token.price if token.price > ZERO else _MIDPOINT_FALLBACK
+        quantity = self._compute_quantity(price, signal.bias_ratio)
+
+        if quantity <= ZERO:
+            return
+
+        response = await self._place_order(token.token_id, price, quantity)
+        if response is None:
+            return
+
+        pos.add_fill(price, quantity)
+        pos.last_bias = signal.bias_ratio
+        pos.signal = signal
+        pos.order_ids.append(response)
+        logger.info(
+            "LIVE TOPUP %s side=%s price=%.4f +qty=%.2f total_qty=%.2f order=%s",
+            signal.condition_id[:12],
+            signal.favoured_side,
+            price,
+            quantity,
+            pos.quantity,
+            response,
+        )
+
+    async def _flip_position(self, pos: OpenPosition, signal: CopySignal) -> None:
+        """Close existing position and open in the opposite direction.
+
+        The whale has reversed their directional bet. Close the current
+        position at a loss (exit=0.0 since we're on the wrong side now)
+        and open a new position in the new direction.
+
+        Args:
+            pos: The existing position to close.
+            signal: The new signal in the opposite direction.
+
+        """
+        cid = signal.condition_id
+        exit_price = _LOSS_PRICE
+        pnl = (exit_price - pos.entry_price) * pos.quantity
+        now = int(time.time())
+
+        closed = CopyResult(
+            signal=pos.signal,
+            side=pos.side,
+            entry_price=pos.entry_price,
+            quantity=pos.quantity,
+            entry_time=pos.entry_time,
+            exit_price=exit_price,
+            exit_time=now,
+            pnl=pnl,
+            is_paper=pos.is_paper,
+            order_ids=tuple(pos.order_ids),
+        )
+        self._results.append(closed)
+        del self._positions[cid]
+
+        logger.info(
+            "%s FLIP %s %s→%s pnl=%.4f (closing old side)",
+            "PAPER" if pos.is_paper else "LIVE",
+            cid[:12],
+            pos.side,
+            signal.favoured_side,
+            pnl,
+        )
+
+        await self._open_position(signal)
+
+    async def _place_order(self, token_id: str, price: Decimal, quantity: Decimal) -> str | None:
+        """Place a market order and return the order ID, or None on failure.
+
+        Args:
+            token_id: CLOB token ID for the outcome.
+            price: Order price.
+            quantity: Order size in tokens.
+
+        Returns:
+            Order ID string, or ``None`` if the order failed.
+
+        """
+        assert self.client is not None  # noqa: S101
+
         order_type = "market" if self.config.use_market_orders else "limit"
         request = OrderRequest(
-            token_id=token.token_id,
+            token_id=token_id,
             side="BUY",
             price=price,
             size=quantity,
@@ -261,26 +451,10 @@ class WhaleCopyTrader:
         try:
             response = await self.client.place_order(request)
         except Exception:
-            logger.exception("Order failed for %s", signal.condition_id[:12])
-            return
+            logger.exception("Order failed for token %s", token_id[:12])
+            return None
 
-        result = CopyResult(
-            signal=signal,
-            entry_price=price,
-            quantity=quantity,
-            entry_time=now,
-            is_paper=False,
-            order_id=response.order_id,
-        )
-        self._positions[signal.condition_id] = result
-        logger.info(
-            "LIVE OPEN %s side=%s price=%.4f qty=%.2f order=%s",
-            signal.condition_id[:12],
-            signal.favoured_side,
-            price,
-            quantity,
-            response.order_id,
-        )
+        return response.order_id
 
     def _compute_quantity(self, price: Decimal, bias_ratio: Decimal = ZERO) -> Decimal:
         """Compute bias-scaled position size in tokens.
@@ -344,11 +518,12 @@ class WhaleCopyTrader:
 
         for cid in expired:
             pos = self._positions.pop(cid)
-            exit_price = await self._resolve_outcome(pos.signal)
+            exit_price = await self._resolve_outcome(pos)
             pnl = (exit_price - pos.entry_price) * pos.quantity
 
             closed = CopyResult(
                 signal=pos.signal,
+                side=pos.side,
                 entry_price=pos.entry_price,
                 quantity=pos.quantity,
                 entry_time=pos.entry_time,
@@ -356,7 +531,7 @@ class WhaleCopyTrader:
                 exit_time=now,
                 pnl=pnl,
                 is_paper=pos.is_paper,
-                order_id=pos.order_id,
+                order_ids=tuple(pos.order_ids),
             )
             self._results.append(closed)
             outcome = "WIN" if exit_price == _WIN_PRICE else "LOSS"
@@ -368,11 +543,11 @@ class WhaleCopyTrader:
                 pnl,
                 pos.entry_price,
                 exit_price,
-                pos.signal.favoured_side,
+                pos.side,
                 pos.signal.asset,
             )
 
-    async def _resolve_outcome(self, signal: CopySignal) -> Decimal:
+    async def _resolve_outcome(self, pos: OpenPosition) -> Decimal:
         """Determine whether the whale's directional bet was correct.
 
         Fetch Binance 1-min candles for the market window and compare
@@ -381,13 +556,14 @@ class WhaleCopyTrader:
         it loses (0.0).
 
         Args:
-            signal: The copy signal with asset, side, and window timestamps.
+            pos: The open position with signal, side, and window timestamps.
 
         Returns:
             ``Decimal("1.0")`` for a correct bet, ``Decimal("0.0")`` otherwise.
 
         """
         assert self._binance is not None  # noqa: S101
+        signal = pos.signal
 
         try:
             provider = BinanceCandleProvider(self._binance)
@@ -409,8 +585,8 @@ class WhaleCopyTrader:
         close_price = candles[-1].close
         price_went_up = close_price > open_price
 
-        whale_correct = (signal.favoured_side == "Up" and price_went_up) or (
-            signal.favoured_side == "Down" and not price_went_up
+        whale_correct = (pos.side == "Up" and price_went_up) or (
+            pos.side == "Down" and not price_went_up
         )
 
         logger.info(
@@ -419,7 +595,7 @@ class WhaleCopyTrader:
             open_price,
             close_price,
             "Up" if price_went_up else "Down",
-            signal.favoured_side,
+            pos.side,
             "CORRECT" if whale_correct else "WRONG",
         )
 
@@ -434,10 +610,9 @@ class WhaleCopyTrader:
             assert self._detector is not None  # noqa: S101
             window_trades = self._detector.window_size
             logger.info(
-                "HEARTBEAT polls=%d window_trades=%d signals=%d open=%d closed=%d pnl=$%.2f",
+                "HEARTBEAT polls=%d window_trades=%d open=%d closed=%d pnl=$%.2f",
                 self._poll_count,
                 window_trades,
-                len(self._acted_on),
                 len(self._positions),
                 len(self._results),
                 total_pnl,
@@ -447,28 +622,22 @@ class WhaleCopyTrader:
         """Log a final session summary on shutdown."""
         total_pnl = sum(r.pnl for r in self._results)
         logger.info(
-            "SESSION SUMMARY polls=%d signals=%d closed=%d open=%d pnl=%.4f",
+            "SESSION SUMMARY polls=%d closed=%d open=%d pnl=%.4f",
             self._poll_count,
-            len(self._acted_on),
             len(self._results),
             len(self._positions),
             total_pnl,
         )
 
     @property
-    def positions(self) -> dict[str, CopyResult]:
-        """Return the current open positions (read-only access)."""
+    def positions(self) -> dict[str, OpenPosition]:
+        """Return the current open positions (read-only copy)."""
         return dict(self._positions)
 
     @property
     def results(self) -> list[CopyResult]:
-        """Return all closed trade results (read-only access)."""
+        """Return all closed trade results (read-only copy)."""
         return list(self._results)
-
-    @property
-    def acted_on(self) -> set[str]:
-        """Return condition IDs already acted on (read-only access)."""
-        return set(self._acted_on)
 
     @property
     def poll_count(self) -> int:

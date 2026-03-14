@@ -1,10 +1,10 @@
 """Data models for the whale copy-trading service.
 
-Define immutable value objects for copy signals (detected whale bias)
-and copy results (paper or live trade outcomes).
+Define value objects for copy signals (detected whale bias) and open
+positions that accumulate top-ups as the whale's conviction changes.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 
@@ -40,27 +40,79 @@ class CopySignal:
     detected_at: int
 
 
-@dataclass(frozen=True)
-class CopyResult:
-    """Outcome of a copy trade, either paper or live.
+def _empty_str_list() -> list[str]:
+    """Return an empty list[str] for dataclass default_factory."""
+    return []
 
-    Track entry/exit prices, quantity, P&L, and whether the trade was
-    executed on-chain or only simulated.
+
+@dataclass
+class OpenPosition:
+    """A live (open) copy position that accumulates top-ups.
+
+    Track the weighted-average entry price and total quantity across
+    multiple entries as the whale adjusts their position. Mutable so
+    top-ups and flips can update it in place.
 
     Attributes:
-        signal: The copy signal that triggered this trade.
-        entry_price: Price at which the position was opened.
-        quantity: Number of tokens traded.
-        entry_time: UTC epoch seconds when the position was opened.
-        exit_price: Price at which the position was closed, or ``None``.
-        exit_time: UTC epoch seconds when closed, or ``None`` if still open.
-        pnl: Realised profit/loss in USDC (zero while open).
+        signal: The most recent signal for this market.
+        side: Current position direction (``"Up"`` or ``"Down"``).
+        entry_price: Weighted-average entry price across all fills.
+        quantity: Total token quantity across all fills.
+        cost_basis: Total USDC spent (entry_price * quantity).
+        entry_time: UTC epoch seconds of the first entry.
+        last_bias: Bias ratio at the most recent entry or top-up.
         is_paper: ``True`` for simulated trades, ``False`` for live.
-        order_id: CLOB order ID for live trades, ``None`` for paper.
+        order_ids: CLOB order IDs for live trades.
 
     """
 
     signal: CopySignal
+    side: str
+    entry_price: Decimal
+    quantity: Decimal
+    cost_basis: Decimal
+    entry_time: int
+    last_bias: Decimal
+    is_paper: bool = True
+    order_ids: list[str] = field(default_factory=_empty_str_list)
+
+    def add_fill(self, price: Decimal, qty: Decimal) -> None:
+        """Add a new fill and update the weighted-average entry price.
+
+        Args:
+            price: Entry price of the new fill.
+            qty: Quantity of the new fill.
+
+        """
+        new_cost = price * qty
+        self.cost_basis += new_cost
+        self.quantity += qty
+        self.entry_price = (self.cost_basis / self.quantity).quantize(Decimal("0.0001"))
+
+
+@dataclass(frozen=True)
+class CopyResult:
+    """Outcome of a closed copy trade.
+
+    Immutable record of a position that has been closed, with final
+    P&L calculated from the entry and exit prices.
+
+    Attributes:
+        signal: The copy signal that triggered this trade.
+        side: Position direction when closed.
+        entry_price: Weighted-average entry price.
+        quantity: Total tokens traded.
+        entry_time: UTC epoch seconds when first opened.
+        exit_price: Price at which the position was closed, or ``None``.
+        exit_time: UTC epoch seconds when closed, or ``None`` if still open.
+        pnl: Realised profit/loss in USDC.
+        is_paper: ``True`` for simulated trades, ``False`` for live.
+        order_ids: All CLOB order IDs for this position.
+
+    """
+
+    signal: CopySignal
+    side: str
     entry_price: Decimal
     quantity: Decimal
     entry_time: int
@@ -68,4 +120,4 @@ class CopyResult:
     exit_time: int | None = None
     pnl: Decimal = Decimal(0)
     is_paper: bool = True
-    order_id: str | None = None
+    order_ids: tuple[str, ...] = ()
