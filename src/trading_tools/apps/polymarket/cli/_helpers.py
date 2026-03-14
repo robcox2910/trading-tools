@@ -79,6 +79,28 @@ def configure_logging(*, verbose: bool = False) -> None:
             logging.getLogger(name).setLevel(logging.WARNING)
 
 
+def require_whale_db_url() -> str:
+    """Read the WHALE_DB_URL environment variable or abort.
+
+    Abort with a clear error if the environment variable is not set.
+    There is no SQLite fallback — whale data lives in PostgreSQL.
+
+    Returns:
+        The WHALE_DB_URL connection string.
+
+    """
+    db_url = os.environ.get("WHALE_DB_URL", "")
+    if not db_url:
+        typer.echo(
+            "Error: WHALE_DB_URL environment variable is required.\n"
+            "Set it to your PostgreSQL connection string, e.g.:\n"
+            '  export WHALE_DB_URL="postgresql+asyncpg://user:pass@host:5432/trading_tools"',
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return db_url
+
+
 def build_authenticated_client() -> PolymarketClient:
     """Build an authenticated PolymarketClient from environment variables.
 

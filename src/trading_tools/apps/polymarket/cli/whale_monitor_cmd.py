@@ -6,21 +6,20 @@ from tracked whale addresses and persists them to a database.
 
 import asyncio
 import logging
-import os
 from typing import Annotated
 
 import typer
 
+from trading_tools.apps.polymarket.cli._helpers import require_whale_db_url
 from trading_tools.apps.whale_monitor.collector import WhaleMonitor
 from trading_tools.apps.whale_monitor.config import WhaleMonitorConfig
 
-_DEFAULT_DB_URL = os.environ.get("WHALE_DB_URL", "sqlite+aiosqlite:///whale_data.db")
 _DEFAULT_POLL_INTERVAL = 120
 
 
 def whale_monitor(
     whales: Annotated[str, typer.Option(help="Comma-separated whale proxy wallet addresses")] = "",
-    db_url: Annotated[str, typer.Option(help="SQLAlchemy async DB URL")] = _DEFAULT_DB_URL,
+    db_url: Annotated[str, typer.Option(help="SQLAlchemy async DB URL")] = "",
     poll_interval: Annotated[
         int, typer.Option(help="Seconds between polling cycles")
     ] = _DEFAULT_POLL_INTERVAL,
@@ -34,6 +33,8 @@ def whale_monitor(
     and persist them to a database. Whale addresses can be supplied via
     ``--whales`` or pre-loaded in the database with ``whale-add``.
     """
+    resolved_db_url = db_url or require_whale_db_url()
+
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
@@ -44,12 +45,12 @@ def whale_monitor(
     whale_addrs = tuple(w.strip().lower() for w in whales.split(",") if w.strip())
 
     config = WhaleMonitorConfig(
-        db_url=db_url,
+        db_url=resolved_db_url,
         whales=whale_addrs,
         poll_interval_seconds=poll_interval,
     )
 
-    typer.echo(f"Starting whale monitor (db: {db_url})")
+    typer.echo(f"Starting whale monitor (db: {resolved_db_url})")
     if whale_addrs:
         typer.echo(f"CLI whales: {len(whale_addrs)}")
     typer.echo(f"Poll interval: {poll_interval}s")

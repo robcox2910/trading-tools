@@ -6,19 +6,21 @@ paper mode (virtual P&L tracking); pass ``--confirm-live`` for real orders.
 """
 
 import asyncio
-import os
 import time
 from decimal import Decimal
 from typing import Annotated
 
 import typer
 
-from trading_tools.apps.polymarket.cli._helpers import build_authenticated_client, configure_logging
+from trading_tools.apps.polymarket.cli._helpers import (
+    build_authenticated_client,
+    configure_logging,
+    require_whale_db_url,
+)
 from trading_tools.apps.whale_copy_trader.config import WhaleCopyConfig
 from trading_tools.apps.whale_copy_trader.copy_trader import WhaleCopyTrader
 from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
-_DEFAULT_DB_URL = os.environ.get("WHALE_DB_URL", "sqlite+aiosqlite:///whale_data.db")
 _DEFAULT_POLL_INTERVAL = 5
 _DEFAULT_LOOKBACK = 3600
 _DEFAULT_MIN_BIAS = "1.5"
@@ -51,7 +53,7 @@ def whale_copy(
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
-    db_url: Annotated[str, typer.Option(help="SQLAlchemy async DB URL")] = _DEFAULT_DB_URL,
+    db_url: Annotated[str, typer.Option(help="SQLAlchemy async DB URL")] = "",
     verbose: Annotated[  # noqa: FBT002
         bool, typer.Option("--verbose", "-v", help="Enable DEBUG logging")
     ] = False,
@@ -62,6 +64,7 @@ def whale_copy(
     strong directional bias, and copy them. Paper mode by default;
     use ``--confirm-live`` for real Polymarket orders.
     """
+    resolved_db_url = db_url or require_whale_db_url()
     configure_logging(verbose=verbose)
 
     config = WhaleCopyConfig(
@@ -83,7 +86,7 @@ def whale_copy(
         time.sleep(_LIVE_WARNING_DELAY)
 
     async def _run() -> None:
-        repo = WhaleRepository(db_url)
+        repo = WhaleRepository(resolved_db_url)
         await repo.init_db()
 
         client = None
