@@ -27,6 +27,7 @@ class WhaleCopyConfig:
         max_position_pct: Maximum fraction of capital per single trade.
         max_bias_scale: Maximum multiplier for bias-proportional position sizing.
         topup_bias_delta: Minimum bias increase to trigger a top-up.
+        max_window_seconds: Maximum market window duration to trade (0 = no limit).
         use_market_orders: Use market orders (FOK) instead of limit orders (GTC).
 
     """
@@ -41,4 +42,5 @@ class WhaleCopyConfig:
     max_position_pct: Decimal = Decimal("0.10")
     max_bias_scale: Decimal = Decimal("3.0")
     topup_bias_delta: Decimal = Decimal("0.5")
+    max_window_seconds: int = 0
     use_market_orders: bool = False

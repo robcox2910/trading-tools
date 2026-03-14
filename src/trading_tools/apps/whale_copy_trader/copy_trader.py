@@ -110,6 +110,7 @@ class WhaleCopyTrader:
             min_trades=self.config.min_trades,
             lookback_seconds=self.config.lookback_seconds,
             min_time_to_start=self.config.min_time_to_start,
+            max_window_seconds=self.config.max_window_seconds,
         )
         self._binance = BinanceClient()
         self._gamma = GammaClient()

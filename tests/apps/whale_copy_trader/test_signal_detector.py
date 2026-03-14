@@ -218,6 +218,37 @@ class TestSignalDetector:
         assert call_args[0][1] == _FUTURE_TS + 1
 
     @pytest.mark.asyncio
+    async def test_filters_too_long_windows(
+        self,
+        mock_repo: AsyncMock,
+    ) -> None:
+        """Skip markets whose window duration exceeds max_window_seconds."""
+        detector = SignalDetector(
+            repo=mock_repo,
+            whale_address=_ADDRESS,
+            min_bias=Decimal("1.5"),
+            min_trades=3,
+            lookback_seconds=300,
+            min_time_to_start=0,
+            max_window_seconds=300,  # 5-min only
+        )
+        # Hourly market title → window duration = 3600s > 300s
+        trades = [
+            _make_trade(
+                outcome="Up",
+                size=100.0,
+                price=0.70,
+                tx_hash=f"tx_{i}",
+                title="Bitcoin Up or Down - March 13, 6PM ET",
+            )
+            for i in range(4)
+        ]
+        mock_repo.get_trades = AsyncMock(return_value=trades)
+
+        signals = await detector.detect_signals()
+        assert signals == []
+
+    @pytest.mark.asyncio
     async def test_filters_too_soon_windows(
         self, mock_repo: AsyncMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
