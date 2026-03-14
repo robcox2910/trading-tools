@@ -37,6 +37,72 @@ logger = logging.getLogger(__name__)
 _MS_PER_SECOND = 1000
 _HUNDRED = Decimal(100)
 
+# Module-level state shared across tasks within each worker process.
+# Set once per worker via _init_grid_worker to avoid pickling window_data
+# for every task submission (108 tasks x ~320MB = ~35GB otherwise).
+_worker_window_data: list[tuple[MarketWindow, list[MarketSnapshot]]] | None = None
+_worker_resolved_outcomes: dict[str, bool] | None = None
+
+
+def _init_grid_worker(
+    window_data: list[tuple[MarketWindow, list[MarketSnapshot]]],
+    resolved_outcomes: dict[str, bool] | None,
+) -> None:
+    """Set shared data in each worker process once at startup.
+
+    Called by ``ProcessPoolExecutor(initializer=...)`` so that the large
+    ``window_data`` structure is pickled only once per worker (typically
+    4-8 workers) instead of once per task (108+ tasks).
+
+    Args:
+        window_data: Pre-built (MarketWindow, snapshots) pairs.
+        resolved_outcomes: Precomputed mapping from condition_id to
+            ``True`` if YES won.
+
+    """
+    global _worker_window_data, _worker_resolved_outcomes  # noqa: PLW0603
+    _worker_window_data = window_data
+    _worker_resolved_outcomes = resolved_outcomes
+
+
+def _run_cell_worker(
+    threshold: Decimal,
+    window_seconds: int,
+    capital: Decimal,
+    kelly_frac: Decimal,
+    max_position_pct: Decimal,
+    max_slippage: Decimal | None,
+) -> GridCell:
+    """Run a single grid cell using shared worker-process state.
+
+    Read ``window_data`` and ``resolved_outcomes`` from module-level
+    globals set by ``_init_grid_worker`` rather than receiving them as
+    arguments, avoiding the pickle overhead per task submission.
+
+    Args:
+        threshold: Snipe price threshold.
+        window_seconds: Snipe window duration in seconds.
+        capital: Initial virtual capital.
+        kelly_frac: Fractional Kelly multiplier.
+        max_position_pct: Maximum fraction of capital per market.
+        max_slippage: Maximum allowable slippage from the snapshot price.
+
+    Returns:
+        A ``GridCell`` with the performance metrics for this combination.
+
+    """
+    assert _worker_window_data is not None  # noqa: S101
+    return _run_single_cell(
+        _worker_window_data,
+        threshold,
+        window_seconds,
+        capital,
+        kelly_frac,
+        max_position_pct,
+        max_slippage,
+        _worker_resolved_outcomes,
+    )
+
 
 @dataclass(frozen=True)
 class GridCell:
@@ -276,18 +342,19 @@ def run_grid_backtest(
     combos = [(t, w) for t in sorted(thresholds) for w in sorted(windows, reverse=True)]
 
     cells: list[GridCell] = []
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(
+        initializer=_init_grid_worker,
+        initargs=(window_data, resolved_outcomes),
+    ) as executor:
         futures = {
             executor.submit(
-                _run_single_cell,
-                window_data,
+                _run_cell_worker,
                 t,
                 w,
                 capital,
                 kelly_frac,
                 max_position_pct,
                 max_slippage,
-                resolved_outcomes,
             ): (t, w)
             for t, w in combos
         }
