@@ -729,6 +729,7 @@ class TestDefensiveHedge:
             max_spread_cost=Decimal("0.80"),  # prevent profit hedge
             max_entry_price=Decimal("0.65"),
             defensive_hedge_pct=Decimal("0.50"),
+            max_defensive_hedge_cost=Decimal("2.0"),
         )
         # Entry at 0.55, then price drops to 0.20 (< 0.55 * 0.50 = 0.275)
         market_open = _mock_market("0.55", "0.45")
@@ -1777,6 +1778,7 @@ class TestDefensiveHedgePartialFill:
             max_spread_cost=Decimal("0.80"),  # prevent profit hedge
             max_entry_price=Decimal("0.65"),
             defensive_hedge_pct=Decimal("0.50"),
+            max_defensive_hedge_cost=Decimal("2.0"),
             hedge_with_market_orders=True,
         )
         market_open = _mock_market("0.55", "0.45")
@@ -2712,3 +2714,89 @@ class TestFlipTrading:
         assert pos.state == PositionState.HEDGED
         assert pos.hedge_leg is not None
         assert len(trader.results) == 0  # no closed results yet
+
+
+class TestDefensiveSellFallback:
+    """Tests for selling instead of hedging when defensive hedge cost is too high."""
+
+    @pytest.mark.asyncio
+    async def test_sells_when_hedge_too_expensive(self) -> None:
+        """Sell leg1 when defensive hedge combined cost exceeds max."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),  # prevent profit hedge
+            max_entry_price=Decimal("0.65"),
+            defensive_hedge_pct=Decimal("0.50"),
+            max_defensive_hedge_cost=Decimal("1.05"),
+        )
+        # Entry at Up=0.55, then price drops to 0.20 while Down=0.90
+        # combined = 0.55 + 0.90 = 1.45 >> 1.05 → should sell instead
+        market_open = _mock_market("0.55", "0.45")
+        market_drop = _mock_market("0.20", "0.90")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+        assert trader.positions["cond_a"].state == PositionState.UNHEDGED
+
+        # Second cycle: price dropped, defensive hedge too expensive → sell
+        client.get_market = AsyncMock(return_value=market_drop)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Position should be closed (sold), not hedged
+        assert "cond_a" not in trader.positions
+        assert len(trader.results) == 1
+        assert trader.results[0].state == PositionState.STOPPED
+        assert trader.results[0].pnl < Decimal(0)
+
+    @pytest.mark.asyncio
+    async def test_hedges_when_combined_within_limit(self) -> None:
+        """Defensive hedge proceeds when combined cost is within limit."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),  # prevent profit hedge
+            max_entry_price=Decimal("0.65"),
+            defensive_hedge_pct=Decimal("0.50"),
+            max_defensive_hedge_cost=Decimal("1.20"),
+        )
+        # Entry at Up=0.55, then drops to 0.20 with Down=0.60
+        # combined = 0.55 + 0.60 = 1.15 < 1.20 → should hedge
+        market_open = _mock_market("0.55", "0.45")
+        market_drop = _mock_market("0.20", "0.60")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Second cycle: defensive hedge is affordable → hedge
+        client.get_market = AsyncMock(return_value=market_drop)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+        pos = trader.positions["cond_a"]
+        assert pos.state == PositionState.HEDGED
+        assert pos.hedge_leg is not None

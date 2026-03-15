@@ -41,6 +41,7 @@ _DECIMAL_PARAMS: dict[str, str] = {
     "max_spread_cost": "max_spread_cost",
     "max_entry_price": "max_entry_price",
     "defensive_hedge_pct": "defensive_hedge_pct",
+    "max_defensive_hedge_cost": "max_defensive_hedge_cost",
     "win_rate": "win_rate",
     "kelly_fraction": "kelly_fraction",
     "clob_fee_rate": "clob_fee_rate",
@@ -190,7 +191,13 @@ def whale_copy(  # noqa: PLR0913
     ] = False,
     defensive_hedge_pct: Annotated[
         str | None,
-        typer.Option(help="Defensive hedge trigger as fraction (e.g. 0.20 = hedge at 20%% drop)"),
+        typer.Option(help="Defensive hedge trigger as fraction (e.g. 0.10 = hedge at 10%% drop)"),
+    ] = None,
+    max_defensive_hedge_cost: Annotated[
+        str | None,
+        typer.Option(
+            help="Max combined cost for defensive hedge; sell instead if exceeded (e.g. 1.05)"
+        ),
     ] = None,
     win_rate: Annotated[
         str | None, typer.Option(help="Estimated whale win rate for Kelly sizing (e.g. 0.80)")
@@ -341,6 +348,7 @@ def whale_copy(  # noqa: PLR0913
         max_spread_cost=max_spread_cost,
         max_entry_price=max_entry_price,
         defensive_hedge_pct=defensive_hedge_pct,
+        max_defensive_hedge_cost=max_defensive_hedge_cost,
         win_rate=win_rate,
         kelly_fraction=kelly_fraction,
         clob_fee_rate=clob_fee_rate,

@@ -168,7 +168,7 @@ class WhaleCopyTrader:
             " lookback=%ds min_bias=%.1f min_trades=%d"
             " min_time_to_start=%ds capital=$%s max_pos=%s%%"
             " max_spread_cost=%.2f max_entry_price=%.2f"
-            " hedge_market=%s def_hedge=%.0f%% kelly=%.0f%%x%.1f"
+            " hedge_market=%s def_hedge=%.0f%% max_def_cost=%.2f kelly=%.0f%%x%.1f"
             " take_profit=%.0f%% fee_rate=%.4f max_unhedged=%.0f%%"
             " flipping=%s max_flips=%d flip_buffer=%ds flip_tp=%.0f%%",
             mode,
@@ -184,6 +184,7 @@ class WhaleCopyTrader:
             self.config.max_entry_price,
             self.config.hedge_with_market_orders,
             self.config.defensive_hedge_pct * 100,
+            self.config.max_defensive_hedge_cost,
             self.config.win_rate * 100,
             self.config.kelly_fraction,
             self.config.take_profit_pct * 100,
@@ -1131,6 +1132,14 @@ class WhaleCopyTrader:
             if hedge_price <= ZERO:
                 continue
 
+            effective_leg1_price = pos.leg1.cost_basis / pos.leg1.quantity
+            combined = effective_leg1_price + hedge_price
+
+            # If the defensive hedge would be too expensive, sell leg1 instead
+            if combined > self.config.max_defensive_hedge_cost:
+                await self._defensive_sell(cid, pos, current_price, combined)
+                continue
+
             hedge_qty = pos.leg1.quantity
             if hedge_qty < _MIN_TOKEN_QTY:
                 continue
@@ -1170,8 +1179,6 @@ class WhaleCopyTrader:
             pos.hedge_leg = hedge_leg
             pos.state = PositionState.HEDGED
 
-            effective_leg1_price = pos.leg1.cost_basis / pos.leg1.quantity
-            combined = effective_leg1_price + hedge_price
             max_loss_per_token = combined - _ONE if combined > _ONE else ZERO
 
             mode = "LIVE" if self.live else "PAPER"
@@ -1187,6 +1194,86 @@ class WhaleCopyTrader:
                 combined,
                 max_loss_per_token,
             )
+
+    async def _defensive_sell(
+        self,
+        cid: str,
+        pos: OpenPosition,
+        current_price: Decimal,
+        combined: Decimal,
+    ) -> None:
+        """Sell leg 1 tokens when a defensive hedge would be too expensive.
+
+        Fall back to selling when the combined cost of a defensive hedge
+        exceeds ``max_defensive_hedge_cost``, avoiding a large guaranteed
+        loss at settlement. The position is closed with STOPPED state.
+
+        Args:
+            cid: Market condition_id.
+            pos: The open position to sell.
+            current_price: Current price of leg 1 tokens.
+            combined: The combined cost that exceeded the threshold.
+
+        """
+        sell_price = current_price
+        if not self.live and self.config.paper_slippage_pct > ZERO:
+            sell_price = current_price * (_ONE - self.config.paper_slippage_pct)
+
+        pnl = sell_price * pos.leg1.quantity - pos.leg1.cost_basis
+
+        if self.live:
+            tokens_by_side = await self._fetch_clob_tokens(cid)
+            if tokens_by_side is None:
+                return
+            token = tokens_by_side.get(pos.leg1.side)
+            if token is None or self._executor is None:
+                return
+            response = await self._executor.place_order(
+                token.token_id,
+                "SELL",
+                current_price,
+                pos.leg1.quantity,
+                order_type="market",
+            )
+            if response is None:
+                return
+            pnl = response.price * response.filled - pos.leg1.cost_basis
+            pos.leg1.order_ids.append(response.order_id)
+
+        pos.state = PositionState.STOPPED
+        self._positions.pop(cid)
+
+        result = CopyResult(
+            signal=pos.signal,
+            state=PositionState.STOPPED,
+            leg1_side=pos.leg1.side,
+            leg1_entry=pos.leg1.entry_price,
+            leg1_qty=pos.leg1.quantity,
+            hedge_entry=None,
+            hedge_qty=None,
+            total_cost_basis=pos.leg1.cost_basis,
+            entry_time=pos.entry_time,
+            exit_time=int(time.time()),
+            winning_side=None,
+            pnl=pnl,
+            is_paper=pos.is_paper,
+            order_ids=tuple(pos.all_order_ids),
+        )
+        self._results.append(result)
+        self._record_loss()
+        await self._persist_result(result)
+
+        mode = "LIVE" if self.live else "PAPER"
+        logger.info(
+            "%s DEFENSIVE-SELL %s price=%.4f entry=%.4f pnl=%.4f combined_would_be=%.4f > max=%.4f",
+            mode,
+            cid[:12],
+            sell_price,
+            pos.leg1.entry_price,
+            pnl,
+            combined,
+            self.config.max_defensive_hedge_cost,
+        )
 
     def _effective_hedge_spread(self, signal: CopySignal) -> Decimal:
         """Compute the effective max spread cost, applying urgency bump near expiry.
