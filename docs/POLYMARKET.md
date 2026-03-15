@@ -339,7 +339,7 @@ The bot uses a multi-phase approach:
 
 1. **Directional entry (leg 1):** detect the whale's favoured side and buy it immediately at current CLOB prices. Position size is determined by the Kelly criterion based on estimated win rate.
 2. **Take-profit:** each poll cycle, check if the leg 1 token price has risen above the take-profit threshold (`entry × (1 + take_profit_pct)`). If so, sell early to lock in known profit.
-3. **Defensive hedge:** if the leg 1 token price drops below `entry × (1 - defensive_hedge_pct)`, buy the opposite side to cap loss at settlement instead of selling into a thin book. The position becomes hedged with a bounded max loss.
+3. **Defensive hedge:** if the leg 1 token price drops below `entry × (1 - defensive_hedge_pct)`, buy the opposite side to cap loss at settlement instead of selling into a thin book. The position becomes hedged with a bounded max loss. If the combined cost (leg1 + hedge) would exceed `max_defensive_hedge_cost`, sell the tokens instead to avoid locking in a large guaranteed loss.
 4. **Profit hedge (leg 2):** monitor the opposite side each poll cycle. When `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee_rate`, the opposite side is cheap enough to lock in guaranteed profit. Hedge uses FOK market orders by default for fast execution.
 5. **Settlement:** all hedged positions resolve at market expiry with known P&L (profit or capped loss).
 
@@ -409,7 +409,8 @@ flip_take_profit_pct: "0.10"
 | `--max-entry-price` | `0.65` | Max price for directional entry (skip if favoured side already above this) |
 | `--max-window` | `0` | Max market window in seconds (e.g. 300 for 5-min only, 0=all) |
 | `--no-hedge-market-orders` | `false` | Use GTC limit orders for hedge leg instead of FOK market |
-| `--defensive-hedge-pct` | `0.20` | Buy opposite side when leg1 drops this % (e.g. 0.20 = hedge at 20% drop) |
+| `--defensive-hedge-pct` | `0.10` | Buy opposite side when leg1 drops this % (e.g. 0.10 = hedge at 10% drop) |
+| `--max-defensive-hedge-cost` | `1.05` | Max combined cost for defensive hedge; sell instead if exceeded |
 | `--win-rate` | `0.80` | Estimated whale win rate for Kelly criterion sizing |
 | `--kelly-fraction` | `0.5` | Fractional Kelly multiplier (e.g. 0.5 = half-Kelly for safety) |
 | `--clob-fee-rate` | `0.0` | Per-leg CLOB fee rate for hedge profitability check |
@@ -447,7 +448,7 @@ flip_take_profit_pct: "0.10"
 5. Open directional leg 1 (buy whale's favoured side, Kelly-sized with optional signal strength scaling)
 6. Each poll cycle checks (in order): take-profit → defensive hedge → profit hedge → expiry
 7. Take-profit: prefer hedging opposite side when combined < $1.00; if flipping enabled, flip to opposite side; sell as fallback
-8. Defensive hedge: buy opposite side if leg 1 price drops below `entry × (1 - defensive_hedge_pct)`
+8. Defensive hedge: buy opposite side if leg 1 price drops below `entry × (1 - defensive_hedge_pct)`. If combined cost > `max_defensive_hedge_cost`, sell leg 1 instead
 9. Hedge: if `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee`, buy matching token quantity on opposite side (FOK by default)
 10. Close remaining positions when the market window expires; P&L depends on state
 

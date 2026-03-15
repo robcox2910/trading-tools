@@ -93,8 +93,14 @@ class WhaleCopyConfig:
         defensive_hedge_pct: Maximum fractional price drop on an unhedged
             leg 1 before a defensive hedge is placed. Instead of selling
             tokens into a thin book, buy the opposite side to cap the
-            maximum loss at settlement. 0.20 means hedge when the token
-            drops 20 %% from the entry price.
+            maximum loss at settlement. 0.10 means hedge when the token
+            drops 10 %% from the entry price.
+        max_defensive_hedge_cost: Maximum combined cost (leg1 effective
+            price + hedge price) for a defensive hedge. When the combined
+            cost exceeds this threshold, sell leg 1 tokens instead of
+            hedging to avoid locking in a large guaranteed loss. A value
+            of 1.05 means reject defensive hedges that would guarantee
+            more than 5 %% loss per token.
         win_rate: Estimated whale win rate for Kelly criterion sizing.
         kelly_fraction: Fractional Kelly multiplier (0.5 = half-Kelly).
         clob_fee_rate: Per-leg CLOB fee rate for hedge profitability check.
@@ -173,7 +179,8 @@ class WhaleCopyConfig:
     max_spread_cost: Decimal = Decimal("0.95")
     max_entry_price: Decimal = Decimal("0.65")
     hedge_with_market_orders: bool = True
-    defensive_hedge_pct: Decimal = Decimal("0.20")
+    defensive_hedge_pct: Decimal = Decimal("0.10")
+    max_defensive_hedge_cost: Decimal = Decimal("1.05")
     win_rate: Decimal = Decimal("0.80")
     kelly_fraction: Decimal = Decimal("0.5")
     clob_fee_rate: Decimal = Decimal("0.0")
