@@ -1,9 +1,9 @@
-"""Async repository for persisting and querying closed copy trade results.
+"""Async repository for persisting and querying closed spread trade results.
 
-Wrap SQLAlchemy async engine and session management for the whale
-copy-trader. Provide methods for single-row inserts (called immediately
-when a position closes) and time-range queries for backtesting analysis.
-The repository is database-agnostic — swap from SQLite to PostgreSQL by
+Wrap SQLAlchemy async engine and session management for the spread
+capture bot.  Provide methods for single-row inserts (called immediately
+when a position settles) and time-range queries for analysis.  The
+repository is database-agnostic — swap from SQLite to PostgreSQL by
 changing the connection string.
 """
 
@@ -17,18 +17,17 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from trading_tools.apps.whale_copy_trader.models import Base, CopyResultRecord
+from trading_tools.apps.spread_capture.models import SpreadBase, SpreadResultRecord
 
 logger = logging.getLogger(__name__)
 
 
-class CopyResultRepository:
-    """Async repository for copy trade result persistence and retrieval.
+class SpreadResultRepository:
+    """Async repository for spread trade result persistence and retrieval.
 
-    Manage an async SQLAlchemy engine and session factory. Persist each
-    closed trade immediately (not batched) so data survives crashes.
-    Support time-range queries with optional filters for backtesting
-    different ``max_spread_cost`` thresholds against historical data.
+    Manage an async SQLAlchemy engine and session factory.  Persist each
+    settled trade immediately (not batched) so data survives crashes.
+    Support time-range queries with optional filters for analysis.
 
     Args:
         db_url: SQLAlchemy async connection string
@@ -54,22 +53,22 @@ class CopyResultRepository:
         Idempotent — safe to call on every startup.
         """
         async with self._engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Copy result tables initialised")
+            await conn.run_sync(SpreadBase.metadata.create_all)
+        logger.info("Spread result tables initialised")
 
-    async def save_result(self, record: CopyResultRecord) -> None:
-        """Persist a single closed trade result within a transaction.
+    async def save_result(self, record: SpreadResultRecord) -> None:
+        """Persist a single settled trade result within a transaction.
 
-        Called immediately when a position closes so that data is
+        Called immediately when a position settles so that data is
         durable even if the process crashes before shutdown.
 
         Args:
-            record: The ``CopyResultRecord`` ORM instance to insert.
+            record: The ``SpreadResultRecord`` ORM instance to insert.
 
         """
         async with self._session_factory() as session, session.begin():
             session.add(record)
-        logger.debug("Saved copy result for %s", record.condition_id[:12])
+        logger.debug("Saved spread result for %s", record.condition_id[:12])
 
     async def get_results(
         self,
@@ -78,11 +77,11 @@ class CopyResultRepository:
         *,
         is_paper: bool | None = None,
         asset: str | None = None,
-    ) -> list[CopyResultRecord]:
-        """Query copy trade results within a time range.
+    ) -> list[SpreadResultRecord]:
+        """Query spread trade results within a time range.
 
-        Filter by ``exit_time`` to retrieve trades that closed during
-        the specified window. Optionally narrow to paper/live mode or a
+        Filter by ``exit_time`` to retrieve trades that settled during
+        the specified window.  Optionally narrow to paper/live mode or a
         specific asset.
 
         Args:
@@ -92,22 +91,22 @@ class CopyResultRepository:
             asset: If set, filter by asset (e.g. ``"BTC-USD"``).
 
         Returns:
-            List of matching ``CopyResultRecord`` rows ordered by exit_time.
+            List of matching ``SpreadResultRecord`` rows ordered by exit_time.
 
         """
         stmt = (
-            select(CopyResultRecord)
+            select(SpreadResultRecord)
             .where(
-                CopyResultRecord.exit_time >= start_ts,
-                CopyResultRecord.exit_time <= end_ts,
+                SpreadResultRecord.exit_time >= start_ts,
+                SpreadResultRecord.exit_time <= end_ts,
             )
-            .order_by(CopyResultRecord.exit_time)
+            .order_by(SpreadResultRecord.exit_time)
         )
 
         if is_paper is not None:
-            stmt = stmt.where(CopyResultRecord.is_paper == is_paper)
+            stmt = stmt.where(SpreadResultRecord.is_paper == is_paper)
         if asset is not None:
-            stmt = stmt.where(CopyResultRecord.asset == asset)
+            stmt = stmt.where(SpreadResultRecord.asset == asset)
 
         async with self._session_factory() as session:
             result = await session.execute(stmt)
@@ -116,4 +115,4 @@ class CopyResultRepository:
     async def close(self) -> None:
         """Dispose the async engine and release all connections."""
         await self._engine.dispose()
-        logger.info("Copy result database engine disposed")
+        logger.info("Spread result database engine disposed")

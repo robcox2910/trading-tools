@@ -28,10 +28,10 @@ For strategies that react to real-time price feeds. Used by:
 - Liquidity imbalance (`pm_liquidity_imbalance`)
 - Cross-market arbitrage (`pm_cross_market_arb`)
 
-### Polling-Driven (`WhaleCopyTrader`)
+### Polling-Driven (`SpreadCaptureBot`)
 
 For strategies that react to external data sources (e.g. whale trades in a database). Used by:
-- Whale copy-trade (`whale_copy`)
+- Spread capture (`spread_capture`)
 
 ## Adding a WebSocket Strategy
 
@@ -257,7 +257,7 @@ Create `src/trading_tools/apps/polymarket/cli/my_strategy_cmd.py` and register i
 
 ### 4. Reference implementation
 
-See `src/trading_tools/apps/whale_copy_trader/` for a complete working example of a polling strategy with temporal spread arbitrage.
+See `src/trading_tools/apps/spread_capture/` for a complete working example of a polling strategy with temporal spread arbitrage.
 
 ## Shared Services Reference
 
