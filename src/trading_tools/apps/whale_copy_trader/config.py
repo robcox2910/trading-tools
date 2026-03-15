@@ -2,14 +2,69 @@
 
 Define an immutable configuration dataclass that holds all tunable
 parameters: polling frequency, signal thresholds, position sizing,
-spread arbitrage targets, and capital management.
+spread arbitrage targets, and capital management.  Supports loading
+from a YAML file and applying CLI overrides on top.
 """
 
-from dataclasses import dataclass
-from decimal import Decimal
+import dataclasses
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any
+
+import yaml
 
 
-@dataclass(frozen=True)
+def _decimal_field_names() -> frozenset[str]:
+    """Return field names on WhaleCopyConfig that have type ``Decimal``.
+
+    Called once at module level after the dataclass is defined and cached
+    in ``_DECIMAL_FIELDS``.  The result is used by ``_parse_config_dict``
+    to decide which YAML values need ``Decimal`` conversion.
+    """
+    return frozenset(
+        f.name
+        for f in dataclasses.fields(WhaleCopyConfig)
+        if f.type is Decimal or f.type == "Decimal"
+    )
+
+
+def _parse_config_dict(data: dict[str, Any]) -> dict[str, Any]:
+    """Convert raw YAML dict values to types expected by ``WhaleCopyConfig``.
+
+    Numeric string values are converted to ``Decimal`` for fields that
+    require it; bare numeric YAML values (``float``/``int``) are also
+    handled.  Unknown keys (not matching any dataclass field) are
+    silently dropped.
+
+    Args:
+        data: Raw dictionary from ``yaml.safe_load``.
+
+    Returns:
+        Filtered and converted keyword arguments suitable for the
+        ``WhaleCopyConfig`` constructor.
+
+    Raises:
+        ValueError: If a Decimal field contains an unconvertible value.
+
+    """
+    valid_names = {f.name for f in dataclasses.fields(WhaleCopyConfig)}
+    decimal_names = _decimal_field_names()
+    result: dict[str, Any] = {}
+    for key, value in data.items():
+        if key not in valid_names:
+            continue
+        if key in decimal_names:
+            try:
+                result[key] = Decimal(str(value))
+            except InvalidOperation as exc:
+                msg = f"Cannot convert {key}={value!r} to Decimal"
+                raise ValueError(msg) from exc
+        else:
+            result[key] = value
+    return result
+
+
+@dataclasses.dataclass(frozen=True)
 class WhaleCopyConfig:
     """Immutable configuration for the whale copy-trading service.
 
@@ -101,3 +156,53 @@ class WhaleCopyConfig:
     hedge_urgency_spread_bump: Decimal = Decimal("0.03")
     circuit_breaker_losses: int = 3
     circuit_breaker_cooldown: int = 300
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> "WhaleCopyConfig":
+        """Load configuration from a YAML file.
+
+        Keys must match dataclass field names.  Numeric values are
+        converted to ``Decimal`` where the field type requires it.
+        Unknown keys are silently ignored, making forward-compatible
+        config files easy.
+
+        Args:
+            path: Filesystem path to a YAML configuration file.
+
+        Returns:
+            A new ``WhaleCopyConfig`` populated from the file, with
+            dataclass defaults filling any omitted fields.
+
+        Raises:
+            FileNotFoundError: If *path* does not exist.
+            ValueError: If a Decimal field contains an unconvertible value.
+
+        """
+        with path.open() as fh:
+            data: dict[str, Any] = yaml.safe_load(fh) or {}
+        return cls(**_parse_config_dict(data))
+
+    @classmethod
+    def with_overrides(cls, base: "WhaleCopyConfig", **overrides: object) -> "WhaleCopyConfig":
+        """Create a new config by applying non-None overrides to a base.
+
+        Iterate over *overrides* and replace the corresponding field in
+        *base* only when the override value is not ``None``.  This
+        enables the *defaults → YAML → CLI flags* layering pattern:
+        pass all CLI arguments (which default to ``None`` when unset)
+        and only explicitly-provided values will take effect.
+
+        Args:
+            base: Existing configuration to start from.
+            **overrides: Field-name / value pairs.  ``None`` values are
+                skipped; unknown keys are silently ignored.
+
+        Returns:
+            A new ``WhaleCopyConfig`` with overrides applied.
+
+        """
+        fields = {f.name: getattr(base, f.name) for f in dataclasses.fields(base)}
+        for key, value in overrides.items():
+            if value is not None and key in fields:
+                fields[key] = value
+        return cls(**fields)
