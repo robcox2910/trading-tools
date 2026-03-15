@@ -14,6 +14,7 @@ from trading_tools.apps.whale_copy_trader.copy_trader import (
     compute_pnl,
 )
 from trading_tools.apps.whale_copy_trader.models import (
+    CopyResultRecord,
     CopySignal,
     OpenPosition,
     PositionState,
@@ -989,3 +990,188 @@ class TestTakeProfit:
 
         assert "cond_a" not in trader.positions
         assert trader.results[0].state == PositionState.EXITED
+
+
+class TestDatabasePersistence:
+    """Tests for persisting copy results to the database."""
+
+    @pytest.mark.asyncio
+    async def test_persist_on_expired_close(self) -> None:
+        """Verify save_result is called when an expired position closes."""
+        config = _make_config(max_spread_cost=Decimal("0.80"))
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+
+        mock_repo = AsyncMock()
+        trader.set_repo(mock_repo)
+
+        signal = _make_signal(window_end_ts=_PAST_TS)
+
+        with (
+            patch.object(trader, "_detector") as mock_detector,
+            patch.object(trader, "_resolve_outcome", new_callable=AsyncMock, return_value="Up"),
+        ):
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        mock_repo.save_result.assert_called_once()
+        record = mock_repo.save_result.call_args[0][0]
+        assert isinstance(record, CopyResultRecord)
+        assert record.condition_id == "cond_a"
+
+    @pytest.mark.asyncio
+    async def test_persist_on_take_profit(self) -> None:
+        """Verify save_result is called on take-profit exit."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_price=Decimal("0.65"),
+            take_profit_price=Decimal("0.85"),
+        )
+        market_open = _mock_market("0.55", "0.45")
+        market_up = _mock_market("0.90", "0.10")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+        mock_repo = AsyncMock()
+        trader.set_repo(mock_repo)
+
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Second cycle: take-profit
+        client.get_market = AsyncMock(return_value=market_up)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        mock_repo.save_result.assert_called_once()
+        record = mock_repo.save_result.call_args[0][0]
+        assert record.state == "exited"
+
+    @pytest.mark.asyncio
+    async def test_persist_on_stop_loss(self) -> None:
+        """Verify save_result is called on stop-loss exit."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_price=Decimal("0.65"),
+            stop_loss_pct=Decimal("0.50"),
+        )
+        market_open = _mock_market("0.55", "0.45")
+        market_drop = _mock_market("0.20", "0.80")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+        mock_repo = AsyncMock()
+        trader.set_repo(mock_repo)
+
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Second cycle: stop-loss
+        client.get_market = AsyncMock(return_value=market_drop)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        mock_repo.save_result.assert_called_once()
+        record = mock_repo.save_result.call_args[0][0]
+        assert record.state == "stopped"
+
+    @pytest.mark.asyncio
+    async def test_no_repo_does_not_error(self) -> None:
+        """Verify positions close without error when no repo is attached."""
+        config = _make_config(max_spread_cost=Decimal("0.80"))
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+        # No repo set — should still work
+
+        signal = _make_signal(window_end_ts=_PAST_TS)
+
+        with (
+            patch.object(trader, "_detector") as mock_detector,
+            patch.object(trader, "_resolve_outcome", new_callable=AsyncMock, return_value="Up"),
+        ):
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert len(trader.results) == 1
+
+
+class TestMaxUnhedgedExposure:
+    """Tests for unhedged exposure cap."""
+
+    @pytest.mark.asyncio
+    async def test_blocks_new_position_when_exposure_exceeded(self) -> None:
+        """Skip new positions when unhedged cost exceeds the cap."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),  # prevent hedge
+            max_entry_price=Decimal("0.65"),
+            max_position_pct=Decimal("0.50"),
+            max_unhedged_exposure_pct=Decimal("0.50"),
+        )
+        client = _mock_client("0.55", "0.45")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        # First signal opens at ~50% of capital → at the cap
+        signal_a = _make_signal(condition_id="cond_a", favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_a])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+
+        # Second signal should be blocked — unhedged exposure already at cap
+        signal_b = _make_signal(condition_id="cond_b", favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_b])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_b" not in trader.positions
+
+    @pytest.mark.asyncio
+    async def test_allows_new_position_when_under_cap(self) -> None:
+        """Open new positions when unhedged exposure is within the cap."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),  # prevent hedge
+            max_entry_price=Decimal("0.65"),
+            max_position_pct=Decimal("0.10"),  # 10% per trade
+            max_unhedged_exposure_pct=Decimal("0.50"),  # 50% cap
+        )
+        client = _mock_client("0.55", "0.45")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        # Two signals at 10% each = 20% < 50% cap → both should open
+        signals = [
+            _make_signal(condition_id="cond_a", favoured_side="Up"),
+            _make_signal(condition_id="cond_b", favoured_side="Up"),
+        ]
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=signals)
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        _expected_positions = 2
+        assert len(trader.positions) == _expected_positions

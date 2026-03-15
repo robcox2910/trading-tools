@@ -44,7 +44,7 @@ from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.core.models import ZERO, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
-from .models import CopyResult, CopySignal, OpenPosition, PositionState, SideLeg
+from .models import CopyResult, CopyResultRecord, CopySignal, OpenPosition, PositionState, SideLeg
 from .signal_detector import SignalDetector
 
 if TYPE_CHECKING:
@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from trading_tools.clients.polymarket.models import MarketToken
 
     from .config import WhaleCopyConfig
+    from .repository import CopyResultRepository
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ class WhaleCopyTrader:
     _redeemer: PositionRedeemer | None = field(default=None, init=False, repr=False)
     _executor: OrderExecutor | None = field(default=None, init=False, repr=False)
     _balance_manager: BalanceManager | None = field(default=None, init=False, repr=False)
+    _repo: CopyResultRepository | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize shared services when running in live mode."""
@@ -143,7 +145,7 @@ class WhaleCopyTrader:
             " min_time_to_start=%ds capital=$%s max_pos=%s%%"
             " max_spread_cost=%.2f max_entry_price=%.2f"
             " hedge_market=%s stop_loss=%.0f%% kelly=%.0f%%x%.1f"
-            " take_profit=%.2f fee_rate=%.4f",
+            " take_profit=%.2f fee_rate=%.4f max_unhedged=%.0f%%",
             mode,
             self.config.whale_address,
             self.config.poll_interval,
@@ -161,6 +163,7 @@ class WhaleCopyTrader:
             self.config.kelly_fraction,
             self.config.take_profit_price,
             self.config.clob_fee_rate,
+            self.config.max_unhedged_exposure_pct * 100,
         )
 
         try:
@@ -174,6 +177,15 @@ class WhaleCopyTrader:
             self._log_summary()
             await self._binance.close()
             await self._detector.close()
+
+    def set_repo(self, repo: CopyResultRepository) -> None:
+        """Attach a database repository for persisting closed trade results.
+
+        Args:
+            repo: An initialised ``CopyResultRepository`` instance.
+
+        """
+        self._repo = repo
 
     def stop(self) -> None:
         """Signal the polling loop to stop after the current cycle."""
@@ -299,13 +311,32 @@ class WhaleCopyTrader:
             )
             return
 
+        capital = self._get_capital()
         position_pct = self._kelly_position_pct(favoured_price)
-        spend = self._get_capital() * position_pct
+        spend = capital * position_pct
         qty = (spend / favoured_price).quantize(Decimal("0.01"))
 
         if qty < _MIN_TOKEN_QTY:
             logger.warning(
                 "Skipping %s: quantity %.2f below minimum", signal.condition_id[:12], qty
+            )
+            return
+
+        proposed_cost = favoured_price * qty
+        unhedged_cost = sum(
+            pos.leg1.cost_basis
+            for pos in self._positions.values()
+            if pos.state == PositionState.UNHEDGED
+        )
+        max_unhedged = capital * self.config.max_unhedged_exposure_pct
+        if unhedged_cost + proposed_cost > max_unhedged:
+            logger.info(
+                "  SKIP %s: unhedged exposure $%.2f + $%.2f > max $%.2f (%.0f%%)",
+                signal.condition_id[:12],
+                unhedged_cost,
+                proposed_cost,
+                max_unhedged,
+                self.config.max_unhedged_exposure_pct * 100,
             )
             return
 
@@ -420,6 +451,7 @@ class WhaleCopyTrader:
                 order_ids=tuple(pos.all_order_ids),
             )
             self._results.append(result)
+            await self._persist_result(result)
 
             mode = "LIVE" if self.live else "PAPER"
             logger.info(
@@ -496,6 +528,7 @@ class WhaleCopyTrader:
                 order_ids=tuple(pos.all_order_ids),
             )
             self._results.append(result)
+            await self._persist_result(result)
 
             mode = "LIVE" if self.live else "PAPER"
             logger.info(
@@ -721,6 +754,7 @@ class WhaleCopyTrader:
                 order_ids=tuple(pos.all_order_ids),
             )
             self._results.append(closed)
+            await self._persist_result(closed)
             outcome = "WIN" if pnl > ZERO else "LOSS"
             logger.info(
                 "%s CLOSE %s %s pnl=%.4f cost=$%.4f winning=%s leg1=%s state=%s asset=%s",
@@ -810,6 +844,27 @@ class WhaleCopyTrader:
             len(self._positions),
             total_pnl,
         )
+
+    async def _persist_result(self, result: CopyResult) -> None:
+        """Persist a closed trade result to the database if a repo is attached.
+
+        Convert the in-memory ``CopyResult`` to a ``CopyResultRecord`` and
+        save it immediately. Log a warning on failure but do not re-raise
+        so the trading loop continues.
+
+        Args:
+            result: The closed trade result to persist.
+
+        """
+        if self._repo is None:
+            return
+        try:
+            record = CopyResultRecord.from_copy_result(result)
+            await self._repo.save_result(record)
+        except Exception:
+            logger.exception(
+                "Failed to persist copy result for %s", result.signal.condition_id[:12]
+            )
 
     @property
     def positions(self) -> dict[str, OpenPosition]:

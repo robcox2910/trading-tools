@@ -385,6 +385,7 @@ trading-tools-polymarket whale-copy \
 | `--kelly-fraction` | `0.5` | Fractional Kelly multiplier (e.g. 0.5 = half-Kelly for safety) |
 | `--clob-fee-rate` | `0.0` | Per-leg CLOB fee rate for hedge profitability check |
 | `--take-profit-price` | `0.85` | Sell unhedged tokens when price reaches this level |
+| `--max-unhedged-exposure-pct` | `0.50` | Max fraction of capital in unhedged (non-guaranteed) positions |
 | `--confirm-live` | `false` | **Required flag** for live trading |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
@@ -403,6 +404,21 @@ trading-tools-polymarket whale-copy \
 10. Close remaining positions when the market window expires; P&L depends on state
 
 **Heartbeat:** Logs status every 60 seconds (poll count, unhedged/hedged positions, P&L) for CloudWatch monitoring.
+
+**Database persistence:** When `WHALE_DB_URL` is set, closed trade results are automatically persisted to the `copy_results` table in the same database as whale trades. Each result is written immediately at close time (not batched) so data survives crashes. The table stores denormalized signal fields (condition_id, asset, bias_ratio, window timestamps) alongside execution details (entry/hedge prices, quantities, P&L, state) for direct querying without joins.
+
+This enables post-hoc analysis such as backtesting different `max_spread_cost` thresholds:
+
+```sql
+-- Compare hedge rates at different spread cost thresholds
+SELECT
+  CASE WHEN state = 'hedged' THEN 'hedged' ELSE 'unhedged' END AS outcome,
+  COUNT(*) AS trades,
+  AVG(pnl) AS avg_pnl
+FROM copy_results
+WHERE is_paper = true
+GROUP BY outcome;
+```
 
 ## Backtesting Polymarket Strategies
 
