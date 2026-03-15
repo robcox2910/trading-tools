@@ -32,6 +32,18 @@ class WhaleCopyConfig:
             A value below 1.0 guarantees profit (e.g. 0.95 = min 5% return).
         max_entry_price: Maximum price for the directional entry leg. Skip
             markets where the favoured side has already moved above this.
+        hedge_with_market_orders: Use FOK market orders for the hedge leg
+            regardless of ``use_market_orders``. The hedge is time-critical;
+            a GTC limit sitting unfilled defeats the purpose.
+        stop_loss_pct: Maximum fractional price drop on an unhedged leg 1
+            before the position is force-closed. 0.50 means cut the loss
+            when the token drops 50 %% from the entry price.
+        win_rate: Estimated whale win rate for Kelly criterion sizing.
+        kelly_fraction: Fractional Kelly multiplier (0.5 = half-Kelly).
+        clob_fee_rate: Per-leg CLOB fee rate for hedge profitability check.
+            Polymarket currently charges 0 maker fee, but this is configurable.
+        take_profit_price: Sell unhedged leg 1 tokens when the price reaches
+            this level, locking in profit without waiting for settlement.
 
     """
 
@@ -47,3 +59,9 @@ class WhaleCopyConfig:
     use_market_orders: bool = False
     max_spread_cost: Decimal = Decimal("0.95")
     max_entry_price: Decimal = Decimal("0.65")
+    hedge_with_market_orders: bool = True
+    stop_loss_pct: Decimal = Decimal("0.50")
+    win_rate: Decimal = Decimal("0.80")
+    kelly_fraction: Decimal = Decimal("0.5")
+    clob_fee_rate: Decimal = Decimal("0.0")
+    take_profit_price: Decimal = Decimal("0.85")

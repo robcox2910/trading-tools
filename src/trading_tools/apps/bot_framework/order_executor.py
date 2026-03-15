@@ -46,6 +46,7 @@ class OrderExecutor:
         side: str,
         price: Decimal,
         quantity: Decimal,
+        order_type: str | None = None,
     ) -> OrderResponse | None:
         """Place a CLOB order and return the full response.
 
@@ -58,12 +59,16 @@ class OrderExecutor:
             side: Order side -- ``"BUY"`` or ``"SELL"``.
             price: Limit price between 0 and 1.
             quantity: Number of tokens to trade.
+            order_type: Explicit order type override (``"market"`` or
+                ``"limit"``). When ``None``, falls back to the instance-level
+                ``use_market_orders`` setting.
 
         Returns:
             ``OrderResponse`` on success, or ``None`` if the order failed.
 
         """
-        order_type = "market" if self.use_market_orders else "limit"
+        if order_type is None:
+            order_type = "market" if self.use_market_orders else "limit"
         request = OrderRequest(
             token_id=token_id,
             side=side,

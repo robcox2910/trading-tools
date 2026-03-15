@@ -16,10 +16,14 @@ class PositionState(Enum):
 
     UNHEDGED: Leg 1 (directional) placed, waiting for hedge opportunity.
     HEDGED: Both legs placed, guaranteed profit locked in.
+    STOPPED: Exited via stop-loss (unhedged, price dropped too far).
+    EXITED: Exited via take-profit (unhedged, price rose high enough to sell).
     """
 
     UNHEDGED = "unhedged"
     HEDGED = "hedged"
+    STOPPED = "stopped"
+    EXITED = "exited"
 
 
 @dataclass(frozen=True)

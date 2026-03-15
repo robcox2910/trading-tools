@@ -27,7 +27,7 @@ from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 
 
-def bot(  # noqa: PLR0913
+def bot(
     strategy: Annotated[
         str, typer.Option(help=f"Strategy name: {', '.join(PM_STRATEGY_NAMES)}")
     ] = "pm_mean_reversion",
@@ -104,7 +104,7 @@ def bot(  # noqa: PLR0913
     )
 
 
-async def _bot(  # noqa: PLR0913
+async def _bot(
     *,
     strategy: str,
     markets: str,
