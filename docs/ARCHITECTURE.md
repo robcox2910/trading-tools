@@ -25,6 +25,9 @@ trading-tools/
 │   │   │   ├── backtest_common.py   # Shared backtest utilities
 │   │   │   ├── grid_backtest.py     # Grid search engine
 │   │   │   └── run.py               # CLI entry point
+│   │   ├── bot_framework/           # Shared composable services for trading bots
+│   │   │   ├── redeemer.py          # CTF position redemption service
+│   │   │   └── order_executor.py    # CLOB order placement wrapper
 │   │   ├── polymarket_bot/          # Paper and live trading bot engines
 │   │   │   ├── strategies/          # 5 Polymarket-specific strategies
 │   │   │   ├── bot_engine.py        # Paper trading engine
@@ -118,6 +121,7 @@ Runnable applications and long-lived services. Each application has:
 
 | App | Purpose |
 |-----|---------|
+| `bot_framework` | Shared composable services (redemption, order execution) for trading bots |
 | `fetcher` | Download historical OHLCV data from Revolut X or Binance |
 | `backtester` | Run strategies against candle data, compare, simulate, and optimise |
 | `polymarket` | CLI for market queries, trading, bots, tick collection, and whale monitoring |
@@ -294,6 +298,7 @@ Tests mirror the source structure:
 tests/
 ├── apps/
 │   ├── backtester/
+│   ├── bot_framework/
 │   ├── polymarket/
 │   ├── polymarket_bot/
 │   ├── tick_collector/

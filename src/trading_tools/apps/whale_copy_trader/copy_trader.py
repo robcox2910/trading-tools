@@ -35,9 +35,10 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from trading_tools.apps.bot_framework.order_executor import OrderExecutor
+from trading_tools.apps.bot_framework.redeemer import PositionRedeemer
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.clients.polymarket._gamma_client import GammaClient
-from trading_tools.clients.polymarket.models import OrderRequest
 from trading_tools.core.models import ZERO, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
@@ -104,7 +105,17 @@ class WhaleCopyTrader:
     _poll_count: int = field(default=0, repr=False)
     _running: bool = field(default=False, repr=False)
     _last_heartbeat: float = field(default=0.0, repr=False)
-    _redeem_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    _redeemer: PositionRedeemer | None = field(default=None, init=False, repr=False)
+    _executor: OrderExecutor | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Initialize shared services when running in live mode."""
+        if self.live and self.client is not None:
+            self._redeemer = PositionRedeemer(client=self.client)
+            self._executor = OrderExecutor(
+                client=self.client,
+                use_market_orders=self.config.use_market_orders,
+            )
 
     async def run(self) -> None:
         """Run the polling loop until interrupted.
@@ -177,8 +188,8 @@ class WhaleCopyTrader:
 
         await self._close_expired_positions()
 
-        if self.live and self.client is not None:
-            await self._redeem_resolved()
+        if self._redeemer is not None:
+            await self._redeemer.redeem_if_available()
 
     async def _process_signal(self, signal: CopySignal) -> None:
         """Decide the correct action for a signal and execute it.
@@ -331,14 +342,16 @@ class WhaleCopyTrader:
             The leg with order ID attached, or ``None`` if skipped or failed.
 
         """
-        if leg is None or token is None:
+        if leg is None or token is None or self._executor is None:
             return None
 
-        response = await self._place_order(token.token_id, leg.entry_price, leg.quantity)
+        response = await self._executor.place_order(
+            token.token_id, "BUY", leg.entry_price, leg.quantity
+        )
         if response is None:
             return None
 
-        leg.order_ids.append(response)
+        leg.order_ids.append(response.order_id)
         return leg
 
     async def _topup_position(self, pos: OpenPosition, signal: CopySignal) -> None:
@@ -399,6 +412,7 @@ class WhaleCopyTrader:
 
         """
         assert self.client is not None  # noqa: S101
+        assert self._executor is not None  # noqa: S101
 
         try:
             market = await self.client.get_market(signal.condition_id)
@@ -418,29 +432,29 @@ class WhaleCopyTrader:
         if new_up:
             up_token = tokens_by_side.get("Up")
             if up_token:
-                resp = await self._place_order(
-                    up_token.token_id, new_up.entry_price, new_up.quantity
+                resp = await self._executor.place_order(
+                    up_token.token_id, "BUY", new_up.entry_price, new_up.quantity
                 )
                 if resp:
                     if pos.up_leg:
                         pos.up_leg.add_fill(new_up.entry_price, new_up.quantity)
-                        pos.up_leg.order_ids.append(resp)
+                        pos.up_leg.order_ids.append(resp.order_id)
                     else:
-                        new_up.order_ids.append(resp)
+                        new_up.order_ids.append(resp.order_id)
                         pos.up_leg = new_up
 
         if new_down:
             down_token = tokens_by_side.get("Down")
             if down_token:
-                resp = await self._place_order(
-                    down_token.token_id, new_down.entry_price, new_down.quantity
+                resp = await self._executor.place_order(
+                    down_token.token_id, "BUY", new_down.entry_price, new_down.quantity
                 )
                 if resp:
                     if pos.down_leg:
                         pos.down_leg.add_fill(new_down.entry_price, new_down.quantity)
-                        pos.down_leg.order_ids.append(resp)
+                        pos.down_leg.order_ids.append(resp.order_id)
                     else:
-                        new_down.order_ids.append(resp)
+                        new_down.order_ids.append(resp.order_id)
                         pos.down_leg = new_down
 
         pos.last_bias = signal.bias_ratio
@@ -495,37 +509,6 @@ class WhaleCopyTrader:
         )
 
         await self._open_position(signal)
-
-    async def _place_order(self, token_id: str, price: Decimal, quantity: Decimal) -> str | None:
-        """Place an order and return the order ID, or None on failure.
-
-        Args:
-            token_id: CLOB token ID for the outcome.
-            price: Order price.
-            quantity: Order size in tokens.
-
-        Returns:
-            Order ID string, or ``None`` if the order failed.
-
-        """
-        assert self.client is not None  # noqa: S101
-
-        order_type = "market" if self.config.use_market_orders else "limit"
-        request = OrderRequest(
-            token_id=token_id,
-            side="BUY",
-            price=price,
-            size=quantity,
-            order_type=order_type,
-        )
-
-        try:
-            response = await self.client.place_order(request)
-        except Exception:
-            logger.exception("Order failed for token %s", token_id[:12])
-            return None
-
-        return response.order_id
 
     def _compute_spread_allocation(
         self,
@@ -674,56 +657,6 @@ class WhaleCopyTrader:
                 pos.favoured_side,
                 pos.signal.asset,
             )
-
-    async def _redeem_resolved(self) -> None:
-        """Discover and redeem resolved winning positions on-chain.
-
-        Query the Polymarket Data API for redeemable positions, then spawn
-        a background task to call ``redeem_positions()`` on the CTF contract.
-        Run in the background so the trading loop is not blocked by slow
-        Polygon transactions.
-        """
-        assert self.client is not None  # noqa: S101
-
-        if self._redeem_task is not None and not self._redeem_task.done():
-            return
-
-        try:
-            redeemable = await self.client.get_redeemable_positions()
-        except Exception:
-            logger.warning("Failed to discover redeemable positions", exc_info=True)
-            return
-
-        if not redeemable:
-            return
-
-        condition_ids = [pos.condition_id for pos in redeemable if pos.size >= _MIN_TOKEN_QTY]
-        if not condition_ids:
-            return
-
-        logger.info("AUTO-REDEEM: found %d redeemable positions", len(condition_ids))
-        self._redeem_task = asyncio.create_task(self._redeem_on_chain(condition_ids))
-
-    async def _redeem_on_chain(self, condition_ids: list[str]) -> None:
-        """Execute on-chain CTF redemption in the background.
-
-        Log results when complete. Errors are caught and logged so they
-        do not propagate to the main trading loop.
-
-        Args:
-            condition_ids: Resolved market condition IDs to redeem.
-
-        """
-        assert self.client is not None  # noqa: S101
-        try:
-            redeemed = await self.client.redeem_positions(condition_ids)
-            logger.info(
-                "AUTO-REDEEM: redeemed %d/%d positions on-chain via CTF",
-                redeemed,
-                len(condition_ids),
-            )
-        except Exception:
-            logger.warning("CTF redemption failed", exc_info=True)
 
     async def _resolve_outcome(self, pos: OpenPosition) -> str:
         """Determine which side won based on Binance spot price movement.
