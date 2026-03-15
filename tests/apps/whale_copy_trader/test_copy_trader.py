@@ -2677,16 +2677,19 @@ class TestFlipTrading:
         assert "cond_a" not in trader._flip_states
 
     @pytest.mark.asyncio
-    async def test_flip_prefers_hedge_over_flip(self) -> None:
-        """When take-profit hedge succeeds (combined < $1), keep hedge instead of flipping."""
+    async def test_flip_takes_priority_over_hedge(self) -> None:
+        """When flipping is enabled, sell+flip takes priority over TP-hedge."""
         config = self._make_flip_config(
-            max_spread_cost=Decimal("0.95"),
+            max_spread_cost=Decimal("0.80"),
             take_profit_pct=Decimal("0.10"),
         )
         # Initial: Up=0.55, Down=0.45
         market_open = _mock_market("0.55", "0.45")
         # TP price: 0.55 * 1.10 = 0.605
-        # Up=0.65, Down=0.30 → combined 0.55+0.30=0.85 < 1.0 → profit hedge
+        # Up=0.65, Down=0.30 → combined 0.55+0.30=0.85 < 1.0
+        # Old behaviour: profit hedge. New: sell+flip takes priority.
+        # max_spread_cost=0.80 prevents the opportunistic hedge from
+        # immediately hedging the flipped position (0.30+0.65=0.95 > 0.80).
         market_up = _mock_market("0.65", "0.30")
 
         client = AsyncMock()
@@ -2701,7 +2704,7 @@ class TestFlipTrading:
             trader._detector = mock_detector
             await trader._poll_cycle()
 
-        # Trigger take-profit with cheap hedge available
+        # Trigger take-profit — flip should fire instead of hedge
         client.get_market = AsyncMock(return_value=market_up)
 
         with patch.object(trader, "_detector") as mock_detector:
@@ -2709,11 +2712,56 @@ class TestFlipTrading:
             trader._detector = mock_detector
             await trader._poll_cycle()
 
-        # Should be hedged, NOT flipped
+        # Should have flipped to Down side, NOT hedged
+        assert "cond_a" in trader.positions
+        pos = trader.positions["cond_a"]
+        assert pos.leg1.side == "Down"
+        assert pos.state == PositionState.UNHEDGED
+
+        # One closed result from the sell (flip close leg)
+        assert len(trader.results) == 1
+        assert trader.results[0].flip_number == 1
+        assert trader.results[0].state == PositionState.EXITED
+
+    @pytest.mark.asyncio
+    async def test_flip_disabled_falls_through_to_hedge(self) -> None:
+        """When flipping is disabled, TP-hedge still works as before."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.95"),
+            max_entry_price=Decimal("0.65"),
+            take_profit_pct=Decimal("0.10"),
+            enable_flipping=False,
+        )
+        # Initial: Up=0.55, Down=0.45
+        market_open = _mock_market("0.55", "0.45")
+        # Up=0.65, Down=0.30 → combined 0.85 < 1.0 → profit hedge
+        market_up = _mock_market("0.65", "0.30")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Trigger take-profit — no flip, should hedge
+        client.get_market = AsyncMock(return_value=market_up)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Should be hedged, not flipped
         pos = trader.positions["cond_a"]
         assert pos.state == PositionState.HEDGED
         assert pos.hedge_leg is not None
-        assert len(trader.results) == 0  # no closed results yet
+        assert len(trader.results) == 0
 
 
 class TestDefensiveSellFallback:

@@ -666,13 +666,19 @@ class WhaleCopyTrader:
         self,
         price_cache: dict[str, dict[str, Decimal]],
     ) -> None:
-        """Take profit via hedging (preferred) or selling when leg 1 rises.
+        """Take profit via flipping, hedging, or selling.
 
         For each UNHEDGED position, check if the favoured side price has
-        risen by ``take_profit_pct`` above entry. When triggered, prefer
-        buying the opposite side to lock in a guaranteed settlement profit
-        (combined < $1.00). Only fall back to selling if the hedge price
-        is too expensive.
+        risen by ``take_profit_pct`` above entry. When triggered, the
+        preferred exit strategy depends on whether flipping is enabled:
+
+        1. **Flipping enabled**: sell the current leg and immediately open
+           a new position on the opposite side to capture the next swing
+           within the same market window (matching the whale's pattern of
+           playing both sides of price swings).
+        2. **Flipping disabled or limits reached**: buy the opposite side
+           to lock in a guaranteed settlement profit (combined < $1.00).
+        3. **Fallback**: sell the current leg if no hedge is available.
 
         Args:
             price_cache: Pre-fetched prices keyed by condition_id.
@@ -704,23 +710,22 @@ class WhaleCopyTrader:
             if current_price < take_target:
                 continue
 
-            # Prefer take-profit by hedging the opposite side
-            hedge_price = prices.get(pos.hedge_side, ZERO)
-            effective_leg1 = pos.leg1.cost_basis / pos.leg1.quantity
-            combined = effective_leg1 + hedge_price
-
-            if hedge_price > ZERO and combined < _ONE:
-                hedged = await self._take_profit_hedge(cid, pos, hedge_price, combined)
-                if hedged:
-                    continue
-
-            # Attempt flip before falling through to sell
+            # When flipping is enabled, sell + flip first (captures next swing)
             if self.config.enable_flipping:
                 flipped = await self._try_flip(cid, pos, current_price, prices)
                 if flipped:
                     continue
 
-            # Sell fallback: hedge too expensive, flip disabled/failed
+            # No flip: take profit by hedging (preferred) or selling (fallback)
+            hedge_price = prices.get(pos.hedge_side, ZERO)
+            effective_leg1 = pos.leg1.cost_basis / pos.leg1.quantity
+            combined = effective_leg1 + hedge_price
+
+            if hedge_price > ZERO and combined < _ONE:
+                took_profit = await self._take_profit_hedge(cid, pos, hedge_price, combined)
+                if took_profit:
+                    continue
+
             await self._take_profit_sell(cid, pos, current_price, take_target)
 
     async def _take_profit_hedge(
