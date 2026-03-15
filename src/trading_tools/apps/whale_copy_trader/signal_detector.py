@@ -85,7 +85,10 @@ class SignalDetector:
 
         """
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(10.0))
+            self._http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(10.0),
+                limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+            )
         return self._http_client
 
     async def close(self) -> None:
@@ -206,8 +209,8 @@ class SignalDetector:
                 },
             )
             resp.raise_for_status()
-        except Exception:
-            logger.warning("Failed to fetch activity from Data API", exc_info=True)
+        except (httpx.HTTPError, OSError):
+            logger.warning("Failed to fetch activity from Data API")
             return []
 
         raw_trades: list[dict[str, Any]] = resp.json()

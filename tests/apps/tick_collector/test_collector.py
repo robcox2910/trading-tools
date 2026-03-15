@@ -570,7 +570,7 @@ class TestDiscoveryFailure:
         )
 
         mock_client = _mock_polymarket_client()
-        mock_client.discover_series_markets = AsyncMock(side_effect=Exception("API unavailable"))
+        mock_client.discover_series_markets = AsyncMock(side_effect=ValueError("API unavailable"))
 
         with patch(
             "trading_tools.apps.tick_collector.collector.PolymarketClient",
@@ -588,7 +588,7 @@ class TestDiscoveryFailure:
         config = _make_config(markets=(_CONDITION_ID,))
 
         mock_client = _mock_polymarket_client()
-        mock_client.get_market_tokens = AsyncMock(side_effect=Exception("Market not found"))
+        mock_client.get_market_tokens = AsyncMock(side_effect=ValueError("Market not found"))
 
         with patch(
             "trading_tools.apps.tick_collector.collector.PolymarketClient",

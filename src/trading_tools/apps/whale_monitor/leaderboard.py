@@ -41,6 +41,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, cast
 
+import httpx
 import pandas as pd
 
 if TYPE_CHECKING:
@@ -166,7 +167,7 @@ async def _fetch_market_traders(
             page = await client.get_trader_trades_for_market(
                 condition_id, limit=_TRADES_PER_PAGE, offset=offset
             )
-        except Exception:
+        except (httpx.HTTPError, KeyError, ValueError):
             logger.warning(
                 "Failed to fetch trades for market %s at offset %d",
                 condition_id[:20],
@@ -243,7 +244,7 @@ async def _fetch_wallet_metrics(
                 limit=_TRADES_PER_PAGE,
                 offset=page_num * _TRADES_PER_PAGE,
             )
-        except Exception:
+        except (httpx.HTTPError, KeyError, ValueError):
             logger.debug("Trade fetch failed for wallet %s page %d", wallet[:10], page_num)
             break
         all_trades.extend(page)

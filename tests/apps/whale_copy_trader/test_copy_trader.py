@@ -559,7 +559,7 @@ class TestLiveTradingFlow:
         self, live_trader: WhaleCopyTrader, mock_client: AsyncMock
     ) -> None:
         """Handle errors when fetching market data gracefully."""
-        mock_client.get_market = AsyncMock(side_effect=RuntimeError("API error"))
+        mock_client.get_market = AsyncMock(side_effect=ValueError("API error"))
         signal = _make_signal()
 
         with patch.object(live_trader, "_detector") as mock_detector:

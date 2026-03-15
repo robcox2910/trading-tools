@@ -47,7 +47,10 @@ class GammaClient:
 
         """
         self.base_url = base_url.rstrip("/")
-        self._http_client = httpx.AsyncClient(timeout=timeout)
+        self._http_client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        )
 
     async def get_markets(
         self,

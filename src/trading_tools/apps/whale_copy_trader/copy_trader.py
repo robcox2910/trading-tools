@@ -35,12 +35,16 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+import httpx
+
 from trading_tools.apps.bot_framework.balance_manager import BalanceManager
 from trading_tools.apps.bot_framework.heartbeat import HeartbeatLogger
 from trading_tools.apps.bot_framework.order_executor import OrderExecutor
 from trading_tools.apps.bot_framework.redeemer import PositionRedeemer
 from trading_tools.apps.bot_framework.shutdown import GracefulShutdown
 from trading_tools.clients.binance.client import BinanceClient
+from trading_tools.clients.binance.exceptions import BinanceError
+from trading_tools.clients.polymarket.exceptions import PolymarketError
 from trading_tools.core.models import ZERO, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
@@ -68,6 +72,14 @@ _BALANCE_REFRESH_POLLS = 60
 _WIN_PRICE = Decimal("1.0")
 _MIN_TOKEN_QTY = Decimal(5)
 _ONE = Decimal(1)
+
+_PRICE_FETCH_CONCURRENCY = 10
+"""Maximum number of concurrent CLOB price fetches when building the price cache.
+
+Limits parallelism to avoid overwhelming the Polymarket API while still
+providing a significant speedup over sequential requests (e.g. 50 positions
+in ~5 batches of 10 instead of 50 sequential calls).
+"""
 
 
 def _empty_position_dict() -> dict[str, OpenPosition]:
@@ -644,20 +656,41 @@ class WhaleCopyTrader:
         )
 
     async def _build_price_cache(self) -> dict[str, dict[str, Decimal]]:
-        """Fetch current CLOB prices once for all open positions.
+        """Fetch current CLOB prices for all open positions concurrently.
 
         Build a mapping from condition_id to price dict so that
         ``_check_take_profits``, ``_check_defensive_hedges``, and
         ``_check_hedge_opportunities`` share a single set of price fetches
         per poll cycle instead of each fetching independently.
 
+        Use a semaphore to limit concurrency to
+        ``_PRICE_FETCH_CONCURRENCY`` parallel requests, avoiding API
+        rate-limit issues while still providing a large speedup over
+        sequential fetching (e.g. 50 positions in ~5 batches of 10).
+
         Returns:
             Dict mapping condition_id to ``{"Up": price, "Down": price}``.
 
         """
+        sem = asyncio.Semaphore(_PRICE_FETCH_CONCURRENCY)
+
+        async def _fetch_one(
+            cid: str,
+        ) -> tuple[str, dict[str, Decimal] | None]:
+            async with sem:
+                return cid, await self._fetch_clob_prices(cid)
+
+        results = await asyncio.gather(
+            *(_fetch_one(cid) for cid in self._positions),
+            return_exceptions=True,
+        )
+
         cache: dict[str, dict[str, Decimal]] = {}
-        for cid in self._positions:
-            prices = await self._fetch_clob_prices(cid)
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.warning("Price fetch failed: %s", result)
+                continue
+            cid, prices = result
             if prices is not None:
                 cache[cid] = prices
         return cache
@@ -1494,7 +1527,7 @@ class WhaleCopyTrader:
 
         try:
             market = await self.client.get_market(condition_id)
-        except Exception:
+        except (PolymarketError, httpx.HTTPError, KeyError, ValueError):
             logger.exception("Failed to fetch market %s", condition_id[:12])
             return None
 
@@ -1515,7 +1548,7 @@ class WhaleCopyTrader:
 
         try:
             market = await self.client.get_market(condition_id)
-        except Exception:
+        except (PolymarketError, httpx.HTTPError, KeyError, ValueError):
             logger.exception("Failed to fetch market tokens %s", condition_id[:12])
             return None
 
@@ -1624,7 +1657,7 @@ class WhaleCopyTrader:
                 signal.window_start_ts,
                 signal.window_end_ts,
             )
-        except Exception:
+        except (BinanceError, httpx.HTTPError, KeyError, ValueError):
             logger.warning("Failed to fetch candles for %s, outcome unknown", signal.asset)
             return None
 
@@ -1745,7 +1778,7 @@ class WhaleCopyTrader:
         try:
             record = CopyResultRecord.from_copy_result(result)
             await self._repo.save_result(record)
-        except Exception:
+        except (OSError, ValueError, KeyError):
             logger.exception(
                 "Failed to persist copy result for %s", result.signal.condition_id[:12]
             )

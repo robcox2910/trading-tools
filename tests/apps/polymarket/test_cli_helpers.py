@@ -1,7 +1,7 @@
 """Tests for shared Polymarket CLI helpers."""
 
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import typer
@@ -9,9 +9,11 @@ import typer
 from trading_tools.apps.polymarket.cli._helpers import (
     CRYPTO_5M_SERIES,
     CRYPTO_15M_SERIES,
+    StrategyParams,
     build_authenticated_client,
     configure_logging,
     parse_series_slugs,
+    resolve_market_ids,
 )
 from trading_tools.clients.polymarket.client import PolymarketClient
 
@@ -127,3 +129,87 @@ class TestBuildAuthenticatedClient:
         with patch.dict(os.environ, env, clear=True):
             client = build_authenticated_client()
             assert isinstance(client, PolymarketClient)
+
+
+class TestStrategyParams:
+    """Test StrategyParams dataclass and build_strategy method."""
+
+    def test_default_values(self) -> None:
+        """Verify default parameter values match CLI option defaults."""
+        params = StrategyParams()
+        expected_period = 20
+        expected_z = 1.5
+        expected_spread = 0.03
+        expected_imbalance = 0.65
+        expected_edge = 0.02
+        expected_snipe = 0.8
+        expected_window = 60
+        assert params.period == expected_period
+        assert params.z_threshold == expected_z
+        assert params.spread_pct == expected_spread
+        assert params.imbalance_threshold == expected_imbalance
+        assert params.min_edge == expected_edge
+        assert params.snipe_threshold == expected_snipe
+        assert params.snipe_window == expected_window
+
+    def test_build_strategy_valid_name(self) -> None:
+        """Build a valid strategy via StrategyParams."""
+        params = StrategyParams()
+        strategy = params.build_strategy("pm_mean_reversion")
+        assert strategy.name.startswith("pm_mean_reversion")
+
+    def test_build_strategy_invalid_name_exits(self) -> None:
+        """Exit with code 1 for an unknown strategy name."""
+        params = StrategyParams()
+        with pytest.raises(typer.Exit):
+            params.build_strategy("nonexistent_strategy")
+
+    def test_frozen_dataclass(self) -> None:
+        """Verify StrategyParams is immutable."""
+        params = StrategyParams()
+        with pytest.raises(AttributeError):
+            params.period = 99  # type: ignore[misc]
+
+
+class TestResolveMarketIds:
+    """Test resolve_market_ids helper function."""
+
+    @pytest.mark.asyncio
+    async def test_explicit_markets_returned(self) -> None:
+        """Return explicitly specified market IDs."""
+        client = AsyncMock()
+        market_ids, end_times, slugs = await resolve_market_ids(client, "cond1,cond2", "")
+        assert market_ids == ("cond1", "cond2")
+        assert end_times == ()
+        assert slugs == ()
+
+    @pytest.mark.asyncio
+    async def test_no_markets_or_series_exits(self) -> None:
+        """Exit with code 1 when neither markets nor series are provided."""
+        client = AsyncMock()
+        with pytest.raises(typer.Exit):
+            await resolve_market_ids(client, "", "")
+
+    @pytest.mark.asyncio
+    async def test_series_discovery_appends_markets(self) -> None:
+        """Append discovered markets from series slugs."""
+        client = AsyncMock()
+        client.discover_series_markets = AsyncMock(
+            return_value=[("cond_btc", "2026-01-01T00:00:00Z")]
+        )
+        market_ids, end_times, slugs = await resolve_market_ids(client, "", "btc-updown-5m")
+        assert "cond_btc" in market_ids
+        assert len(end_times) == 1
+        assert slugs == ("btc-updown-5m",)
+
+    @pytest.mark.asyncio
+    async def test_combines_explicit_and_discovered(self) -> None:
+        """Combine explicit markets with discovered ones."""
+        client = AsyncMock()
+        client.discover_series_markets = AsyncMock(
+            return_value=[("cond_disc", "2026-01-01T00:00:00Z")]
+        )
+        market_ids, _end_times, _slugs = await resolve_market_ids(
+            client, "cond_explicit", "btc-updown-5m"
+        )
+        assert market_ids == ("cond_explicit", "cond_disc")

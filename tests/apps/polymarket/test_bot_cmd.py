@@ -220,7 +220,7 @@ class TestBotCommand:
             patch(
                 "trading_tools.apps.polymarket.cli.bot_cmd.PaperTradingEngine"
             ) as mock_engine_cls,
-            patch("trading_tools.apps.polymarket.cli.bot_cmd.build_pm_strategy") as mock_build,
+            patch("trading_tools.apps.polymarket.cli._helpers.build_pm_strategy") as mock_build,
         ):
             mock_strategy = AsyncMock()
             mock_strategy.name = "pm_late_snipe_0.85_45s"

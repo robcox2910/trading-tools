@@ -106,7 +106,10 @@ class WhaleMonitor:
         """Run the main poll cycle, sleeping between iterations."""
         while not self._shutdown:
             whales = await self._repo.get_active_whales()
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(
+                timeout=30.0,
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            ) as client:
                 for whale in whales:
                     if self._shutdown:
                         break
@@ -119,7 +122,7 @@ class WhaleMonitor:
                                 whale.label,
                                 whale.address[:10],
                             )
-                    except Exception:
+                    except (httpx.HTTPError, KeyError, ValueError):
                         logger.exception(
                             "Failed to poll whale %s (%s)",
                             whale.label,

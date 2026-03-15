@@ -26,6 +26,8 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, cast
 
+import httpx
+
 if TYPE_CHECKING:
     from trading_tools.apps.whale_monitor.models import WhaleTrade
     from trading_tools.clients.polymarket.client import PolymarketClient
@@ -476,11 +478,11 @@ async def enrich_trades(
                                     close_datetime=meta.close_datetime,
                                     winning_outcome=meta.winning_outcome,
                                 )
-                    except Exception:
+                    except (httpx.HTTPError, KeyError, ValueError, TypeError):
                         logger.debug("Could not fetch event tags for slug %r", event_slug)
 
             cache[cid] = meta
-        except Exception:
+        except (httpx.HTTPError, KeyError, ValueError, TypeError):
             logger.warning("Failed to fetch market info for %s", cid[:20])
             cache[cid] = MarketMetadata(
                 condition_id=cid,

@@ -109,6 +109,7 @@ grep -r "old_function_name" docs/
 | `docs/ARCHITECTURE.md` | Project structure, module responsibilities, design principles |
 | `docs/STRATEGY_GUIDE.md` | How to implement and integrate a new trading strategy |
 | `docs/HTTP_CLIENT_USAGE.md` | Revolut X HTTP client API reference |
+| `docs/CLIENTS.md` | Client module reference for all external API integrations |
 | `CONTRIBUTING.md` | Developer workflow, code standards, PR process |
 | `.env.example` | Template for all environment variables |
 

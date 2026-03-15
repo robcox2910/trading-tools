@@ -74,7 +74,7 @@ class TestBalanceManager:
         assert manager.balance == Decimal("42.50")
 
         # Second refresh fails
-        mock_client.get_balance.side_effect = RuntimeError("API down")
+        mock_client.get_balance.side_effect = ValueError("API down")
         result = await manager.refresh()
 
         assert result == Decimal("42.50")

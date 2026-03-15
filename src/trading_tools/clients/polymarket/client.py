@@ -98,7 +98,10 @@ class PolymarketClient:
         else:
             self._clob_client = _clob_adapter.create_clob_client(host)
         self._gamma = GammaClient(base_url=gamma_base_url)
-        self._data_client = httpx.AsyncClient(timeout=30.0)
+        self._data_client = httpx.AsyncClient(
+            timeout=30.0,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        )
         self._clob_lock = asyncio.Lock()
 
     @staticmethod

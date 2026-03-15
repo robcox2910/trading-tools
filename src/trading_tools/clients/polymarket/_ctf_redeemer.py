@@ -14,6 +14,7 @@ import logging
 from typing import Any
 
 from web3 import Web3
+from web3.exceptions import Web3Exception
 from web3.types import Nonce, TxParams, TxReceipt, Wei
 
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
@@ -149,7 +150,7 @@ def redeem_positions(
 
     try:
         account = w3.eth.account.from_key(private_key)
-    except Exception as exc:
+    except (ValueError, TypeError, Web3Exception) as exc:
         raise PolymarketAPIError(
             msg="Invalid private key for CTF redemption",
             status_code=None,
@@ -197,7 +198,7 @@ def redeem_positions(
                 receipt["gasUsed"],
                 tx_hash.hex(),
             )
-        except Exception:
-            logger.warning("Failed to redeem %s", cid[:20], exc_info=True)
+        except (Web3Exception, ValueError, TypeError, OSError):
+            logger.warning("Failed to redeem %s", cid[:20])
 
     return receipts

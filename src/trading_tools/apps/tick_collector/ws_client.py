@@ -100,7 +100,7 @@ class MarketFeed:
                     exc,
                     consecutive_failures,
                 )
-            except Exception:
+            except Exception:  # Last-resort catch-all to keep the reconnect loop alive
                 if self._closed:
                     return
                 consecutive_failures += 1

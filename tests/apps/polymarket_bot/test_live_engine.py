@@ -729,7 +729,7 @@ class TestAutoRedeem:
                 ),
             ],
         )
-        client.redeem_positions = AsyncMock(side_effect=Exception("RPC timeout"))
+        client.redeem_positions = AsyncMock(side_effect=OSError("RPC timeout"))
 
         config = BotConfig(
             max_position_pct=Decimal("0.1"),

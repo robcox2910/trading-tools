@@ -476,7 +476,7 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
             try:
                 await self._portfolio.refresh_balance()
             except (PolymarketAPIError, httpx.HTTPError):
-                logger.warning("Failed to refresh balance", exc_info=True)
+                logger.warning("Failed to refresh balance")
 
     def _compute_sleep(self) -> float:
         """Compute seconds to sleep before the next tick.
