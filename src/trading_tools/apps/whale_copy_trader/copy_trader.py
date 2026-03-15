@@ -105,6 +105,8 @@ class WhaleCopyTrader:
     _executor: OrderExecutor | None = field(default=None, init=False, repr=False)
     _balance_manager: BalanceManager | None = field(default=None, init=False, repr=False)
     _repo: CopyResultRepository | None = field(default=None, init=False, repr=False)
+    _consecutive_losses: int = field(default=0, init=False, repr=False)
+    _circuit_breaker_until: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize shared services when running in live mode."""
@@ -191,12 +193,29 @@ class WhaleCopyTrader:
         """Signal the polling loop to stop after the current cycle."""
         self._shutdown.request()
 
+    @property
+    def _committed_capital(self) -> Decimal:
+        """Return the total cost basis of all open positions.
+
+        Sum the ``total_cost_basis`` of every open position to determine
+        how much capital is currently locked up.
+
+        Returns:
+            Total committed capital in USDC.
+
+        """
+        return sum(
+            (pos.total_cost_basis for pos in self._positions.values()),
+            start=ZERO,
+        )
+
     def _get_capital(self) -> Decimal:
         """Return the current capital available for position sizing.
 
         In live mode, use the real USDC balance from the shared
-        ``BalanceManager``. In paper mode, use the configured starting
-        capital.
+        ``BalanceManager`` (already excludes capital locked in positions).
+        In paper mode, start from base capital, optionally add realised
+        P&L (compound mode), and subtract committed capital.
 
         Returns:
             Available capital in USDC.
@@ -204,7 +223,30 @@ class WhaleCopyTrader:
         """
         if self._balance_manager is not None and self._balance_manager.balance > ZERO:
             return self._balance_manager.balance
-        return self.config.capital
+
+        base = self.config.capital
+        if self.config.compound_profits:
+            base += sum((r.pnl for r in self._results), start=ZERO)
+        return base - self._committed_capital
+
+    def _total_capital(self) -> Decimal:
+        """Return the total capital for exposure-limit denominators.
+
+        Unlike ``_get_capital`` which reflects *available* capital, this
+        returns the total including committed capital. Used for computing
+        per-asset concentration limits.
+
+        Returns:
+            Total capital in USDC (available + committed).
+
+        """
+        if self._balance_manager is not None and self._balance_manager.balance > ZERO:
+            return self._balance_manager.balance + self._committed_capital
+
+        base = self.config.capital
+        if self.config.compound_profits:
+            base += sum((r.pnl for r in self._results), start=ZERO)
+        return base
 
     async def _poll_cycle(self) -> None:
         """Execute one poll-detect-act cycle.
@@ -238,6 +280,8 @@ class WhaleCopyTrader:
     async def _process_signal(self, signal: CopySignal) -> None:
         """Open a directional entry for new markets, ignore existing ones.
 
+        Skip signals during a circuit-breaker cooldown period.
+
         Args:
             signal: The copy signal to process.
 
@@ -246,7 +290,43 @@ class WhaleCopyTrader:
         if cid in self._positions:
             return
 
+        now = int(time.time())
+        if self._circuit_breaker_until > now:
+            logger.info(
+                "  CIRCUIT-BREAKER active for %ds, skipping %s",
+                self._circuit_breaker_until - now,
+                cid[:12],
+            )
+            return
+
         await self._open_position(signal)
+
+    def _effective_win_rate(self) -> Decimal:
+        """Compute the effective win rate for Kelly position sizing.
+
+        When adaptive Kelly is enabled and enough closed unhedged trades
+        exist, compute the rolling win rate from realised outcomes.
+        Only count trades with ``outcome_known=True`` and unhedged state
+        (hedged trades always win, skewing the rate). Floor at
+        ``min_win_rate`` to prevent collapse after short losing streaks.
+
+        Returns:
+            Win rate as a ``Decimal`` between ``min_win_rate`` and ``1.0``.
+
+        """
+        if not self.config.adaptive_kelly:
+            return self.config.win_rate
+
+        eligible = [
+            r for r in self._results if r.outcome_known and r.state == PositionState.UNHEDGED
+        ]
+
+        if len(eligible) < self.config.min_kelly_results:
+            return self.config.win_rate
+
+        wins = sum(1 for r in eligible if r.pnl > ZERO)
+        computed = Decimal(wins) / Decimal(len(eligible))
+        return max(computed, self.config.min_win_rate)
 
     def _kelly_position_pct(self, entry_price: Decimal) -> Decimal:
         """Compute the Kelly-optimal position fraction for a binary market.
@@ -267,7 +347,7 @@ class WhaleCopyTrader:
             return self.config.max_position_pct
 
         b = (_ONE - entry_price) / entry_price  # win/loss ratio
-        p = self.config.win_rate
+        p = self._effective_win_rate()
         q = _ONE - p
         kelly = (b * p - q) / b
 
@@ -337,6 +417,27 @@ class WhaleCopyTrader:
                 proposed_cost,
                 max_unhedged,
                 self.config.max_unhedged_exposure_pct * 100,
+            )
+            return
+
+        # Per-asset concentration limit
+        total_cap = self._total_capital()
+        asset_cost = sum(
+            pos.total_cost_basis
+            for pos in self._positions.values()
+            if pos.signal.asset == signal.asset and pos.favoured_side == signal.favoured_side
+        )
+        max_asset = total_cap * self.config.max_asset_exposure_pct
+        if asset_cost + proposed_cost > max_asset:
+            logger.info(
+                "  SKIP %s: asset %s %s exposure $%.2f + $%.2f > max $%.2f (%.0f%%)",
+                signal.condition_id[:12],
+                signal.asset,
+                signal.favoured_side,
+                asset_cost,
+                proposed_cost,
+                max_asset,
+                self.config.max_asset_exposure_pct * 100,
             )
             return
 
@@ -453,6 +554,7 @@ class WhaleCopyTrader:
                 order_ids=tuple(pos.all_order_ids),
             )
             self._results.append(result)
+            self._consecutive_losses = 0
             await self._persist_result(result)
 
             mode = "LIVE" if self.live else "PAPER"
@@ -532,6 +634,7 @@ class WhaleCopyTrader:
                 order_ids=tuple(pos.all_order_ids),
             )
             self._results.append(result)
+            self._record_loss()
             await self._persist_result(result)
 
             mode = "LIVE" if self.live else "PAPER"
@@ -573,6 +676,19 @@ class WhaleCopyTrader:
             effective_leg1_price = pos.leg1.cost_basis / pos.leg1.quantity
             fee_cost = 2 * self.config.clob_fee_rate
             effective_max_spread = self.config.max_spread_cost - fee_cost
+
+            # Dynamic hedge urgency: relax threshold near expiry
+            now = int(time.time())
+            window_duration = pos.signal.window_end_ts - pos.signal.window_start_ts
+            if window_duration > 0:
+                time_remaining = pos.signal.window_end_ts - now
+                time_fraction = Decimal(str(time_remaining)) / Decimal(str(window_duration))
+                if time_fraction < self.config.hedge_urgency_threshold:
+                    effective_max_spread = min(
+                        effective_max_spread + self.config.hedge_urgency_spread_bump,
+                        Decimal("0.99"),
+                    )
+
             combined = effective_leg1_price + hedge_price
             if combined > effective_max_spread:
                 logger.debug(
@@ -607,6 +723,17 @@ class WhaleCopyTrader:
                 token = tokens_by_side.get(pos.hedge_side)
                 hedge_leg = await self._place_leg_order(hedge_leg, token, is_hedge=True)
                 if hedge_leg is None:
+                    continue
+
+                # Partial hedge fill guard — stay UNHEDGED if hedge quantity
+                # doesn't match leg 1 (FOK should prevent this, but safety net)
+                if hedge_leg.quantity < pos.leg1.quantity:
+                    logger.warning(
+                        "Partial hedge fill on %s: hedge=%.2f < leg1=%.2f, staying UNHEDGED",
+                        cid[:12],
+                        hedge_leg.quantity,
+                        pos.leg1.quantity,
+                    )
                     continue
 
             pos.hedge_leg = hedge_leg
@@ -739,7 +866,16 @@ class WhaleCopyTrader:
         for cid in expired:
             pos = self._positions.pop(cid)
             winning_side = await self._resolve_outcome(pos)
-            pnl = compute_pnl(pos, winning_side)
+            outcome_known = winning_side is not None
+
+            if outcome_known:
+                pnl = compute_pnl(pos, winning_side)
+            elif pos.state == PositionState.HEDGED:
+                # Unknown outcome but hedged → can't determine which leg won
+                pnl = ZERO
+            else:
+                # Unknown outcome and unhedged → conservative: assume total loss
+                pnl = ZERO - pos.leg1.cost_basis
 
             closed = CopyResult(
                 signal=pos.signal,
@@ -756,15 +892,26 @@ class WhaleCopyTrader:
                 pnl=pnl,
                 is_paper=pos.is_paper,
                 order_ids=tuple(pos.all_order_ids),
+                outcome_known=outcome_known,
             )
             self._results.append(closed)
             await self._persist_result(closed)
-            outcome = "WIN" if pnl > ZERO else "LOSS"
+
+            # Circuit breaker tracking for unhedged positions with known outcomes
+            if pos.state == PositionState.UNHEDGED and outcome_known:
+                if pnl > ZERO:
+                    self._consecutive_losses = 0
+                else:
+                    self._record_loss()
+
+            outcome_label = "WIN" if pnl > ZERO else "LOSS"
+            if not outcome_known:
+                outcome_label = "UNKNOWN"
             logger.info(
                 "%s CLOSE %s %s pnl=%.4f cost=$%.4f winning=%s leg1=%s state=%s asset=%s",
                 "PAPER" if pos.is_paper else "LIVE",
                 cid[:12],
-                outcome,
+                outcome_label,
                 pnl,
                 pos.total_cost_basis,
                 winning_side,
@@ -773,17 +920,20 @@ class WhaleCopyTrader:
                 pos.signal.asset,
             )
 
-    async def _resolve_outcome(self, pos: OpenPosition) -> str:
+    async def _resolve_outcome(self, pos: OpenPosition) -> str | None:
         """Determine which side won based on Binance spot price movement.
 
         Fetch Binance 1-min candles for the market window and compare
-        the opening price against the closing price.
+        the opening price against the closing price. Return ``None``
+        when candle data is unavailable so the caller can apply
+        conservative fallback P&L.
 
         Args:
             pos: The open position with signal and window timestamps.
 
         Returns:
-            ``"Up"`` if price went up, ``"Down"`` otherwise.
+            ``"Up"`` if price went up, ``"Down"`` if it went down, or
+            ``None`` if candle data was unavailable.
 
         """
         assert self._binance is not None  # noqa: S101
@@ -798,12 +948,12 @@ class WhaleCopyTrader:
                 signal.window_end_ts,
             )
         except Exception:
-            logger.warning("Failed to fetch candles for %s, assuming Up", signal.asset)
-            return "Up"
+            logger.warning("Failed to fetch candles for %s, outcome unknown", signal.asset)
+            return None
 
         if not candles:
-            logger.warning("No candles for %s window, assuming Up", signal.asset)
-            return "Up"
+            logger.warning("No candles for %s window, outcome unknown", signal.asset)
+            return None
 
         open_price = candles[0].open
         close_price = candles[-1].close
@@ -868,6 +1018,23 @@ class WhaleCopyTrader:
         except Exception:
             logger.exception(
                 "Failed to persist copy result for %s", result.signal.condition_id[:12]
+            )
+
+    def _record_loss(self) -> None:
+        """Increment consecutive losses and activate circuit breaker if needed.
+
+        When the configured loss threshold is reached, pause new entries
+        for ``circuit_breaker_cooldown`` seconds. A threshold of ``0``
+        disables the breaker entirely.
+        """
+        self._consecutive_losses += 1
+        threshold = self.config.circuit_breaker_losses
+        if threshold > 0 and self._consecutive_losses >= threshold:
+            self._circuit_breaker_until = int(time.time()) + self.config.circuit_breaker_cooldown
+            logger.warning(
+                "CIRCUIT-BREAKER triggered after %d consecutive losses, pausing for %ds",
+                self._consecutive_losses,
+                self.config.circuit_breaker_cooldown,
             )
 
     @property

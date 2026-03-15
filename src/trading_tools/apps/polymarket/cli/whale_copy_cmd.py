@@ -44,6 +44,13 @@ _DEFAULT_KELLY_FRACTION = "0.5"
 _DEFAULT_CLOB_FEE_RATE = "0.0"
 _DEFAULT_TAKE_PROFIT_PCT = "0.15"
 _DEFAULT_MAX_UNHEDGED_EXPOSURE_PCT = "0.50"
+_DEFAULT_MAX_ASSET_EXPOSURE_PCT = "0.30"
+_DEFAULT_MIN_WIN_RATE = "0.55"
+_DEFAULT_MIN_KELLY_RESULTS = 20
+_DEFAULT_HEDGE_URGENCY_THRESHOLD = "0.20"
+_DEFAULT_HEDGE_URGENCY_SPREAD_BUMP = "0.03"
+_DEFAULT_CIRCUIT_BREAKER_LOSSES = 3
+_DEFAULT_CIRCUIT_BREAKER_COOLDOWN = 300
 _LIVE_WARNING_DELAY = 2
 
 
@@ -105,6 +112,47 @@ def whale_copy(
         str,
         typer.Option(help="Max fraction of capital in unhedged positions (e.g. 0.50)"),
     ] = _DEFAULT_MAX_UNHEDGED_EXPOSURE_PCT,
+    adaptive_kelly: Annotated[  # noqa: FBT002
+        bool,
+        typer.Option(
+            "--adaptive-kelly/--no-adaptive-kelly",
+            help="Dynamically adjust Kelly win rate from realised outcomes",
+        ),
+    ] = True,
+    min_kelly_results: Annotated[
+        int,
+        typer.Option(help="Min closed unhedged trades before adaptive Kelly activates"),
+    ] = _DEFAULT_MIN_KELLY_RESULTS,
+    min_win_rate: Annotated[
+        str, typer.Option(help="Floor for adaptive Kelly win rate (e.g. 0.55)")
+    ] = _DEFAULT_MIN_WIN_RATE,
+    max_asset_exposure_pct: Annotated[
+        str,
+        typer.Option(help="Max fraction of capital per asset+side (e.g. 0.30)"),
+    ] = _DEFAULT_MAX_ASSET_EXPOSURE_PCT,
+    compound_profits: Annotated[  # noqa: FBT002
+        bool,
+        typer.Option(
+            "--compound-profits/--no-compound-profits",
+            help="Grow paper capital by adding realised P&L",
+        ),
+    ] = True,
+    hedge_urgency_threshold: Annotated[
+        str,
+        typer.Option(help="Time fraction below which hedge spread is relaxed (e.g. 0.20)"),
+    ] = _DEFAULT_HEDGE_URGENCY_THRESHOLD,
+    hedge_urgency_spread_bump: Annotated[
+        str,
+        typer.Option(help="Amount added to max_spread_cost in urgency zone (e.g. 0.03)"),
+    ] = _DEFAULT_HEDGE_URGENCY_SPREAD_BUMP,
+    circuit_breaker_losses: Annotated[
+        int,
+        typer.Option(help="Consecutive unhedged losses to trigger cooldown (0=disabled)"),
+    ] = _DEFAULT_CIRCUIT_BREAKER_LOSSES,
+    circuit_breaker_cooldown: Annotated[
+        int,
+        typer.Option(help="Seconds to pause new entries after circuit breaker triggers"),
+    ] = _DEFAULT_CIRCUIT_BREAKER_COOLDOWN,
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
@@ -140,6 +188,15 @@ def whale_copy(
         clob_fee_rate=Decimal(clob_fee_rate),
         take_profit_pct=Decimal(take_profit_pct),
         max_unhedged_exposure_pct=Decimal(max_unhedged_exposure_pct),
+        adaptive_kelly=adaptive_kelly,
+        min_kelly_results=min_kelly_results,
+        min_win_rate=Decimal(min_win_rate),
+        max_asset_exposure_pct=Decimal(max_asset_exposure_pct),
+        compound_profits=compound_profits,
+        hedge_urgency_threshold=Decimal(hedge_urgency_threshold),
+        hedge_urgency_spread_bump=Decimal(hedge_urgency_spread_bump),
+        circuit_breaker_losses=circuit_breaker_losses,
+        circuit_breaker_cooldown=circuit_breaker_cooldown,
     )
 
     if confirm_live:

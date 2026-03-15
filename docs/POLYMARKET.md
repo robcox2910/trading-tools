@@ -338,7 +338,7 @@ Run a polling service that detects a whale's directional bias on BTC/ETH 5-minut
 The bot uses a multi-phase approach:
 
 1. **Directional entry (leg 1):** detect the whale's favoured side and buy it immediately at current CLOB prices. Position size is determined by the Kelly criterion based on estimated win rate.
-2. **Take-profit:** each poll cycle, check if the leg 1 token price has risen above `--take-profit-price`. If so, sell early to lock in known profit.
+2. **Take-profit:** each poll cycle, check if the leg 1 token price has risen above the take-profit threshold (`entry × (1 + take_profit_pct)`). If so, sell early to lock in known profit.
 3. **Stop-loss:** if the leg 1 token price drops below `entry * (1 - stop_loss_pct)`, exit to limit losses on unhedged positions.
 4. **Hedge (leg 2):** monitor the opposite side each poll cycle. When `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee_rate`, the opposite side is cheap enough to lock in guaranteed profit. Hedge uses FOK market orders by default for fast execution.
 5. **Settlement:** if no take-profit, stop-loss, or hedge fires, the position resolves at market expiry.
@@ -386,6 +386,15 @@ trading-tools-polymarket whale-copy \
 | `--clob-fee-rate` | `0.0` | Per-leg CLOB fee rate for hedge profitability check |
 | `--take-profit-pct` | `0.15` | Take profit at this % gain above entry (e.g. 0.15 = 15%) |
 | `--max-unhedged-exposure-pct` | `0.50` | Max fraction of capital in unhedged (non-guaranteed) positions |
+| `--adaptive-kelly/--no-adaptive-kelly` | `true` | Dynamically adjust Kelly win rate from realised unhedged outcomes |
+| `--min-kelly-results` | `20` | Min closed unhedged trades before adaptive Kelly activates |
+| `--min-win-rate` | `0.55` | Floor for adaptive Kelly win rate |
+| `--max-asset-exposure-pct` | `0.30` | Max fraction of capital per asset+side (e.g. all BTC-USD Up) |
+| `--compound-profits/--no-compound-profits` | `true` | Grow paper capital by adding realised P&L from closed trades |
+| `--hedge-urgency-threshold` | `0.20` | Time fraction below which hedge spread threshold is relaxed |
+| `--hedge-urgency-spread-bump` | `0.03` | Amount added to max_spread_cost in urgency zone |
+| `--circuit-breaker-losses` | `3` | Consecutive unhedged losses to trigger cooldown pause (0=disabled) |
+| `--circuit-breaker-cooldown` | `300` | Seconds to pause new entries after circuit breaker triggers |
 | `--confirm-live` | `false` | **Required flag** for live trading |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |

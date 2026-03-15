@@ -129,7 +129,7 @@ Runnable applications and long-lived services. Each application has:
 | `polymarket_bot` | Paper and live trading engines with fee/slippage modelling and loss limits (consumed by `polymarket` CLI) |
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
 | `whale_monitor` | Polling service that tracks whale trades, with analysis, per-market breakdown, trade enrichment, and Binance spot correlation |
-| `whale_copy_trader` | Temporal spread arbitrage whale copy-trading (paper and live) |
+| `whale_copy_trader` | Temporal spread arbitrage whale copy-trading (paper and live) with adaptive Kelly sizing, compound capital, per-asset concentration limits, circuit breaker, and hedge urgency |
 
 ### `/clients` — API Clients
 

@@ -14,6 +14,7 @@ from trading_tools.apps.whale_copy_trader.copy_trader import (
     compute_pnl,
 )
 from trading_tools.apps.whale_copy_trader.models import (
+    CopyResult,
     CopyResultRecord,
     CopySignal,
     OpenPosition,
@@ -61,6 +62,8 @@ def _make_signal(
     favoured_side: str = "Up",
     window_end_ts: int = _FUTURE_TS,
     bias_ratio: Decimal = _DEFAULT_BIAS,
+    asset: str = "BTC-USD",
+    window_start_ts: int | None = None,
 ) -> CopySignal:
     """Create a CopySignal for testing.
 
@@ -69,19 +72,23 @@ def _make_signal(
         favoured_side: Whale's favoured direction.
         window_end_ts: When the market window closes.
         bias_ratio: Whale's bias ratio.
+        asset: Spot trading pair.
+        window_start_ts: When the market window opens (defaults to
+            ``window_end_ts - 300``).
 
     Returns:
         A CopySignal instance.
 
     """
+    start = window_start_ts if window_start_ts is not None else window_end_ts - 300
     return CopySignal(
         condition_id=condition_id,
         title="Bitcoin Up or Down - March 13, 6PM ET",
-        asset="BTC-USD",
+        asset=asset,
         favoured_side=favoured_side,
         bias_ratio=bias_ratio,
         trade_count=5,
-        window_start_ts=_FUTURE_TS - 300,
+        window_start_ts=start,
         window_end_ts=window_end_ts,
         detected_at=int(time.time()),
     )
@@ -1175,3 +1182,594 @@ class TestMaxUnhedgedExposure:
 
         _expected_positions = 2
         assert len(trader.positions) == _expected_positions
+
+
+class TestPartialHedgeFill:
+    """Tests for partial hedge fill guard."""
+
+    @pytest.mark.asyncio
+    async def test_partial_hedge_stays_unhedged(self) -> None:
+        """Reject hedge when fill quantity is less than leg 1 quantity."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.95"),
+            max_entry_price=Decimal("0.65"),
+            hedge_with_market_orders=True,
+        )
+        client = _mock_client("0.55", "0.35")
+        # First call: full fill for leg 1
+        # Second call: partial fill for hedge (less than leg 1 qty)
+        _leg1_fill = Decimal("18.18")
+        _hedge_partial = Decimal("10.00")
+        client.place_order = AsyncMock(
+            side_effect=[
+                OrderResponse(
+                    order_id="order_leg1",
+                    status="matched",
+                    token_id="tok_up",
+                    side="BUY",
+                    price=Decimal("0.55"),
+                    size=_leg1_fill,
+                    filled=_leg1_fill,
+                ),
+                OrderResponse(
+                    order_id="order_hedge",
+                    status="matched",
+                    token_id="tok_down",
+                    side="BUY",
+                    price=Decimal("0.35"),
+                    size=_leg1_fill,
+                    filled=_hedge_partial,
+                ),
+            ]
+        )
+        trader = WhaleCopyTrader(config=config, live=True, client=client)
+
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        pos = trader.positions["cond_a"]
+        assert pos.state == PositionState.UNHEDGED
+        assert pos.hedge_leg is None
+
+
+class TestCommittedCapital:
+    """Tests for committed capital tracking in paper mode."""
+
+    @pytest.mark.asyncio
+    async def test_committed_capital_reduces_available(self) -> None:
+        """Available capital decreases after opening a position."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_price=Decimal("0.65"),
+            max_position_pct=Decimal("0.10"),
+        )
+        client = _mock_client("0.55", "0.45")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        capital_before = trader._get_capital()
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        capital_after = trader._get_capital()
+        assert capital_after < capital_before
+
+    @pytest.mark.asyncio
+    async def test_committed_capital_paper_mode(self) -> None:
+        """Committed capital equals sum of open position cost bases."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_price=Decimal("0.65"),
+            max_position_pct=Decimal("0.10"),
+        )
+        client = _mock_client("0.55", "0.45")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        signals = [
+            _make_signal(condition_id="cond_a"),
+            _make_signal(condition_id="cond_b"),
+        ]
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=signals)
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        committed = trader._committed_capital
+        total_cost = sum(pos.total_cost_basis for pos in trader._positions.values())
+        assert committed == total_cost
+        assert committed > Decimal(0)
+
+
+class TestAdaptiveKelly:
+    """Tests for adaptive Kelly win rate from realised outcomes."""
+
+    def test_uses_static_when_below_threshold(self) -> None:
+        """Return static win rate when fewer than min_kelly_results trades."""
+        config = _make_config(
+            adaptive_kelly=True,
+            min_kelly_results=20,
+            win_rate=Decimal("0.80"),
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client())
+        # No results yet → static win rate
+        assert trader._effective_win_rate() == Decimal("0.80")
+
+    def test_uses_static_when_disabled(self) -> None:
+        """Return static win rate when adaptive_kelly is disabled."""
+        config = _make_config(
+            adaptive_kelly=False,
+            win_rate=Decimal("0.80"),
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client())
+        assert trader._effective_win_rate() == Decimal("0.80")
+
+    def test_computes_from_unhedged_known_outcomes(self) -> None:
+        """Compute rolling win rate from unhedged trades with known outcomes."""
+        config = _make_config(
+            adaptive_kelly=True,
+            min_kelly_results=2,
+            min_win_rate=Decimal("0.55"),
+            win_rate=Decimal("0.80"),
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client())
+
+        # Add 3 wins and 1 loss (all unhedged, known)
+        _win_pnl = Decimal("5.0")
+        _loss_pnl = Decimal("-5.0")
+        for pnl_val in [_win_pnl, _win_pnl, _win_pnl, _loss_pnl]:
+            trader._results.append(
+                CopyResult(
+                    signal=_make_signal(),
+                    state=PositionState.UNHEDGED,
+                    leg1_side="Up",
+                    leg1_entry=Decimal("0.55"),
+                    leg1_qty=Decimal(10),
+                    hedge_entry=None,
+                    hedge_qty=None,
+                    total_cost_basis=Decimal("5.50"),
+                    entry_time=1000,
+                    pnl=pnl_val,
+                    outcome_known=True,
+                )
+            )
+
+        _expected_rate = Decimal("0.75")  # 3/4
+        assert trader._effective_win_rate() == _expected_rate
+
+    def test_floors_at_min_win_rate(self) -> None:
+        """Win rate is floored at min_win_rate even when realised rate is lower."""
+        config = _make_config(
+            adaptive_kelly=True,
+            min_kelly_results=2,
+            min_win_rate=Decimal("0.55"),
+            win_rate=Decimal("0.80"),
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client())
+
+        # All losses → 0% win rate, but floored at 0.55
+        _loss_pnl = Decimal("-5.0")
+        for _ in range(3):
+            trader._results.append(
+                CopyResult(
+                    signal=_make_signal(),
+                    state=PositionState.UNHEDGED,
+                    leg1_side="Up",
+                    leg1_entry=Decimal("0.55"),
+                    leg1_qty=Decimal(10),
+                    hedge_entry=None,
+                    hedge_qty=None,
+                    total_cost_basis=Decimal("5.50"),
+                    entry_time=1000,
+                    pnl=_loss_pnl,
+                    outcome_known=True,
+                )
+            )
+
+        assert trader._effective_win_rate() == Decimal("0.55")
+
+    def test_excludes_unknown_outcomes(self) -> None:
+        """Unknown-outcome trades are excluded from adaptive Kelly calculation."""
+        config = _make_config(
+            adaptive_kelly=True,
+            min_kelly_results=2,
+            min_win_rate=Decimal("0.55"),
+            win_rate=Decimal("0.80"),
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client())
+
+        _win_pnl = Decimal("5.0")
+        _loss_pnl = Decimal("-5.0")
+        # 2 known wins, 1 unknown loss → rate = 2/2 = 1.0 (not 2/3)
+        for pnl_val, known in [(_win_pnl, True), (_win_pnl, True), (_loss_pnl, False)]:
+            trader._results.append(
+                CopyResult(
+                    signal=_make_signal(),
+                    state=PositionState.UNHEDGED,
+                    leg1_side="Up",
+                    leg1_entry=Decimal("0.55"),
+                    leg1_qty=Decimal(10),
+                    hedge_entry=None,
+                    hedge_qty=None,
+                    total_cost_basis=Decimal("5.50"),
+                    entry_time=1000,
+                    pnl=pnl_val,
+                    outcome_known=known,
+                )
+            )
+
+        assert trader._effective_win_rate() == Decimal(1)
+
+
+class TestAssetConcentration:
+    """Tests for per-asset exposure concentration limits."""
+
+    @pytest.mark.asyncio
+    async def test_blocks_same_asset_same_side(self) -> None:
+        """Block new position when same asset+side exceeds concentration limit."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_price=Decimal("0.65"),
+            max_position_pct=Decimal("0.25"),
+            max_asset_exposure_pct=Decimal("0.25"),
+            max_unhedged_exposure_pct=Decimal("0.90"),
+        )
+        client = _mock_client("0.55", "0.45")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        signal_a = _make_signal(condition_id="cond_a", asset="BTC-USD", favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_a])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+
+        # Second signal same asset + same side → should be blocked
+        signal_b = _make_signal(condition_id="cond_b", asset="BTC-USD", favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_b])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_b" not in trader.positions
+
+    @pytest.mark.asyncio
+    async def test_allows_different_asset(self) -> None:
+        """Allow new position for a different asset within limits."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_price=Decimal("0.65"),
+            max_position_pct=Decimal("0.25"),
+            max_asset_exposure_pct=Decimal("0.25"),
+            max_unhedged_exposure_pct=Decimal("0.90"),
+        )
+        client = _mock_client("0.55", "0.45")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        signal_a = _make_signal(condition_id="cond_a", asset="BTC-USD", favoured_side="Up")
+        signal_b = _make_signal(condition_id="cond_b", asset="ETH-USD", favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_a, signal_b])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+        assert "cond_b" in trader.positions
+
+
+class TestCompoundProfits:
+    """Tests for compound profit capital growth in paper mode."""
+
+    @pytest.mark.asyncio
+    async def test_capital_grows_with_wins(self) -> None:
+        """Paper capital increases after profitable trades when compounding."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            compound_profits=True,
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+
+        # Simulate a winning result
+        _win_pnl = Decimal("10.0")
+        trader._results.append(
+            CopyResult(
+                signal=_make_signal(),
+                state=PositionState.UNHEDGED,
+                leg1_side="Up",
+                leg1_entry=Decimal("0.55"),
+                leg1_qty=Decimal(20),
+                hedge_entry=None,
+                hedge_qty=None,
+                total_cost_basis=Decimal("11.0"),
+                entry_time=1000,
+                pnl=_win_pnl,
+                outcome_known=True,
+            )
+        )
+
+        # Capital should be base + pnl
+        expected = config.capital + _win_pnl
+        assert trader._get_capital() == expected
+
+    @pytest.mark.asyncio
+    async def test_capital_shrinks_with_losses(self) -> None:
+        """Paper capital decreases after losing trades when compounding."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            compound_profits=True,
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+
+        _loss_pnl = Decimal("-5.0")
+        trader._results.append(
+            CopyResult(
+                signal=_make_signal(),
+                state=PositionState.UNHEDGED,
+                leg1_side="Up",
+                leg1_entry=Decimal("0.55"),
+                leg1_qty=Decimal(10),
+                hedge_entry=None,
+                hedge_qty=None,
+                total_cost_basis=Decimal("5.50"),
+                entry_time=1000,
+                pnl=_loss_pnl,
+                outcome_known=True,
+            )
+        )
+
+        expected = config.capital + _loss_pnl
+        assert trader._get_capital() == expected
+
+    def test_no_compound_uses_fixed_capital(self) -> None:
+        """Paper capital stays fixed when compound_profits is disabled."""
+        config = _make_config(
+            compound_profits=False,
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client())
+
+        _win_pnl = Decimal("10.0")
+        trader._results.append(
+            CopyResult(
+                signal=_make_signal(),
+                state=PositionState.UNHEDGED,
+                leg1_side="Up",
+                leg1_entry=Decimal("0.55"),
+                leg1_qty=Decimal(20),
+                hedge_entry=None,
+                hedge_qty=None,
+                total_cost_basis=Decimal("11.0"),
+                entry_time=1000,
+                pnl=_win_pnl,
+                outcome_known=True,
+            )
+        )
+
+        assert trader._get_capital() == config.capital
+
+
+class TestHedgeUrgency:
+    """Tests for dynamic hedge urgency near expiry."""
+
+    @pytest.mark.asyncio
+    async def test_relaxes_threshold_near_expiry(self) -> None:
+        """Hedge threshold is relaxed when time fraction is below urgency threshold."""
+        now = int(time.time())
+        # Window almost expired: 10s left out of 300s total → fraction 0.033 < 0.20
+        window_start = now - 290
+        window_end = now + 10
+
+        config = _make_config(
+            max_spread_cost=Decimal("0.92"),
+            max_entry_price=Decimal("0.65"),
+            hedge_urgency_threshold=Decimal("0.20"),
+            hedge_urgency_spread_bump=Decimal("0.05"),
+        )
+        # Leg1 at 0.55, hedge at 0.40 → combined 0.95 > 0.92 (normal reject)
+        # But with urgency bump: effective = 0.92 + 0.05 = 0.97 > 0.95 → hedge triggers
+        client = _mock_client("0.55", "0.40")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        signal = _make_signal(
+            favoured_side="Up",
+            window_start_ts=window_start,
+            window_end_ts=window_end,
+        )
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        pos = trader.positions["cond_a"]
+        assert pos.state == PositionState.HEDGED
+
+    @pytest.mark.asyncio
+    async def test_normal_threshold_far_from_expiry(self) -> None:
+        """Normal hedge threshold applies when far from expiry."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.92"),
+            max_entry_price=Decimal("0.65"),
+            hedge_urgency_threshold=Decimal("0.20"),
+            hedge_urgency_spread_bump=Decimal("0.05"),
+        )
+        # Leg1 at 0.55, hedge at 0.40 → combined 0.95 > 0.92 → no hedge (no urgency)
+        client = _mock_client("0.55", "0.40")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        signal = _make_signal(favoured_side="Up")  # far future window
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        pos = trader.positions["cond_a"]
+        assert pos.state == PositionState.UNHEDGED
+
+
+class TestCircuitBreaker:
+    """Tests for circuit breaker after consecutive losses."""
+
+    @pytest.mark.asyncio
+    async def test_triggers_after_n_losses(self) -> None:
+        """Circuit breaker activates after configured number of consecutive losses."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            circuit_breaker_losses=2,
+            circuit_breaker_cooldown=60,
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+
+        # Simulate 2 consecutive stop-loss events
+        trader._record_loss()
+        trader._record_loss()
+
+        assert trader._circuit_breaker_until > int(time.time())
+
+    @pytest.mark.asyncio
+    async def test_resets_on_win(self) -> None:
+        """Consecutive loss counter resets when a win occurs."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            circuit_breaker_losses=3,
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+
+        trader._record_loss()
+        trader._record_loss()
+        # Win resets counter
+        trader._consecutive_losses = 0
+        trader._record_loss()
+
+        # Only 1 loss after reset, breaker should NOT trigger
+        assert trader._circuit_breaker_until == 0
+
+    @pytest.mark.asyncio
+    async def test_skips_signal_during_cooldown(self) -> None:
+        """Skip new signals during circuit breaker cooldown."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            circuit_breaker_losses=1,
+            circuit_breaker_cooldown=3600,
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+
+        # Trigger breaker
+        trader._record_loss()
+
+        signal = _make_signal()
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" not in trader.positions
+
+    def test_disabled_when_zero(self) -> None:
+        """Circuit breaker is disabled when circuit_breaker_losses is 0."""
+        config = _make_config(circuit_breaker_losses=0)
+        trader = WhaleCopyTrader(config=config, client=_mock_client())
+
+        # Even many losses should not trigger
+        _many_losses = 100
+        for _ in range(_many_losses):
+            trader._record_loss()
+
+        assert trader._circuit_breaker_until == 0
+
+
+class TestUnknownOutcome:
+    """Tests for unknown outcome handling when candles are unavailable."""
+
+    @pytest.mark.asyncio
+    async def test_hedged_unknown_pnl_zero(self) -> None:
+        """Hedged position with unknown outcome records zero P&L."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.95"),
+            max_entry_price=Decimal("0.65"),
+        )
+        client = _mock_client("0.55", "0.35")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        signal = _make_signal(favoured_side="Up", window_end_ts=_PAST_TS)
+
+        with (
+            patch.object(trader, "_detector") as mock_detector,
+            patch.object(trader, "_resolve_outcome", new_callable=AsyncMock, return_value=None),
+        ):
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert len(trader.results) == 1
+        result = trader.results[0]
+        assert result.state == PositionState.HEDGED
+        assert result.pnl == Decimal(0)
+        assert result.outcome_known is False
+
+    @pytest.mark.asyncio
+    async def test_unhedged_unknown_assumes_loss(self) -> None:
+        """Unhedged position with unknown outcome assumes total loss."""
+        config = _make_config(max_spread_cost=Decimal("0.80"))
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+
+        signal = _make_signal(favoured_side="Up", window_end_ts=_PAST_TS)
+
+        with (
+            patch.object(trader, "_detector") as mock_detector,
+            patch.object(trader, "_resolve_outcome", new_callable=AsyncMock, return_value=None),
+        ):
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert len(trader.results) == 1
+        result = trader.results[0]
+        assert result.state == PositionState.UNHEDGED
+        assert result.pnl == -result.total_cost_basis
+        assert result.outcome_known is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_excluded_from_adaptive_kelly(self) -> None:
+        """Unknown-outcome results are excluded from adaptive Kelly calculation."""
+        config = _make_config(
+            adaptive_kelly=True,
+            min_kelly_results=2,
+            win_rate=Decimal("0.80"),
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client())
+
+        # 2 known wins + 1 unknown loss
+        _win_pnl = Decimal("5.0")
+        _loss_pnl = Decimal("-5.0")
+        for pnl_val, known in [(_win_pnl, True), (_win_pnl, True), (_loss_pnl, False)]:
+            trader._results.append(
+                CopyResult(
+                    signal=_make_signal(),
+                    state=PositionState.UNHEDGED,
+                    leg1_side="Up",
+                    leg1_entry=Decimal("0.55"),
+                    leg1_qty=Decimal(10),
+                    hedge_entry=None,
+                    hedge_qty=None,
+                    total_cost_basis=Decimal("5.50"),
+                    entry_time=1000,
+                    pnl=pnl_val,
+                    outcome_known=known,
+                )
+            )
+
+        # 2 known results, 2 wins → 100% win rate (unknown excluded)
+        assert trader._effective_win_rate() == Decimal(1)
