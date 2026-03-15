@@ -55,6 +55,7 @@ _DECIMAL_PARAMS: dict[str, str] = {
     "paper_slippage_pct": "paper_slippage_pct",
     "max_entry_age_pct": "max_entry_age_pct",
     "halt_win_rate": "halt_win_rate",
+    "flip_take_profit_pct": "flip_take_profit_pct",
 }
 
 # Maps CLI parameter names to config field names for pass-through values
@@ -68,6 +69,8 @@ _DIRECT_PARAMS: dict[str, str] = {
     "min_kelly_results": "min_kelly_results",
     "circuit_breaker_losses": "circuit_breaker_losses",
     "circuit_breaker_cooldown": "circuit_breaker_cooldown",
+    "max_flips_per_market": "max_flips_per_market",
+    "min_flip_buffer_seconds": "min_flip_buffer_seconds",
 }
 
 
@@ -80,6 +83,7 @@ def _build_config(
     compound_profits: bool | None,
     use_market_orders: bool | None,
     signal_strength_sizing: bool | None,
+    enable_flipping: bool | None,
     **cli_args: object,
 ) -> WhaleCopyConfig:
     """Build a ``WhaleCopyConfig`` from an optional YAML file plus CLI overrides.
@@ -96,6 +100,7 @@ def _build_config(
         compound_profits: Tri-state bool (``None`` = not set on CLI).
         use_market_orders: Tri-state bool (``None`` = not set on CLI).
         signal_strength_sizing: Tri-state bool (``None`` = not set on CLI).
+        enable_flipping: Tri-state bool (``None`` = not set on CLI).
         **cli_args: Remaining CLI parameters keyed by their CLI name.
 
     Returns:
@@ -131,6 +136,8 @@ def _build_config(
         overrides["use_market_orders"] = use_market_orders
     if signal_strength_sizing is not None:
         overrides["signal_strength_sizing"] = signal_strength_sizing
+    if enable_flipping is not None:
+        overrides["enable_flipping"] = enable_flipping
 
     return WhaleCopyConfig.with_overrides(base, **overrides)
 
@@ -277,6 +284,25 @@ def whale_copy(  # noqa: PLR0913
         str | None,
         typer.Option(help="Halt entries when adaptive win rate drops below this (e.g. 0.55)"),
     ] = None,
+    enable_flipping: Annotated[
+        bool | None,
+        typer.Option(
+            "--enable-flipping/--no-flipping",
+            help="Flip to opposite side on take-profit instead of selling",
+        ),
+    ] = None,
+    max_flips_per_market: Annotated[
+        int | None,
+        typer.Option(help="Max flips per market window (e.g. 4)"),
+    ] = None,
+    min_flip_buffer_seconds: Annotated[
+        int | None,
+        typer.Option(help="Stop flipping with fewer than this many seconds to expiry"),
+    ] = None,
+    flip_take_profit_pct: Annotated[
+        str | None,
+        typer.Option(help="Tighter take-profit %% for flip legs (e.g. 0.10 = 10%%)"),
+    ] = None,
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
@@ -303,6 +329,7 @@ def whale_copy(  # noqa: PLR0913
         adaptive_kelly=adaptive_kelly,
         compound_profits=compound_profits,
         use_market_orders=use_market_orders,
+        enable_flipping=enable_flipping,
         poll_interval=poll_interval,
         lookback=lookback,
         min_bias=min_bias,
@@ -332,6 +359,9 @@ def whale_copy(  # noqa: PLR0913
         signal_strength_sizing=signal_strength_sizing,
         max_entry_age_pct=max_entry_age_pct,
         halt_win_rate=halt_win_rate,
+        max_flips_per_market=max_flips_per_market,
+        min_flip_buffer_seconds=min_flip_buffer_seconds,
+        flip_take_profit_pct=flip_take_profit_pct,
     )
 
     if confirm_live:
