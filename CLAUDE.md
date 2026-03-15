@@ -107,6 +107,7 @@ grep -r "old_function_name" docs/
 | `docs/BACKTESTER.md` | All backtester strategies, commands, risk management flags |
 | `docs/POLYMARKET.md` | All Polymarket commands (trading, bots, ticks, whales, backtests) |
 | `docs/ARCHITECTURE.md` | Project structure, module responsibilities, design principles |
+| `docs/STRATEGY_GUIDE.md` | How to implement and integrate a new trading strategy |
 | `docs/HTTP_CLIENT_USAGE.md` | Revolut X HTTP client API reference |
 | `CONTRIBUTING.md` | Developer workflow, code standards, PR process |
 | `.env.example` | Template for all environment variables |
