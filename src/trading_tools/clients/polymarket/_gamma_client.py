@@ -207,7 +207,7 @@ class GammaClient:
         try:
             data = response.json()
             msg: str = data.get("message", f"HTTP {response.status_code}")
-        except Exception:
+        except (ValueError, KeyError):
             msg = f"HTTP {response.status_code}"
         raise PolymarketAPIError(msg=msg, status_code=response.status_code)
 

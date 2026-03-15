@@ -206,7 +206,7 @@ class WhaleMonitor:
             return 0
 
         existing_hashes = await self._repo.get_existing_hashes(candidate_hashes)
-        skip = existing_hashes | (seen_hashes & candidate_hashes)
+        skip = existing_hashes | seen_hashes
 
         new_trades: list[WhaleTrade] = []
         for raw in page:

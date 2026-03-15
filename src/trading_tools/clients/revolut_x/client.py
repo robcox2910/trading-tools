@@ -8,6 +8,12 @@ from urllib.parse import quote, urlparse
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from trading_tools.clients._http_status import (
+    HTTP_BAD_REQUEST,
+    HTTP_NOT_FOUND,
+    HTTP_TOO_MANY_REQUESTS,
+    HTTP_UNAUTHORIZED,
+)
 from trading_tools.clients.revolut_x.auth.signer import Ed25519Signer
 from trading_tools.clients.revolut_x.exceptions import (
     RevolutXAPIError,
@@ -17,11 +23,6 @@ from trading_tools.clients.revolut_x.exceptions import (
     RevolutXValidationError,
 )
 from trading_tools.core.config import get_config
-
-_HTTP_BAD_REQUEST = 400
-_HTTP_UNAUTHORIZED = 401
-_HTTP_NOT_FOUND = 404
-_HTTP_TOO_MANY_REQUESTS = 429
 
 
 class RevolutXClient:
@@ -199,7 +200,7 @@ class RevolutXClient:
         )
 
         # Handle errors
-        if response.status_code >= _HTTP_BAD_REQUEST:
+        if response.status_code >= HTTP_BAD_REQUEST:
             self._handle_error(response)
 
         return response
@@ -224,13 +225,13 @@ class RevolutXClient:
         except Exception:
             message = f"HTTP {response.status_code}"
 
-        if response.status_code == _HTTP_UNAUTHORIZED:
+        if response.status_code == HTTP_UNAUTHORIZED:
             raise RevolutXAuthenticationError(message, response.status_code)
-        if response.status_code == _HTTP_BAD_REQUEST:
+        if response.status_code == HTTP_BAD_REQUEST:
             raise RevolutXValidationError(message, response.status_code)
-        if response.status_code == _HTTP_NOT_FOUND:
+        if response.status_code == HTTP_NOT_FOUND:
             raise RevolutXNotFoundError(message, response.status_code)
-        if response.status_code == _HTTP_TOO_MANY_REQUESTS:
+        if response.status_code == HTTP_TOO_MANY_REQUESTS:
             raise RevolutXRateLimitError(message, response.status_code)
 
         raise RevolutXAPIError(message, response.status_code)

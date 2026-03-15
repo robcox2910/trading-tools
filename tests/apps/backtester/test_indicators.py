@@ -281,3 +281,52 @@ class TestAdx:
         ]
         result = adx(candles, period=5)
         assert _ZERO <= result <= _HUNDRED
+
+    def test_minimum_candles_produces_averaged_dx(self) -> None:
+        """Compute ADX when exactly 2*period+1 candles are provided (few DX values).
+
+        With the minimum candle count, only ``period + 1`` DX values exist.
+        Verify that ADX still returns a bounded, valid result.
+        """
+        period = 3
+        needed = 2 * period + 1  # 7 candles → 6 bars → 4 DX values
+        candles = [
+            Candle(
+                symbol="BTC-USD",
+                timestamp=1000 + i * 3600,
+                open=Decimal(str(100 + i * 2)),
+                high=Decimal(str(103 + i * 2)),
+                low=Decimal(str(97 + i * 2)),
+                close=Decimal(str(100 + i * 2)),
+                volume=Decimal(100),
+                interval=Interval.H1,
+            )
+            for i in range(needed)
+        ]
+        result = adx(candles, period=period)
+        assert _ZERO <= result <= _HUNDRED
+
+    def test_flat_market_low_adx(self) -> None:
+        """Return a low ADX when all candles have identical OHLC (no directional movement).
+
+        When highs, lows, and closes are constant, directional movement is
+        zero and ADX should be zero or very close to it.
+        """
+        flat_price = Decimal(100)
+        period = 3
+        needed = 2 * period + 1
+        candles = [
+            Candle(
+                symbol="BTC-USD",
+                timestamp=1000 + i * 3600,
+                open=flat_price,
+                high=flat_price,
+                low=flat_price,
+                close=flat_price,
+                volume=Decimal(100),
+                interval=Interval.H1,
+            )
+            for i in range(needed)
+        ]
+        result = adx(candles, period=period)
+        assert result == _ZERO

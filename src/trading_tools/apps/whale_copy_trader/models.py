@@ -184,6 +184,17 @@ class OpenPosition:
         return ids
 
     @property
+    def leg1_effective_price(self) -> Decimal:
+        """Return the weighted-average effective price of leg 1.
+
+        Compute the average cost per token from total cost basis and quantity.
+        Return zero when the position has no tokens to avoid division by zero.
+        """
+        if self.leg1.quantity <= Decimal(0):
+            return Decimal(0)
+        return self.leg1.cost_basis / self.leg1.quantity
+
+    @property
     def favoured_side(self) -> str:
         """Return the whale's favoured side (leg1 direction)."""
         return self.leg1.side

@@ -2800,3 +2800,53 @@ class TestDefensiveSellFallback:
         pos = trader.positions["cond_a"]
         assert pos.state == PositionState.HEDGED
         assert pos.hedge_leg is not None
+
+
+_LEG1_ENTRY_PRICE = Decimal("0.55")
+_LEG1_QUANTITY = Decimal(100)
+_LEG1_COST_BASIS = Decimal(55)
+_ZERO_QUANTITY = Decimal(0)
+_ZERO_COST = Decimal(0)
+
+
+class TestLeg1EffectivePrice:
+    """Tests for the OpenPosition.leg1_effective_price property."""
+
+    def test_normal_case_returns_weighted_average(self) -> None:
+        """Return cost_basis / quantity for a position with tokens."""
+        signal = _make_signal()
+        leg1 = SideLeg(
+            side="Up",
+            entry_price=_LEG1_ENTRY_PRICE,
+            quantity=_LEG1_QUANTITY,
+            cost_basis=_LEG1_COST_BASIS,
+        )
+        pos = OpenPosition(
+            signal=signal,
+            state=PositionState.UNHEDGED,
+            leg1=leg1,
+            hedge_leg=None,
+            hedge_side="Down",
+            entry_time=_FUTURE_TS,
+        )
+        expected = _LEG1_COST_BASIS / _LEG1_QUANTITY
+        assert pos.leg1_effective_price == expected
+
+    def test_zero_quantity_returns_zero(self) -> None:
+        """Return zero when leg1 has no tokens to avoid division by zero."""
+        signal = _make_signal()
+        leg1 = SideLeg(
+            side="Up",
+            entry_price=Decimal(0),
+            quantity=_ZERO_QUANTITY,
+            cost_basis=_ZERO_COST,
+        )
+        pos = OpenPosition(
+            signal=signal,
+            state=PositionState.UNHEDGED,
+            leg1=leg1,
+            hedge_leg=None,
+            hedge_side="Down",
+            entry_time=_FUTURE_TS,
+        )
+        assert pos.leg1_effective_price == Decimal(0)

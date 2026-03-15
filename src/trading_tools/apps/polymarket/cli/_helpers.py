@@ -42,16 +42,16 @@ def parse_series_slugs(series: str) -> tuple[str, ...]:
 
     """
     slugs: list[str] = []
-    for s in series.split(","):
-        s = s.strip()  # noqa: PLW2901
-        if not s:
+    for raw in series.split(","):
+        slug = raw.strip()
+        if not slug:
             continue
-        if s == "crypto-5m":
+        if slug == "crypto-5m":
             slugs.extend(CRYPTO_5M_SERIES)
-        elif s == "crypto-15m":
+        elif slug == "crypto-15m":
             slugs.extend(CRYPTO_15M_SERIES)
         else:
-            slugs.append(s)
+            slugs.append(slug)
     return tuple(slugs)
 
 

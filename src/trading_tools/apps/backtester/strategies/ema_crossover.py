@@ -35,6 +35,7 @@ Params:
 
 from decimal import Decimal
 
+from trading_tools.apps.backtester.indicators import ema_from_values
 from trading_tools.core.models import ONE, TWO, Candle, Side, Signal
 
 
@@ -82,10 +83,10 @@ class EmaCrossoverStrategy:
             curr_long = prev_long + self._long_mult * (close - prev_long)
         else:
             closes = [c.close for c in history] + [close]
-            curr_short = self._ema(closes, self._short_period)
-            curr_long = self._ema(closes, self._long_period)
-            prev_short = self._ema(closes[:-1], self._short_period)
-            prev_long = self._ema(closes[:-1], self._long_period)
+            curr_short = ema_from_values(closes, self._short_period)
+            curr_long = ema_from_values(closes, self._long_period)
+            prev_short = ema_from_values(closes[:-1], self._short_period)
+            prev_long = ema_from_values(closes[:-1], self._long_period)
 
         self._short_ema = curr_short
         self._long_ema = curr_long
@@ -107,13 +108,3 @@ class EmaCrossoverStrategy:
                 reason=f"EMA{self._short_period} crossed below EMA{self._long_period}",
             )
         return None
-
-    @staticmethod
-    def _ema(closes: list[Decimal], period: int) -> Decimal:
-        """Calculate EMA seeded with SMA of the first `period` values."""
-        sma = sum(closes[:period]) / Decimal(period)
-        multiplier = TWO / (Decimal(period) + ONE)
-        ema = sma
-        for close in closes[period:]:
-            ema = (close - ema) * multiplier + ema
-        return ema

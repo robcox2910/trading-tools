@@ -31,48 +31,42 @@ _logger = logging.getLogger(__name__)
 
 _LIVE_WARNING_DELAY = 2
 
-# Maps CLI parameter names to WhaleCopyConfig field names for str→Decimal
-# conversion.  Only params whose CLI type is ``str | None`` and whose
-# config field type is ``Decimal`` belong here.
-_DECIMAL_PARAMS: dict[str, str] = {
-    "min_bias": "min_bias",
-    "capital": "capital",
-    "max_position_pct": "max_position_pct",
-    "max_spread_cost": "max_spread_cost",
-    "max_entry_price": "max_entry_price",
-    "defensive_hedge_pct": "defensive_hedge_pct",
-    "max_defensive_hedge_cost": "max_defensive_hedge_cost",
-    "win_rate": "win_rate",
-    "kelly_fraction": "kelly_fraction",
-    "clob_fee_rate": "clob_fee_rate",
-    "take_profit_pct": "take_profit_pct",
-    "max_unhedged_exposure_pct": "max_unhedged_exposure_pct",
-    "min_win_rate": "min_win_rate",
-    "max_asset_exposure_pct": "max_asset_exposure_pct",
-    "hedge_urgency_threshold": "hedge_urgency_threshold",
-    "hedge_urgency_spread_bump": "hedge_urgency_spread_bump",
-    "max_drawdown_pct": "max_drawdown_pct",
-    "drawdown_throttle_pct": "drawdown_throttle_pct",
-    "paper_slippage_pct": "paper_slippage_pct",
-    "max_entry_age_pct": "max_entry_age_pct",
-    "halt_win_rate": "halt_win_rate",
-    "flip_take_profit_pct": "flip_take_profit_pct",
-}
-
-# Maps CLI parameter names to config field names for pass-through values
-# (int params that don't need Decimal conversion).
-_DIRECT_PARAMS: dict[str, str] = {
-    "poll_interval": "poll_interval",
-    "lookback": "lookback_seconds",
-    "min_trades": "min_trades",
-    "min_time_to_start": "min_time_to_start",
-    "max_window": "max_window_seconds",
-    "min_kelly_results": "min_kelly_results",
-    "circuit_breaker_losses": "circuit_breaker_losses",
-    "circuit_breaker_cooldown": "circuit_breaker_cooldown",
-    "max_flips_per_market": "max_flips_per_market",
-    "min_flip_buffer_seconds": "min_flip_buffer_seconds",
-}
+_PARAM_MAP: tuple[tuple[str, str, bool], ...] = (
+    # Decimal params (CLI type is str, converted to Decimal)
+    ("min_bias", "min_bias", True),
+    ("capital", "capital", True),
+    ("max_position_pct", "max_position_pct", True),
+    ("max_spread_cost", "max_spread_cost", True),
+    ("max_entry_price", "max_entry_price", True),
+    ("defensive_hedge_pct", "defensive_hedge_pct", True),
+    ("max_defensive_hedge_cost", "max_defensive_hedge_cost", True),
+    ("win_rate", "win_rate", True),
+    ("kelly_fraction", "kelly_fraction", True),
+    ("clob_fee_rate", "clob_fee_rate", True),
+    ("take_profit_pct", "take_profit_pct", True),
+    ("max_unhedged_exposure_pct", "max_unhedged_exposure_pct", True),
+    ("min_win_rate", "min_win_rate", True),
+    ("max_asset_exposure_pct", "max_asset_exposure_pct", True),
+    ("hedge_urgency_threshold", "hedge_urgency_threshold", True),
+    ("hedge_urgency_spread_bump", "hedge_urgency_spread_bump", True),
+    ("max_drawdown_pct", "max_drawdown_pct", True),
+    ("drawdown_throttle_pct", "drawdown_throttle_pct", True),
+    ("paper_slippage_pct", "paper_slippage_pct", True),
+    ("max_entry_age_pct", "max_entry_age_pct", True),
+    ("halt_win_rate", "halt_win_rate", True),
+    ("flip_take_profit_pct", "flip_take_profit_pct", True),
+    # Direct params (int, passed through unchanged)
+    ("poll_interval", "poll_interval", False),
+    ("lookback", "lookback_seconds", False),
+    ("min_trades", "min_trades", False),
+    ("min_time_to_start", "min_time_to_start", False),
+    ("max_window", "max_window_seconds", False),
+    ("min_kelly_results", "min_kelly_results", False),
+    ("circuit_breaker_losses", "circuit_breaker_losses", False),
+    ("circuit_breaker_cooldown", "circuit_breaker_cooldown", False),
+    ("max_flips_per_market", "max_flips_per_market", False),
+    ("min_flip_buffer_seconds", "min_flip_buffer_seconds", False),
+)
 
 
 def _build_config(
@@ -116,15 +110,10 @@ def _build_config(
 
     overrides: dict[str, object] = {"whale_address": address}
 
-    for cli_name, field_name in _DECIMAL_PARAMS.items():
+    for cli_name, field_name, is_decimal in _PARAM_MAP:
         val = cli_args.get(cli_name)
         if val is not None:
-            overrides[field_name] = Decimal(str(val))
-
-    for cli_name, field_name in _DIRECT_PARAMS.items():
-        val = cli_args.get(cli_name)
-        if val is not None:
-            overrides[field_name] = val
+            overrides[field_name] = Decimal(str(val)) if is_decimal else val
 
     # Boolean flags with special handling
     if no_hedge_market_orders:

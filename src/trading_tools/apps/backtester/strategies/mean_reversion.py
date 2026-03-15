@@ -43,7 +43,7 @@ Params:
 from collections import deque
 from decimal import Decimal
 
-from trading_tools.core.models import ONE, Candle, Side, Signal
+from trading_tools.core.models import ONE, ZERO, Candle, Side, Signal
 
 
 class MeanReversionStrategy:
@@ -109,7 +109,7 @@ class MeanReversionStrategy:
         closes = list(self._closes)
         mean = sum(closes) / Decimal(len(closes))
         variance = sum((c - mean) ** 2 for c in closes) / Decimal(len(closes))
-        if variance == 0:
-            return Decimal(0)
+        if variance == ZERO:
+            return ZERO
         std = variance.sqrt()
         return (closes[-1] - mean) / std

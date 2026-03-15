@@ -30,6 +30,7 @@ Params:
 
 from decimal import Decimal
 
+from trading_tools.apps.backtester.indicators import sma as compute_sma
 from trading_tools.core.models import ONE, Candle, Side, Signal
 
 
@@ -89,8 +90,9 @@ class BollingerStrategy:
         """Return (middle, upper, lower) Bollinger Bands."""
         end = len(candles) - offset
         start = end - self._period
-        closes = [c.close for c in candles[start:end]]
-        middle = sum(closes) / Decimal(len(closes))
+        window = candles[start:end]
+        middle = compute_sma(window, self._period)
+        closes = [c.close for c in window]
         variance = sum((c - middle) ** 2 for c in closes) / Decimal(len(closes))
         std = variance.sqrt()
         upper = middle + self._num_std * std

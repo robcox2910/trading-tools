@@ -101,6 +101,24 @@ class PolymarketClient:
         self._data_client = httpx.AsyncClient(timeout=30.0)
         self._clob_lock = asyncio.Lock()
 
+    @staticmethod
+    def _check_data_response(response: httpx.Response, context: str) -> None:
+        """Raise if a Data API response indicates an error.
+
+        Args:
+            response: HTTP response to check.
+            context: Human-readable context for the error message.
+
+        Raises:
+            PolymarketAPIError: When the response status is >= 400.
+
+        """
+        if response.status_code >= HTTP_BAD_REQUEST:
+            raise PolymarketAPIError(
+                msg=f"{context}: HTTP {response.status_code}",
+                status_code=response.status_code,
+            )
+
     async def search_markets(
         self,
         keyword: str = "Bitcoin",
@@ -341,13 +359,9 @@ class PolymarketClient:
             except httpx.HTTPError as exc:
                 raise PolymarketAPIError(
                     msg=f"Data API request failed: {exc}",
-                    status_code=0,
+                    status_code=None,
                 ) from exc
-            if response.status_code >= HTTP_BAD_REQUEST:
-                raise PolymarketAPIError(
-                    msg=f"Data API error: HTTP {response.status_code}",
-                    status_code=response.status_code,
-                )
+            self._check_data_response(response, "Data API error")
             rows: list[dict[str, object]] = response.json()
             profiles.extend(
                 TraderProfile(
@@ -405,13 +419,9 @@ class PolymarketClient:
         except httpx.HTTPError as exc:
             raise PolymarketAPIError(
                 msg=f"Data API request failed: {exc}",
-                status_code=0,
+                status_code=None,
             ) from exc
-        if response.status_code >= HTTP_BAD_REQUEST:
-            raise PolymarketAPIError(
-                msg=f"Data API error: HTTP {response.status_code}",
-                status_code=response.status_code,
-            )
+        self._check_data_response(response, "Data API error")
         result: list[dict[str, object]] = response.json()
         return result
 
@@ -454,13 +464,9 @@ class PolymarketClient:
         except httpx.HTTPError as exc:
             raise PolymarketAPIError(
                 msg=f"Data API request failed: {exc}",
-                status_code=0,
+                status_code=None,
             ) from exc
-        if response.status_code >= HTTP_BAD_REQUEST:
-            raise PolymarketAPIError(
-                msg=f"Data API error: HTTP {response.status_code}",
-                status_code=response.status_code,
-            )
+        self._check_data_response(response, "Data API error")
         result: list[dict[str, object]] = response.json()
         return result
 
@@ -551,13 +557,9 @@ class PolymarketClient:
         except httpx.RequestError as exc:
             raise PolymarketAPIError(
                 msg=f"Data API request failed: {exc}",
-                status_code=0,
+                status_code=None,
             ) from exc
-        if response.status_code >= HTTP_BAD_REQUEST:
-            raise PolymarketAPIError(
-                msg=f"Data API error: HTTP {response.status_code}",
-                status_code=response.status_code,
-            )
+        self._check_data_response(response, "Data API error")
         rows: list[dict[str, object]] = response.json()
         for row in rows:
             if str(row.get("userName", "")).lower() == username.lower():
@@ -699,7 +701,7 @@ class PolymarketClient:
             raise PolymarketAPIError(
                 msg="Funder address required for on-chain balance query. "
                 "Set POLYMARKET_FUNDER_ADDRESS.",
-                status_code=0,
+                status_code=None,
             )
         resolved_rpc = rpc_url or os.environ.get(
             "POLYGON_RPC_URL", "https://rpc-mainnet.matic.quiknode.pro"
@@ -826,7 +828,7 @@ class PolymarketClient:
             raise PolymarketAPIError(
                 msg="Funder address required for position discovery. "
                 "Set POLYMARKET_FUNDER_ADDRESS.",
-                status_code=0,
+                status_code=None,
             )
         url = f"{self.DATA_API_URL}/positions"
         params: dict[str, str] = {
@@ -840,14 +842,10 @@ class PolymarketClient:
         except httpx.HTTPError as exc:
             raise PolymarketAPIError(
                 msg=f"Data API request failed: {exc}",
-                status_code=0,
+                status_code=None,
             ) from exc
 
-        if response.status_code >= HTTP_BAD_REQUEST:
-            raise PolymarketAPIError(
-                msg=f"Data API error: HTTP {response.status_code}",
-                status_code=response.status_code,
-            )
+        self._check_data_response(response, "Data API error")
 
         try:
             return response.json()
@@ -1089,7 +1087,7 @@ def _safe_decimal(value: Any) -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError) as exc:
         msg = f"Cannot convert {value!r} to Decimal"
-        raise PolymarketAPIError(msg=msg, status_code=0) from exc
+        raise PolymarketAPIError(msg=msg, status_code=None) from exc
 
 
 _FIVE_MINUTES = 300
