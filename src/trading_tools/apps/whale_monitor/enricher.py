@@ -350,9 +350,30 @@ def _extract_metadata(condition_id: str, data: dict[str, object]) -> MarketMetad
         data.get("closedTime") or event.get("closedTime") or data.get("endDate")
     )
 
-    # The Gamma API sets "winner" to the winning outcome label once resolved
+    # The Gamma API ``winner`` field is unreliable (often None even for closed
+    # markets).  Fall back to inferring the winner from ``outcomePrices``:
+    # parse the JSON array and treat the outcome whose price is >= 0.99 as the
+    # winner.  This matches how Polymarket resolves binary markets (winning
+    # token converges to $1, losing token to $0).
     raw_winner = data.get("winner")
-    winning_outcome = str(raw_winner).strip() if raw_winner else None
+    winning_outcome: str | None = str(raw_winner).strip() if raw_winner else None
+
+    if winning_outcome is None:
+        raw_outcomes = data.get("outcomes")
+        raw_prices = data.get("outcomePrices")
+        try:
+            outcomes_list: list[str] = (
+                json.loads(raw_outcomes) if isinstance(raw_outcomes, str) else []
+            )
+            raw_prices_str: str = raw_prices if isinstance(raw_prices, str) else "[]"
+            prices_list: list[float] = [float(str(p)) for p in json.loads(raw_prices_str)]
+            resolution_threshold = 0.99
+            for outcome_label, price in zip(outcomes_list, prices_list, strict=False):
+                if price >= resolution_threshold:
+                    winning_outcome = outcome_label
+                    break
+        except Exception:  # noqa: S110
+            pass
 
     return MarketMetadata(
         condition_id=condition_id,
