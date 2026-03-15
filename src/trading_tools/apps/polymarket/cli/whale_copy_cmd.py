@@ -1,9 +1,9 @@
 """CLI command for real-time whale copy-trading on Polymarket.
 
-Run a polling service that monitors a whale's trades, detects directional
-bias signals on BTC/ETH 5-minute markets, and copies them using temporal
-spread arbitrage. Defaults to paper mode; pass ``--confirm-live`` for
-real orders.
+Run a polling service that monitors a whale's trades via the Polymarket
+Data API directly, detects directional bias signals on BTC/ETH markets,
+and copies them using temporal spread arbitrage. Defaults to paper mode;
+pass ``--confirm-live`` for real orders.
 """
 
 import asyncio
@@ -16,11 +16,9 @@ import typer
 from trading_tools.apps.polymarket.cli._helpers import (
     build_authenticated_client,
     configure_logging,
-    require_whale_db_url,
 )
 from trading_tools.apps.whale_copy_trader.config import WhaleCopyConfig
 from trading_tools.apps.whale_copy_trader.copy_trader import WhaleCopyTrader
-from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
 _DEFAULT_POLL_INTERVAL = 5
 _DEFAULT_LOOKBACK = 900
@@ -38,7 +36,7 @@ _LIVE_WARNING_DELAY = 2
 def whale_copy(
     address: Annotated[str, typer.Option(help="Whale proxy wallet address to copy")],
     poll_interval: Annotated[
-        int, typer.Option(help="Seconds between DB polls (lower = faster)")
+        int, typer.Option(help="Seconds between API polls (lower = faster)")
     ] = _DEFAULT_POLL_INTERVAL,
     lookback: Annotated[
         int, typer.Option(help="Rolling window in seconds for trade accumulation")
@@ -70,19 +68,17 @@ def whale_copy(
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
-    db_url: Annotated[str, typer.Option(help="SQLAlchemy async DB URL")] = "",
     verbose: Annotated[  # noqa: FBT002
         bool, typer.Option("--verbose", "-v", help="Enable DEBUG logging")
     ] = False,
 ) -> None:
-    """Copy a whale's directional bets on BTC/ETH 5-minute markets.
+    """Copy a whale's directional bets on BTC/ETH markets in real-time.
 
-    Use temporal spread arbitrage: enter on the whale's favoured side,
-    then hedge the opposite side when the spread is cheap enough to
-    lock in guaranteed profit. Paper mode by default; use
-    ``--confirm-live`` for real Polymarket orders.
+    Poll the Polymarket Data API directly for the whale's trades, detect
+    directional bias signals, and copy them using temporal spread
+    arbitrage. Paper mode by default; use ``--confirm-live`` for real
+    Polymarket orders.
     """
-    resolved_db_url = db_url or require_whale_db_url()
     configure_logging(verbose=verbose)
 
     config = WhaleCopyConfig(
@@ -108,15 +104,11 @@ def whale_copy(
         time.sleep(_LIVE_WARNING_DELAY)
 
     async def _run() -> None:
-        repo = WhaleRepository(resolved_db_url)
-        await repo.init_db()
-
         # Both paper and live modes need a client for CLOB price data
         client = build_authenticated_client()
 
         trader = WhaleCopyTrader(
             config=config,
-            repo=repo,
             live=confirm_live,
             client=client,
         )
@@ -125,6 +117,5 @@ def whale_copy(
             await trader.run()
         finally:
             await client.close()
-            await repo.close()
 
     asyncio.run(_run())

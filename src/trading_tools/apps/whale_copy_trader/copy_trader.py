@@ -45,7 +45,6 @@ from .models import CopyResult, CopySignal, OpenPosition, PositionState, SideLeg
 from .signal_detector import SignalDetector
 
 if TYPE_CHECKING:
-    from trading_tools.apps.whale_monitor.repository import WhaleRepository
     from trading_tools.clients.polymarket.client import PolymarketClient
     from trading_tools.clients.polymarket.models import MarketToken
 
@@ -73,9 +72,9 @@ def _empty_result_list() -> list[CopyResult]:
 class WhaleCopyTrader:
     """Copy-trading engine that mirrors whale bets on Polymarket.
 
-    Poll the database for new whale trades, detect directional bias
-    signals, and either log virtual trades (paper mode) or place real
-    orders (live mode) via the Polymarket CLOB API.
+    Poll the Polymarket Data API directly for new whale trades, detect
+    directional bias signals, and either log virtual trades (paper mode)
+    or place real orders (live mode) via the Polymarket CLOB API.
 
     Use a two-phase temporal spread arbitrage approach: enter
     directionally on the whale's favoured side, then hedge the opposite
@@ -83,14 +82,12 @@ class WhaleCopyTrader:
 
     Attributes:
         config: Immutable service configuration.
-        repo: Async repository for whale trade queries.
         live: Enable live trading (requires ``client``).
         client: Authenticated Polymarket client for CLOB data and live orders.
 
     """
 
     config: WhaleCopyConfig
-    repo: WhaleRepository
     live: bool = False
     client: PolymarketClient | None = None
     _detector: SignalDetector | None = field(default=None, repr=False)
@@ -120,7 +117,6 @@ class WhaleCopyTrader:
         positions. Log a heartbeat every 60 seconds for monitoring.
         """
         self._detector = SignalDetector(
-            repo=self.repo,
             whale_address=self.config.whale_address,
             min_bias=self.config.min_bias,
             min_trades=self.config.min_trades,
@@ -160,6 +156,7 @@ class WhaleCopyTrader:
             self._running = False
             self._log_summary()
             await self._binance.close()
+            await self._detector.close()
 
     def stop(self) -> None:
         """Signal the polling loop to stop after the current cycle."""
