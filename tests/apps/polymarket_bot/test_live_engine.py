@@ -616,12 +616,13 @@ class TestAutoRedeem:
 
             with caplog.at_level(
                 logging.INFO,
-                logger="trading_tools.apps.polymarket_bot.live_engine",
+                logger="trading_tools.apps.bot_framework.redeemer",
             ):
                 await engine._rotate_markets()
                 # Let the background redeem task complete
-                assert engine._redeem_task is not None
-                await engine._redeem_task
+                assert engine._redeemer is not None
+                assert engine._redeemer.task is not None
+                await engine._redeemer.task
 
         client.get_redeemable_positions.assert_called_once()
         client.redeem_positions.assert_called_once_with(["0xresolved1"])
@@ -673,11 +674,12 @@ class TestAutoRedeem:
 
             with caplog.at_level(
                 logging.INFO,
-                logger="trading_tools.apps.polymarket_bot.live_engine",
+                logger="trading_tools.apps.bot_framework.redeemer",
             ):
                 await engine._rotate_markets()
                 # No background task should be created for undersized positions
-                assert engine._redeem_task is None
+                assert engine._redeemer is not None
+                assert engine._redeemer.task is None
 
         assert any("REDEEM skip" in msg for msg in caplog.messages)
         client.redeem_positions.assert_not_called()
@@ -767,12 +769,13 @@ class TestAutoRedeem:
 
             with caplog.at_level(
                 logging.WARNING,
-                logger="trading_tools.apps.polymarket_bot.live_engine",
+                logger="trading_tools.apps.bot_framework.redeemer",
             ):
                 await engine._rotate_markets()
                 # Let the background redeem task complete
-                assert engine._redeem_task is not None
-                await engine._redeem_task
+                assert engine._redeemer is not None
+                assert engine._redeemer.task is not None
+                await engine._redeemer.task
 
         client.redeem_positions.assert_called_once_with(["0xfailing"])
         assert any("CTF redemption failed" in msg for msg in caplog.messages)
@@ -805,21 +808,22 @@ class TestAutoRedeem:
             feed=feed,
             auto_redeem=True,
         )
+        assert engine._redeemer is not None
         # Simulate a still-running redeem task
         old_task = asyncio.create_task(asyncio.sleep(10))
-        engine._redeem_task = old_task
+        engine._redeemer._task = old_task
 
         with caplog.at_level(
             logging.INFO,
-            logger="trading_tools.apps.polymarket_bot.live_engine",
+            logger="trading_tools.apps.bot_framework.redeemer",
         ):
-            await engine._redeem_resolved()
+            await engine._redeemer.redeem_if_available()
 
         assert old_task.cancelling()
         assert any("cancelling previous" in msg for msg in caplog.messages)
         # New task should have been created
-        assert engine._redeem_task is not None
-        assert engine._redeem_task is not old_task
+        assert engine._redeemer.task is not None
+        assert engine._redeemer.task is not old_task
 
 
 class TestComputeSleep:
