@@ -365,11 +365,34 @@ trading-tools-polymarket whale-copy \
   --capital 100 \
   --max-position-pct 0.10 \
   --confirm-live
+
+# Load settings from a YAML config file (CLI flags override YAML values)
+trading-tools-polymarket whale-copy \
+  --config whale-copy.yaml \
+  --address 0xa45f... \
+  --capital 200 \
+  -v
+```
+
+**YAML config file** — all fields are optional (dataclass defaults fill omitted values). CLI flags override YAML values; YAML overrides defaults. Keys match ``WhaleCopyConfig`` field names:
+
+```yaml
+# whale-copy.yaml
+whale_address: "0xa45f..."
+capital: "200"
+max_position_pct: "0.15"
+max_spread_cost: "0.95"
+max_entry_price: "0.65"
+adaptive_kelly: true
+compound_profits: true
+circuit_breaker_losses: 5
+circuit_breaker_cooldown: 600
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--address` | *(required)* | Whale proxy wallet address to copy |
+| `--config` | *none* | Path to YAML config file (CLI flags override YAML values) |
 | `--poll-interval` | `5` | Seconds between DB polls (lower = faster) |
 | `--lookback` | `900` | Rolling window in seconds for trade accumulation |
 | `--min-bias` | `1.3` | Minimum bias ratio to trigger a copy signal |
