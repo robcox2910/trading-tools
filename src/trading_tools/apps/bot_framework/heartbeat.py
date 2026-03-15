@@ -39,7 +39,7 @@ class HeartbeatLogger:
         """
         self._interval = interval
         self._prefix = prefix
-        self._last: float = 0.0
+        self._last: float = float("-inf")
 
     def maybe_log(self, **metrics: Any) -> None:
         """Emit a heartbeat log line if the interval has elapsed.
