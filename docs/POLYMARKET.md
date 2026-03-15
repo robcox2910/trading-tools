@@ -345,7 +345,7 @@ The bot uses a multi-phase approach:
 
 If no hedge opportunity arises before expiry, the position resolves as a pure directional bet (profitable when the whale is correct ~80% of the time).
 
-6. **Flip trading (optional):** when `--enable-flipping` is set, take-profit sell exits are replaced with immediate re-entry on the opposite side. Instead of selling Up tokens at a profit and sitting idle, the bot buys Down tokens with the same dollar amount. If Down then rises to the flip take-profit threshold, it flips back to Up. This captures multiple spread swings per market window. Flips are capped by `--max-flips-per-market` and stop when fewer than `--min-flip-buffer-seconds` remain before expiry. If a take-profit hedge (combined < $1.00) is available, the hedge is preferred over a flip.
+6. **Flip trading (optional):** when `--enable-flipping` is set, take-profit exits are followed by immediate re-entry on the opposite side, matching the whale's pattern of playing both sides of price swings within a market window. On take-profit, the bot sells leg 1 tokens and immediately buys the opposite side with the same dollar amount. If that side then rises to the flip take-profit threshold, it flips back. This captures multiple spread swings per market window. Flips take priority over take-profit hedging when enabled. Flips are capped by `--max-flips-per-market` and stop when fewer than `--min-flip-buffer-seconds` remain before expiry. When flip limits are reached, the bot falls back to take-profit hedging (combined < $1.00) or selling.
 
 The service uses **incremental polling** for minimal latency: only new trades since the last poll are fetched, and a rolling window of trades is maintained in memory.
 
@@ -447,7 +447,7 @@ flip_take_profit_pct: "0.10"
 4. Fetch current CLOB prices; skip if favoured side > `max_entry_price`
 5. Open directional leg 1 (buy whale's favoured side, Kelly-sized with optional signal strength scaling)
 6. Each poll cycle checks (in order): take-profit → defensive hedge → profit hedge → expiry
-7. Take-profit: prefer hedging opposite side when combined < $1.00; if flipping enabled, flip to opposite side; sell as fallback
+7. Take-profit: if flipping enabled, sell + flip to opposite side (priority); otherwise hedge opposite side when combined < $1.00; sell as fallback
 8. Defensive hedge: buy opposite side if leg 1 price drops below `entry × (1 - defensive_hedge_pct)`. If combined cost > `max_defensive_hedge_cost`, sell leg 1 instead
 9. Hedge: if `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee`, buy matching token quantity on opposite side (FOK by default)
 10. Close remaining positions when the market window expires; P&L depends on state
