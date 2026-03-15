@@ -180,12 +180,12 @@ class SignalDetector:
         return signals
 
     async def _fetch_recent_trades(self) -> list[WhaleTrade]:
-        """Fetch the whale's latest trades from the Polymarket Data API.
+        """Fetch the whale's latest trades from the Polymarket Activity API.
 
-        Make a single HTTP request for the most recent trades and
-        deduplicate against previously seen trades. Use a composite key
-        of ``hash:asset:size`` because one transaction can contain
-        multiple fills with the same hash but different assets or sizes.
+        Use the ``/activity`` endpoint which is near-real-time (~10-30s
+        delay) compared to ``/trades`` which lags by 3-5 minutes.
+        Deduplicate using a composite key of ``hash:asset:size`` because
+        one transaction can contain multiple fills.
 
         Returns:
             List of new ``WhaleTrade`` instances not seen before.
@@ -196,23 +196,24 @@ class SignalDetector:
 
         try:
             resp = await client.get(
-                f"{_DATA_API_BASE}/trades",
+                f"{_DATA_API_BASE}/activity",
                 params={
                     "user": self.whale_address,
                     "limit": _API_LIMIT,
-                    "offset": 0,
-                    "takerOnly": "false",
                 },
             )
             resp.raise_for_status()
         except Exception:
-            logger.warning("Failed to fetch trades from Data API", exc_info=True)
+            logger.warning("Failed to fetch activity from Data API", exc_info=True)
             return []
 
         raw_trades: list[dict[str, Any]] = resp.json()
         new_trades: list[WhaleTrade] = []
 
         for raw in raw_trades:
+            # Activity endpoint includes non-trade types (e.g. REDEEM)
+            if raw.get("type") != "TRADE":
+                continue
             tx_hash = str(raw.get("transactionHash", ""))
             asset = str(raw.get("asset", raw.get("asset_id", "")))
             size = str(raw.get("size", ""))
