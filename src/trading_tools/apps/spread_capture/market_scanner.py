@@ -11,6 +11,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ONE = Decimal(1)
+
+
+def _is_expired(end_date: str, now_epoch: int) -> bool:
+    """Return True if the ISO-8601 end_date is in the past.
+
+    Args:
+        end_date: ISO-8601 date string from the Gamma API.
+        now_epoch: Current epoch seconds.
+
+    Returns:
+        ``True`` if the market has expired.
+
+    """
+    try:
+        dt = datetime.fromisoformat(end_date)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.timestamp() < now_epoch
+    except (ValueError, OSError):
+        return False
 
 
 def _empty_market_dict() -> dict[str, _KnownMarket]:
@@ -282,15 +303,29 @@ class MarketScanner:
             logger.warning("Market rediscovery failed")
             return
 
+        # Bug fix #1: compute new count BEFORE insertion (otherwise they
+        # are already in _known_markets and the count is always 0).
+        new_count = sum(1 for c, _ in discovered if c not in self._known_markets)
+
         for cid, end_date in discovered:
             if cid not in self._known_markets:
                 self._known_markets[cid] = _KnownMarket(condition_id=cid, end_date=end_date)
 
+        # Bug fix #6: purge markets past their end_date to prevent unbounded
+        # growth of _known_markets.
+        now_epoch = int(time.time())
+        expired = [
+            cid for cid, km in self._known_markets.items() if _is_expired(km.end_date, now_epoch)
+        ]
+        for cid in expired:
+            del self._known_markets[cid]
+
         self._last_discovery = now
         logger.debug(
-            "Rediscovered markets: %d total, %d new",
+            "Rediscovered markets: %d total, %d new, %d purged",
             len(discovered),
-            sum(1 for c, _ in discovered if c not in self._known_markets),
+            new_count,
+            len(expired),
         )
 
     @property

@@ -6,9 +6,12 @@ from CLI parameters.
 """
 
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from trading_tools.apps.polymarket_bot.protocols import PredictionMarketStrategy
 from trading_tools.apps.polymarket_bot.strategies.cross_market_arb import (
@@ -60,23 +63,23 @@ def build_pm_strategy(name: str, **kwargs: Any) -> PredictionMarketStrategy:
         typer.BadParameter: If the strategy name is not recognised.
 
     """
-    builders: dict[str, PredictionMarketStrategy] = {
-        "pm_mean_reversion": PMMeanReversionStrategy(
+    builders: dict[str, Callable[[], PredictionMarketStrategy]] = {
+        "pm_mean_reversion": lambda: PMMeanReversionStrategy(
             period=kwargs.get("period", 20),
             z_threshold=Decimal(str(kwargs.get("z_threshold", "1.5"))),
         ),
-        "pm_market_making": PMMarketMakingStrategy(
+        "pm_market_making": lambda: PMMarketMakingStrategy(
             spread_pct=Decimal(str(kwargs.get("spread_pct", "0.03"))),
             max_inventory=kwargs.get("max_inventory", 5),
         ),
-        "pm_liquidity_imbalance": PMLiquidityImbalanceStrategy(
+        "pm_liquidity_imbalance": lambda: PMLiquidityImbalanceStrategy(
             imbalance_threshold=Decimal(str(kwargs.get("imbalance_threshold", "0.65"))),
             depth_levels=kwargs.get("depth_levels", 5),
         ),
-        "pm_cross_market_arb": PMCrossMarketArbStrategy(
+        "pm_cross_market_arb": lambda: PMCrossMarketArbStrategy(
             min_edge=Decimal(str(kwargs.get("min_edge", "0.02"))),
         ),
-        "pm_late_snipe": PMLateSnipeStrategy(
+        "pm_late_snipe": lambda: PMLateSnipeStrategy(
             threshold=Decimal(str(kwargs.get("snipe_threshold", "0.90"))),
             window_seconds=kwargs.get("snipe_window", 60),
         ),
@@ -84,4 +87,4 @@ def build_pm_strategy(name: str, **kwargs: Any) -> PredictionMarketStrategy:
     if name not in builders:
         msg = f"Unknown strategy: {name}. Available: {', '.join(PM_STRATEGY_NAMES)}"
         raise typer.BadParameter(msg)
-    return builders[name]
+    return builders[name]()

@@ -721,7 +721,13 @@ class SpreadTrader:
 
         open_price = candles[0].open
         close_price = candles[-1].close
-        winning_side = "Up" if close_price > open_price else "Down"
+        if close_price > open_price:
+            winning_side = "Up"
+        elif close_price < open_price:
+            winning_side = "Down"
+        else:
+            # Flat market — no clear winner; conservative path handles None
+            winning_side = None
 
         logger.info(
             "  SPOT %s open=%.2f close=%.2f direction=%s",
