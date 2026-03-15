@@ -145,7 +145,7 @@ class WhaleCopyTrader:
             " min_time_to_start=%ds capital=$%s max_pos=%s%%"
             " max_spread_cost=%.2f max_entry_price=%.2f"
             " hedge_market=%s stop_loss=%.0f%% kelly=%.0f%%x%.1f"
-            " take_profit=%.2f fee_rate=%.4f max_unhedged=%.0f%%",
+            " take_profit=%.0f%% fee_rate=%.4f max_unhedged=%.0f%%",
             mode,
             self.config.whale_address,
             self.config.poll_interval,
@@ -161,7 +161,7 @@ class WhaleCopyTrader:
             self.config.stop_loss_pct * 100,
             self.config.win_rate * 100,
             self.config.kelly_fraction,
-            self.config.take_profit_price,
+            self.config.take_profit_pct * 100,
             self.config.clob_fee_rate,
             self.config.max_unhedged_exposure_pct * 100,
         )
@@ -388,8 +388,9 @@ class WhaleCopyTrader:
         """Sell unhedged leg 1 tokens when the price reaches take-profit level.
 
         For each UNHEDGED position, fetch the current price of the favoured
-        side.  If the price has risen to ``take_profit_price`` or above,
-        exit early to lock in known profit rather than waiting for settlement.
+        side.  If the price has risen by ``take_profit_pct`` above the entry
+        price, exit early to lock in known profit rather than waiting for
+        settlement.
 
         Only applies to UNHEDGED positions — HEDGED positions already have
         guaranteed profit and should always hold to settlement.
@@ -406,7 +407,8 @@ class WhaleCopyTrader:
                 continue
 
             current_price = prices.get(pos.leg1.side, ZERO)
-            if current_price < self.config.take_profit_price:
+            take_target = pos.leg1.entry_price * (_ONE + self.config.take_profit_pct)
+            if current_price < take_target:
                 continue
 
             # Take profit — sell at current price
@@ -455,10 +457,12 @@ class WhaleCopyTrader:
 
             mode = "LIVE" if self.live else "PAPER"
             logger.info(
-                "%s TAKE-PROFIT %s price=%.4f pnl=%.4f cost=$%.4f",
+                "%s TAKE-PROFIT %s price=%.4f target=%.4f entry=%.4f pnl=%.4f cost=$%.4f",
                 mode,
                 cid[:12],
                 current_price,
+                take_target,
+                pos.leg1.entry_price,
                 pnl,
                 pos.leg1.cost_basis,
             )

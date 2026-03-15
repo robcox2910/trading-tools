@@ -42,8 +42,9 @@ class WhaleCopyConfig:
         kelly_fraction: Fractional Kelly multiplier (0.5 = half-Kelly).
         clob_fee_rate: Per-leg CLOB fee rate for hedge profitability check.
             Polymarket currently charges 0 maker fee, but this is configurable.
-        take_profit_price: Sell unhedged leg 1 tokens when the price reaches
-            this level, locking in profit without waiting for settlement.
+        take_profit_pct: Fractional price gain above entry to trigger a
+            take-profit exit. 0.15 means sell when token price rises 15 %%
+            above the entry price (e.g. entry 0.50 → sell at 0.575).
         max_unhedged_exposure_pct: Maximum fraction of capital that may be
             committed to unhedged (non-guaranteed) positions at any time.
             Once reached, no new positions are opened until existing ones
@@ -68,5 +69,5 @@ class WhaleCopyConfig:
     win_rate: Decimal = Decimal("0.80")
     kelly_fraction: Decimal = Decimal("0.5")
     clob_fee_rate: Decimal = Decimal("0.0")
-    take_profit_price: Decimal = Decimal("0.85")
+    take_profit_pct: Decimal = Decimal("0.15")
     max_unhedged_exposure_pct: Decimal = Decimal("0.50")
