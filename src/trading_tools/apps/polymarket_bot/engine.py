@@ -203,14 +203,19 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
         return spread / TWO if spread > ZERO else ZERO
 
     def _check_loss_limit(self) -> bool:
-        """Return True if drawdown exceeds the configured loss limit."""
+        """Return True if drawdown exceeds the configured loss limit.
+
+        Align with live engine pattern: ``equity / initial < (1 - loss_frac)``
+        where ``loss_frac`` is derived from ``max_loss_pct`` (a negative
+        percentage, e.g. -20 for 20% loss).
+        """
         if self._config.initial_capital <= ZERO:
             return False
         equity = self._portfolio.total_equity
-        drawdown_pct = (
-            (equity - self._config.initial_capital) / self._config.initial_capital * Decimal(100)
-        )
-        return drawdown_pct <= self._config.max_loss_pct
+        # Convert negative-percentage convention to positive fraction
+        # e.g. max_loss_pct=-20 → loss_frac=0.20 → threshold=0.80
+        loss_frac = abs(self._config.max_loss_pct) / Decimal(100)
+        return equity / self._config.initial_capital < (Decimal(1) - loss_frac)
 
     def _open_position(
         self,

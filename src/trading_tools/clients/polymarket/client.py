@@ -36,6 +36,26 @@ logger = logging.getLogger(__name__)
 _ZERO = Decimal(0)
 _TWO = Decimal(2)
 _USDC_DECIMALS = Decimal("1e6")
+_CLOB_TIMEOUT = 30.0
+"""Timeout in seconds for CLOB adapter calls via ``asyncio.to_thread``."""
+
+
+async def _to_thread_with_timeout(func: Any, *args: Any, timeout: float = _CLOB_TIMEOUT) -> Any:
+    """Run a sync function in a thread with an async timeout.
+
+    Args:
+        func: Synchronous callable to run in a background thread.
+        *args: Positional arguments forwarded to *func*.
+        timeout: Maximum seconds to wait before raising ``TimeoutError``.
+
+    Returns:
+        The return value of *func*.
+
+    Raises:
+        TimeoutError: If the function does not complete within *timeout*.
+
+    """
+    return await asyncio.wait_for(asyncio.to_thread(func, *args), timeout=timeout)
 
 
 class PolymarketClient:
@@ -122,6 +142,30 @@ class PolymarketClient:
                 status_code=response.status_code,
             )
 
+    async def _data_get(self, url: str, params: Any) -> httpx.Response:
+        """Perform a GET on the Data API with standard error handling.
+
+        Args:
+            url: Full Data API URL.
+            params: Query parameters.
+
+        Returns:
+            The HTTP response with a successful status code.
+
+        Raises:
+            PolymarketAPIError: On network errors or non-2xx responses.
+
+        """
+        try:
+            response = await self._data_client.get(url, params=params)
+        except httpx.HTTPError as exc:
+            raise PolymarketAPIError(
+                msg=f"Data API request failed: {exc}",
+                status_code=None,
+            ) from exc
+        self._check_data_response(response, "Data API error")
+        return response
+
     async def search_markets(
         self,
         keyword: str = "Bitcoin",
@@ -170,7 +214,7 @@ class PolymarketClient:
 
         """
         async with self._clob_lock:
-            raw = await asyncio.to_thread(
+            raw = await _to_thread_with_timeout(
                 _clob_adapter.fetch_market, self._clob_client, condition_id
             )
         if raw is None:
@@ -183,7 +227,7 @@ class PolymarketClient:
         # Enrich tokens with live CLOB midpoint prices (concurrent fetches)
         async def _fetch_midpoint(token_id: str) -> str | None:
             async with self._clob_lock:
-                return await asyncio.to_thread(
+                return await _to_thread_with_timeout(
                     _clob_adapter.fetch_midpoint, self._clob_client, token_id
                 )
 
@@ -230,7 +274,7 @@ class PolymarketClient:
 
         """
         async with self._clob_lock:
-            raw = await asyncio.to_thread(
+            raw = await _to_thread_with_timeout(
                 _clob_adapter.fetch_market, self._clob_client, condition_id
             )
         if raw is None:
@@ -254,7 +298,7 @@ class PolymarketClient:
 
         """
         async with self._clob_lock:
-            raw = await asyncio.to_thread(
+            raw = await _to_thread_with_timeout(
                 _clob_adapter.fetch_order_book,
                 self._clob_client,
                 token_id,
@@ -378,14 +422,7 @@ class PolymarketClient:
                 "orderBy": order_by,
                 "category": category,
             }
-            try:
-                response = await self._data_client.get(url, params=params)
-            except httpx.HTTPError as exc:
-                raise PolymarketAPIError(
-                    msg=f"Data API request failed: {exc}",
-                    status_code=None,
-                ) from exc
-            self._check_data_response(response, "Data API error")
+            response = await self._data_get(url, params)
             rows: list[dict[str, object]] = response.json()
             profiles.extend(
                 TraderProfile(
@@ -438,14 +475,7 @@ class PolymarketClient:
             "limit": limit,
             "offset": offset,
         }
-        try:
-            response = await self._data_client.get(url, params=params)
-        except httpx.HTTPError as exc:
-            raise PolymarketAPIError(
-                msg=f"Data API request failed: {exc}",
-                status_code=None,
-            ) from exc
-        self._check_data_response(response, "Data API error")
+        response = await self._data_get(url, params)
         result: list[dict[str, object]] = response.json()
         return result
 
@@ -483,14 +513,7 @@ class PolymarketClient:
             "offset": offset,
             "takerOnly": "false",
         }
-        try:
-            response = await self._data_client.get(url, params=params)
-        except httpx.HTTPError as exc:
-            raise PolymarketAPIError(
-                msg=f"Data API request failed: {exc}",
-                status_code=None,
-            ) from exc
-        self._check_data_response(response, "Data API error")
+        response = await self._data_get(url, params)
         result: list[dict[str, object]] = response.json()
         return result
 
@@ -576,14 +599,7 @@ class PolymarketClient:
             "timePeriod": "ALL",
             "orderBy": "PNL",
         }
-        try:
-            response = await self._data_client.get(url, params=params)
-        except httpx.RequestError as exc:
-            raise PolymarketAPIError(
-                msg=f"Data API request failed: {exc}",
-                status_code=None,
-            ) from exc
-        self._check_data_response(response, "Data API error")
+        response = await self._data_get(url, params)
         rows: list[dict[str, object]] = response.json()
         for row in rows:
             if str(row.get("userName", "")).lower() == username.lower():
@@ -619,7 +635,7 @@ class PolymarketClient:
         """
         self._require_auth()
         async with self._clob_lock:
-            return await asyncio.to_thread(_clob_adapter.derive_api_creds, self._clob_client)
+            return await _to_thread_with_timeout(_clob_adapter.derive_api_creds, self._clob_client)
 
     async def place_order(self, request: OrderRequest) -> OrderResponse:
         """Place a limit or market order on Polymarket.
@@ -640,7 +656,7 @@ class PolymarketClient:
         self._require_auth()
         if request.order_type == "market":
             async with self._clob_lock:
-                raw = await asyncio.to_thread(
+                raw = await _to_thread_with_timeout(
                     _clob_adapter.place_market_order,
                     self._clob_client,
                     request.token_id,
@@ -649,7 +665,7 @@ class PolymarketClient:
                 )
         else:
             async with self._clob_lock:
-                raw = await asyncio.to_thread(
+                raw = await _to_thread_with_timeout(
                     _clob_adapter.place_limit_order,
                     self._clob_client,
                     request.token_id,
@@ -674,7 +690,9 @@ class PolymarketClient:
         """
         self._require_auth()
         async with self._clob_lock:
-            await asyncio.to_thread(_clob_adapter.update_balance, self._clob_client, asset_type)
+            await _to_thread_with_timeout(
+                _clob_adapter.update_balance, self._clob_client, asset_type
+            )
 
     async def get_balance(self, asset_type: str = "COLLATERAL") -> Balance:
         """Fetch the balance and allowance for an asset.
@@ -691,7 +709,9 @@ class PolymarketClient:
         """
         self._require_auth()
         async with self._clob_lock:
-            raw = await asyncio.to_thread(_clob_adapter.get_balance, self._clob_client, asset_type)
+            raw = await _to_thread_with_timeout(
+                _clob_adapter.get_balance, self._clob_client, asset_type
+            )
         raw_balance = _safe_decimal(raw.get("balance"))
         raw_allowance = _safe_decimal(raw.get("allowance"))
         return Balance(
@@ -730,7 +750,7 @@ class PolymarketClient:
         resolved_rpc = rpc_url or os.environ.get(
             "POLYGON_RPC_URL", "https://rpc-mainnet.matic.quiknode.pro"
         )
-        raw_balance = await asyncio.to_thread(
+        raw_balance = await _to_thread_with_timeout(
             _clob_adapter.get_onchain_usdc_balance,
             resolved_rpc,
             self._funder_address,
@@ -752,7 +772,9 @@ class PolymarketClient:
         """
         self._require_auth()
         async with self._clob_lock:
-            return await asyncio.to_thread(_clob_adapter.cancel_order, self._clob_client, order_id)
+            return await _to_thread_with_timeout(
+                _clob_adapter.cancel_order, self._clob_client, order_id
+            )
 
     async def get_open_orders(self) -> list[OrderResponse]:
         """Fetch all open orders for the authenticated user.
@@ -766,7 +788,9 @@ class PolymarketClient:
         """
         self._require_auth()
         async with self._clob_lock:
-            raw_list = await asyncio.to_thread(_clob_adapter.get_open_orders, self._clob_client)
+            raw_list = await _to_thread_with_timeout(
+                _clob_adapter.get_open_orders, self._clob_client
+            )
         return [_parse_raw_order(raw) for raw in raw_list]
 
     async def get_redeemable_positions(self) -> list[RedeemablePosition]:
@@ -861,15 +885,7 @@ class PolymarketClient:
         }
         if redeemable is not None:
             params["redeemable"] = str(redeemable).lower()
-        try:
-            response = await self._data_client.get(url, params=params)
-        except httpx.HTTPError as exc:
-            raise PolymarketAPIError(
-                msg=f"Data API request failed: {exc}",
-                status_code=None,
-            ) from exc
-
-        self._check_data_response(response, "Data API error")
+        response = await self._data_get(url, params)
 
         try:
             return response.json()
@@ -910,7 +926,7 @@ class PolymarketClient:
         resolved_rpc = rpc_url or os.environ.get(
             "POLYGON_RPC_URL", "https://rpc-mainnet.matic.quiknode.pro"
         )
-        receipts = await asyncio.to_thread(
+        receipts = await _to_thread_with_timeout(
             _ctf_redeemer.redeem_positions,
             resolved_rpc,
             self._private_key,
