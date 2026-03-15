@@ -1,4 +1,4 @@
-"""Tests for the WhaleCopyTrader engine with dual-side spread capture."""
+"""Tests for the WhaleCopyTrader engine with temporal spread arbitrage."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ import pytest
 from trading_tools.apps.whale_copy_trader.config import WhaleCopyConfig
 from trading_tools.apps.whale_copy_trader.copy_trader import (
     WhaleCopyTrader,
-    _compute_dual_side_pnl,
-    _parse_gamma_prices,
+    compute_pnl,
 )
 from trading_tools.apps.whale_copy_trader.models import (
     CopySignal,
     OpenPosition,
+    PositionState,
     SideLeg,
 )
 from trading_tools.clients.polymarket.models import Market, MarketToken, OrderResponse
@@ -28,14 +28,6 @@ _EXPECTED_POLL_COUNT_AFTER_DEDUP = 2
 _EXPECTED_MULTI_SIGNAL_COUNT = 2
 _DEFAULT_BIAS = Decimal("2.5")
 _DEFAULT_MIN_BIAS = Decimal("1.5")
-_TOPUP_BIAS = Decimal("3.5")
-_UP_VOLUME_PCT = Decimal("0.7")
-_DOWN_VOLUME_PCT = Decimal("0.3")
-
-_GAMMA_MARKET_DATA = {
-    "outcomes": '["Up","Down"]',
-    "outcomePrices": '["0.72","0.28"]',
-}
 
 
 def _make_config(**overrides: object) -> WhaleCopyConfig:
@@ -56,9 +48,8 @@ def _make_config(**overrides: object) -> WhaleCopyConfig:
         "min_trades": 3,
         "capital": Decimal(100),
         "max_position_pct": Decimal("0.10"),
-        "max_bias_scale": Decimal("3.0"),
-        "topup_bias_delta": Decimal("0.5"),
-        "min_unfavoured_pct": Decimal("0.15"),
+        "max_spread_cost": Decimal("0.95"),
+        "max_entry_price": Decimal("0.65"),
     }
     defaults.update(overrides)
     return WhaleCopyConfig(**defaults)  # type: ignore[arg-type]
@@ -69,8 +60,6 @@ def _make_signal(
     favoured_side: str = "Up",
     window_end_ts: int = _FUTURE_TS,
     bias_ratio: Decimal = _DEFAULT_BIAS,
-    up_volume_pct: Decimal = _UP_VOLUME_PCT,
-    down_volume_pct: Decimal = _DOWN_VOLUME_PCT,
 ) -> CopySignal:
     """Create a CopySignal for testing.
 
@@ -79,8 +68,6 @@ def _make_signal(
         favoured_side: Whale's favoured direction.
         window_end_ts: When the market window closes.
         bias_ratio: Whale's bias ratio.
-        up_volume_pct: Fraction of whale spend on Up.
-        down_volume_pct: Fraction of whale spend on Down.
 
     Returns:
         A CopySignal instance.
@@ -96,21 +83,65 @@ def _make_signal(
         window_start_ts=_FUTURE_TS - 300,
         window_end_ts=window_end_ts,
         detected_at=int(time.time()),
-        up_volume_pct=up_volume_pct,
-        down_volume_pct=down_volume_pct,
     )
 
 
-def _mock_gamma() -> AsyncMock:
-    """Create a mock GammaClient returning standard market data."""
-    gamma = AsyncMock()
-    gamma.get_market = AsyncMock(return_value=_GAMMA_MARKET_DATA)
-    gamma.close = AsyncMock()
-    return gamma
+def _mock_market(up_price: str = "0.55", down_price: str = "0.45") -> Market:
+    """Create a mock Market with the given prices.
+
+    Args:
+        up_price: Price for the Up token.
+        down_price: Price for the Down token.
+
+    Returns:
+        A Market instance.
+
+    """
+    return Market(
+        condition_id="cond_a",
+        question="BTC Up or Down?",
+        description="5 min market",
+        tokens=(
+            MarketToken(token_id="tok_up", outcome="Up", price=Decimal(up_price)),
+            MarketToken(token_id="tok_down", outcome="Down", price=Decimal(down_price)),
+        ),
+        end_date="2099-01-01",
+        volume=Decimal(10000),
+        liquidity=Decimal(5000),
+        active=True,
+    )
+
+
+def _mock_client(up_price: str = "0.55", down_price: str = "0.45") -> AsyncMock:
+    """Create a mock PolymarketClient with standard market data.
+
+    Args:
+        up_price: Price for the Up token.
+        down_price: Price for the Down token.
+
+    Returns:
+        A mock client.
+
+    """
+    client = AsyncMock()
+    client.get_market = AsyncMock(return_value=_mock_market(up_price, down_price))
+    client.place_order = AsyncMock(
+        return_value=OrderResponse(
+            order_id="order_123",
+            status="matched",
+            token_id="tok_up",
+            side="BUY",
+            price=Decimal(up_price),
+            size=Decimal("18.18"),
+            filled=Decimal("18.18"),
+        )
+    )
+    client.close = AsyncMock()
+    return client
 
 
 class TestWhaleCopyTrader:
-    """Tests for the core dual-side copy-trading engine."""
+    """Tests for the temporal spread arbitrage copy-trading engine."""
 
     @pytest.fixture
     def mock_repo(self) -> AsyncMock:
@@ -121,13 +152,12 @@ class TestWhaleCopyTrader:
 
     @pytest.fixture
     def trader(self, mock_repo: AsyncMock) -> WhaleCopyTrader:
-        """Create a WhaleCopyTrader in paper mode."""
-        t = WhaleCopyTrader(
+        """Create a WhaleCopyTrader in paper mode with CLOB client."""
+        return WhaleCopyTrader(
             config=_make_config(),
             repo=mock_repo,
+            client=_mock_client(),
         )
-        t._gamma = _mock_gamma()
-        return t
 
     @pytest.mark.asyncio
     async def test_poll_cycle_no_signals(self, trader: WhaleCopyTrader) -> None:
@@ -141,8 +171,8 @@ class TestWhaleCopyTrader:
         assert len(trader.positions) == 0
 
     @pytest.mark.asyncio
-    async def test_paper_opens_dual_side_position(self, trader: WhaleCopyTrader) -> None:
-        """Open a paper position with both Up and Down legs."""
+    async def test_opens_directional_leg1(self, trader: WhaleCopyTrader) -> None:
+        """Open a single directional leg (leg 1) copying the whale."""
         signal = _make_signal()
 
         with patch.object(trader, "_detector") as mock_detector:
@@ -153,21 +183,60 @@ class TestWhaleCopyTrader:
         assert "cond_a" in trader.positions
         pos = trader.positions["cond_a"]
         assert pos.is_paper
-        assert pos.favoured_side == "Up"
-        assert pos.up_leg is not None
-        assert pos.down_leg is not None
-        assert pos.up_leg.entry_price == Decimal("0.72")
-        assert pos.down_leg.entry_price == Decimal("0.28")
-        assert pos.up_leg.quantity > Decimal(0)
-        assert pos.down_leg.quantity > Decimal(0)
-        assert pos.total_cost_basis > Decimal(0)
+        assert pos.state == PositionState.UNHEDGED
+        assert pos.leg1.side == "Up"
+        assert pos.leg1.entry_price == Decimal("0.55")
+        assert pos.leg1.quantity > Decimal(0)
+        assert pos.hedge_leg is None
+        assert pos.hedge_side == "Down"
 
     @pytest.mark.asyncio
-    async def test_paper_falls_back_to_midpoint(self, trader: WhaleCopyTrader) -> None:
-        """Fall back to 0.50 midpoint when Gamma API fails."""
+    async def test_skips_entry_when_price_too_high(self) -> None:
+        """Skip entry when favoured side price exceeds max_entry_price."""
+        config = _make_config(max_entry_price=Decimal("0.50"))
+        repo = AsyncMock()
+        repo.get_trades = AsyncMock(return_value=[])
+        # Up price = 0.55 > max_entry_price = 0.50
+        trader = WhaleCopyTrader(config=config, repo=repo, client=_mock_client("0.55", "0.45"))
+
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert len(trader.positions) == 0
+
+    @pytest.mark.asyncio
+    async def test_ignores_duplicate_signal(self, trader: WhaleCopyTrader) -> None:
+        """Ignore signals for markets where we already have a position."""
         signal = _make_signal()
-        assert trader._gamma is not None
-        trader._gamma.get_market = AsyncMock(side_effect=RuntimeError("API down"))
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+            first_cost = trader.positions["cond_a"].total_cost_basis
+            await trader._poll_cycle()
+
+        assert trader.positions["cond_a"].total_cost_basis == first_cost
+        assert trader.poll_count == _EXPECTED_POLL_COUNT_AFTER_DEDUP
+
+    @pytest.mark.asyncio
+    async def test_hedge_placed_when_spread_below_threshold(self) -> None:
+        """Place hedge leg when combined cost is below max_spread_cost."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.95"),
+            max_entry_price=Decimal("0.65"),
+        )
+        repo = AsyncMock()
+        repo.get_trades = AsyncMock(return_value=[])
+        # Up=0.55, Down=0.35 → combined=0.90 < 0.95 target
+        client = _mock_client("0.55", "0.35")
+        trader = WhaleCopyTrader(config=config, repo=repo, client=client)
+
+        signal = _make_signal(favoured_side="Up")
 
         with patch.object(trader, "_detector") as mock_detector:
             mock_detector.detect_signals = AsyncMock(return_value=[signal])
@@ -175,104 +244,43 @@ class TestWhaleCopyTrader:
             await trader._poll_cycle()
 
         pos = trader.positions["cond_a"]
-        assert pos.up_leg is not None
-        assert pos.up_leg.entry_price == Decimal("0.50")
-        assert pos.down_leg is not None
-        assert pos.down_leg.entry_price == Decimal("0.50")
+        assert pos.state == PositionState.HEDGED
+        assert pos.hedge_leg is not None
+        assert pos.hedge_leg.side == "Down"
+        assert pos.hedge_leg.entry_price == Decimal("0.35")
 
     @pytest.mark.asyncio
-    async def test_same_signal_no_topup_when_bias_unchanged(self, trader: WhaleCopyTrader) -> None:
-        """Do not top up when the same signal appears with unchanged bias."""
-        signal = _make_signal()
+    async def test_hedge_not_placed_when_spread_above_threshold(self) -> None:
+        """Keep position UNHEDGED when combined cost exceeds target."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.90"),
+            max_entry_price=Decimal("0.65"),
+        )
+        repo = AsyncMock()
+        repo.get_trades = AsyncMock(return_value=[])
+        # Up=0.55, Down=0.45 → combined=1.00 > 0.90 target
+        trader = WhaleCopyTrader(config=config, repo=repo, client=_mock_client("0.55", "0.45"))
+
+        signal = _make_signal(favoured_side="Up")
 
         with patch.object(trader, "_detector") as mock_detector:
             mock_detector.detect_signals = AsyncMock(return_value=[signal])
             trader._detector = mock_detector
-
-            await trader._poll_cycle()
-            first_cost = trader.positions["cond_a"].total_cost_basis
-
             await trader._poll_cycle()
 
-        assert trader.positions["cond_a"].total_cost_basis == first_cost
-        assert trader.poll_count == _EXPECTED_POLL_COUNT_AFTER_DEDUP
+        pos = trader.positions["cond_a"]
+        assert pos.state == PositionState.UNHEDGED
+        assert pos.hedge_leg is None
 
     @pytest.mark.asyncio
-    async def test_topup_scales_both_legs(self, trader: WhaleCopyTrader) -> None:
-        """Top up both legs when whale increases conviction."""
-        signal_v1 = _make_signal(bias_ratio=_DEFAULT_BIAS)
-        signal_v2 = _make_signal(bias_ratio=_TOPUP_BIAS)
+    async def test_unhedged_pnl_whale_correct(self) -> None:
+        """Compute positive P&L when unhedged and whale is correct."""
+        config = _make_config(max_spread_cost=Decimal("0.80"))
+        repo = AsyncMock()
+        repo.get_trades = AsyncMock(return_value=[])
+        trader = WhaleCopyTrader(config=config, repo=repo, client=_mock_client("0.55", "0.45"))
 
-        with patch.object(trader, "_detector") as mock_detector:
-            mock_detector.detect_signals = AsyncMock(return_value=[signal_v1])
-            trader._detector = mock_detector
-            await trader._poll_cycle()
-
-        first_cost = trader.positions["cond_a"].total_cost_basis
-
-        with patch.object(trader, "_detector") as mock_detector:
-            mock_detector.detect_signals = AsyncMock(return_value=[signal_v2])
-            trader._detector = mock_detector
-            await trader._poll_cycle()
-
-        assert trader.positions["cond_a"].total_cost_basis > first_cost
-        assert trader.positions["cond_a"].last_bias == _TOPUP_BIAS
-
-    @pytest.mark.asyncio
-    async def test_no_topup_when_bias_increase_below_delta(self, trader: WhaleCopyTrader) -> None:
-        """Do not top up when bias increase is below topup_bias_delta."""
-        signal_v1 = _make_signal(bias_ratio=Decimal("2.5"))
-        small_increase = Decimal("2.7")
-        signal_v2 = _make_signal(bias_ratio=small_increase)
-
-        with patch.object(trader, "_detector") as mock_detector:
-            mock_detector.detect_signals = AsyncMock(return_value=[signal_v1])
-            trader._detector = mock_detector
-            await trader._poll_cycle()
-
-        first_cost = trader.positions["cond_a"].total_cost_basis
-
-        with patch.object(trader, "_detector") as mock_detector:
-            mock_detector.detect_signals = AsyncMock(return_value=[signal_v2])
-            trader._detector = mock_detector
-            await trader._poll_cycle()
-
-        assert trader.positions["cond_a"].total_cost_basis == first_cost
-
-    @pytest.mark.asyncio
-    async def test_flip_closes_both_legs(self, trader: WhaleCopyTrader) -> None:
-        """Close both legs and reopen when whale reverses direction."""
-        signal_up = _make_signal(favoured_side="Up")
-        signal_down = _make_signal(
-            favoured_side="Down",
-            up_volume_pct=Decimal("0.3"),
-            down_volume_pct=Decimal("0.7"),
-        )
-
-        with patch.object(trader, "_detector") as mock_detector:
-            mock_detector.detect_signals = AsyncMock(return_value=[signal_up])
-            trader._detector = mock_detector
-            await trader._poll_cycle()
-
-        assert trader.positions["cond_a"].favoured_side == "Up"
-
-        with patch.object(trader, "_detector") as mock_detector:
-            mock_detector.detect_signals = AsyncMock(return_value=[signal_down])
-            trader._detector = mock_detector
-            await trader._poll_cycle()
-
-        assert trader.positions["cond_a"].favoured_side == "Down"
-        assert len(trader.results) == 1
-        result = trader.results[0]
-        assert result.favoured_side == "Up"
-        assert result.pnl < Decimal(0)
-        # Flip loss should equal negative total cost basis
-        assert result.pnl == -result.total_cost_basis
-
-    @pytest.mark.asyncio
-    async def test_spread_pnl_when_up_wins(self, trader: WhaleCopyTrader) -> None:
-        """Compute correct P&L when Up wins (up_qty - total_cost)."""
-        signal = _make_signal(window_end_ts=_PAST_TS)
+        signal = _make_signal(favoured_side="Up", window_end_ts=_PAST_TS)
 
         with (
             patch.object(trader, "_detector") as mock_detector,
@@ -285,14 +293,19 @@ class TestWhaleCopyTrader:
         assert len(trader.results) == 1
         result = trader.results[0]
         assert result.winning_side == "Up"
-        assert result.up_qty is not None
-        expected_pnl = result.up_qty - result.total_cost_basis
-        assert result.pnl == expected_pnl
+        assert result.state == PositionState.UNHEDGED
+        # qty * $1.00 - cost = qty - cost = qty - (price * qty) = qty * (1 - price)
+        assert result.pnl > Decimal(0)
 
     @pytest.mark.asyncio
-    async def test_spread_pnl_when_down_wins(self, trader: WhaleCopyTrader) -> None:
-        """Compute correct P&L when Down wins (down_qty - total_cost)."""
-        signal = _make_signal(window_end_ts=_PAST_TS)
+    async def test_unhedged_pnl_whale_wrong(self) -> None:
+        """Compute negative P&L when unhedged and whale is wrong."""
+        config = _make_config(max_spread_cost=Decimal("0.80"))
+        repo = AsyncMock()
+        repo.get_trades = AsyncMock(return_value=[])
+        trader = WhaleCopyTrader(config=config, repo=repo, client=_mock_client("0.55", "0.45"))
+
+        signal = _make_signal(favoured_side="Up", window_end_ts=_PAST_TS)
 
         with (
             patch.object(trader, "_detector") as mock_detector,
@@ -305,135 +318,61 @@ class TestWhaleCopyTrader:
         assert len(trader.results) == 1
         result = trader.results[0]
         assert result.winning_side == "Down"
-        assert result.down_qty is not None
-        expected_pnl = result.down_qty - result.total_cost_basis
-        assert result.pnl == expected_pnl
+        assert result.pnl < Decimal(0)
+        assert result.pnl == -result.total_cost_basis
 
     @pytest.mark.asyncio
-    async def test_guaranteed_profit_when_spread_lt_one(self) -> None:
-        """Produce positive P&L regardless of winner when spread < $1.00."""
-        # Prices sum to 0.95 → guaranteed profit
-        gamma_data = {
-            "outcomes": '["Up","Down"]',
-            "outcomePrices": '["0.47","0.48"]',
-        }
-        gamma = AsyncMock()
-        gamma.get_market = AsyncMock(return_value=gamma_data)
-        gamma.close = AsyncMock()
-
-        # 50/50 split so both legs get equal capital
-        signal = _make_signal(
-            window_end_ts=_PAST_TS,
-            up_volume_pct=Decimal("0.5"),
-            down_volume_pct=Decimal("0.5"),
-        )
-
+    async def test_hedged_position_reduces_downside(self) -> None:
+        """Verify hedge reduces loss when leg1 loses vs unhedged scenario."""
         config = _make_config(
-            capital=Decimal(1000),
-            max_position_pct=Decimal("0.10"),
-            min_unfavoured_pct=Decimal("0.0"),
+            max_spread_cost=Decimal("0.95"),
+            max_entry_price=Decimal("0.65"),
         )
         repo = AsyncMock()
         repo.get_trades = AsyncMock(return_value=[])
-        trader = WhaleCopyTrader(config=config, repo=repo)
-        trader._gamma = gamma
+        # Spread = 0.55 + 0.35 = 0.90 < 0.95 → hedge triggers
+        client = _mock_client("0.55", "0.35")
+        trader = WhaleCopyTrader(config=config, repo=repo, client=client)
 
-        # Test both outcomes yield positive PnL
-        for winning in ("Up", "Down"):
-            trader._positions.clear()
-            trader._results.clear()
+        signal = _make_signal(favoured_side="Up", window_end_ts=_PAST_TS)
 
-            with (
-                patch.object(trader, "_detector") as mock_detector,
-                patch.object(
-                    trader, "_resolve_outcome", new_callable=AsyncMock, return_value=winning
-                ),
-            ):
-                mock_detector.detect_signals = AsyncMock(return_value=[signal])
-                trader._detector = mock_detector
-                await trader._poll_cycle()
-
-            assert len(trader.results) == 1, f"Expected 1 result for {winning}"
-            assert trader.results[0].pnl > Decimal(0), (
-                f"Expected positive PnL when {winning} wins, got {trader.results[0].pnl}"
-            )
-
-    @pytest.mark.asyncio
-    async def test_unfavoured_below_minimum_falls_back_to_single(self) -> None:
-        """Drop unfavoured leg when its quantity is below 5-token minimum."""
-        # Very cheap favoured side + tiny unfavoured allocation → unfavoured < 5 tokens
-        gamma_data = {
-            "outcomes": '["Up","Down"]',
-            "outcomePrices": '["0.10","0.90"]',
-        }
-        gamma = AsyncMock()
-        gamma.get_market = AsyncMock(return_value=gamma_data)
-        gamma.close = AsyncMock()
-
-        signal = _make_signal(
-            favoured_side="Up",
-            up_volume_pct=Decimal("0.95"),
-            down_volume_pct=Decimal("0.05"),
-        )
-
-        # Small capital to force unfavoured below minimum
-        config = _make_config(
-            capital=Decimal(30),
-            max_position_pct=Decimal("0.10"),
-            min_unfavoured_pct=Decimal("0.0"),
-        )
-        repo = AsyncMock()
-        repo.get_trades = AsyncMock(return_value=[])
-        trader = WhaleCopyTrader(config=config, repo=repo)
-        trader._gamma = gamma
-
-        with patch.object(trader, "_detector") as mock_detector:
+        with (
+            patch.object(trader, "_detector") as mock_detector,
+            patch.object(trader, "_resolve_outcome", new_callable=AsyncMock, return_value="Down"),
+        ):
             mock_detector.detect_signals = AsyncMock(return_value=[signal])
             trader._detector = mock_detector
             await trader._poll_cycle()
 
-        assert len(trader.positions) == 1
-        pos = trader.positions["cond_a"]
-        assert pos.up_leg is not None
-        assert pos.down_leg is None  # Too small
+        assert len(trader.results) == 1
+        result = trader.results[0]
+        assert result.state == PositionState.HEDGED
+        # Hedge side (Down) wins: hedge_qty - total_cost
+        # With cheap hedge (0.35), hedge_qty is large → net positive
+        assert result.pnl > Decimal(0)
+        # Meanwhile unhedged loss would be -leg1_cost = -$10
+        assert result.pnl > -result.leg1_qty
 
     @pytest.mark.asyncio
-    async def test_min_unfavoured_pct_enforced(self) -> None:
-        """Enforce min_unfavoured_pct floor on the unfavoured side."""
-        gamma_data = {
-            "outcomes": '["Up","Down"]',
-            "outcomePrices": '["0.50","0.50"]',
-        }
-        gamma = AsyncMock()
-        gamma.get_market = AsyncMock(return_value=gamma_data)
-        gamma.close = AsyncMock()
-
-        # Signal with 95/5 split, but floor is 0.20
-        signal = _make_signal(
-            favoured_side="Up",
-            up_volume_pct=Decimal("0.95"),
-            down_volume_pct=Decimal("0.05"),
-        )
-
-        config = _make_config(min_unfavoured_pct=Decimal("0.20"))
+    async def test_expired_unhedged_position_closes(self) -> None:
+        """Close an unhedged position when its market window expires."""
+        config = _make_config(max_spread_cost=Decimal("0.80"))
         repo = AsyncMock()
         repo.get_trades = AsyncMock(return_value=[])
-        trader = WhaleCopyTrader(config=config, repo=repo)
-        trader._gamma = gamma
+        trader = WhaleCopyTrader(config=config, repo=repo, client=_mock_client("0.55", "0.45"))
 
-        with patch.object(trader, "_detector") as mock_detector:
+        signal = _make_signal(window_end_ts=_PAST_TS)
+
+        with (
+            patch.object(trader, "_detector") as mock_detector,
+            patch.object(trader, "_resolve_outcome", new_callable=AsyncMock, return_value="Up"),
+        ):
             mock_detector.detect_signals = AsyncMock(return_value=[signal])
             trader._detector = mock_detector
             await trader._poll_cycle()
 
-        pos = trader.positions["cond_a"]
-        assert pos.up_leg is not None
-        assert pos.down_leg is not None
-        # Down leg should have at least 20% of cost basis
-        total = pos.total_cost_basis
-        down_pct = pos.down_leg.cost_basis / total
-        _expected_floor = Decimal("0.19")  # Allow rounding
-        assert down_pct >= _expected_floor
+        assert len(trader.positions) == 0
+        assert len(trader.results) == 1
 
     @pytest.mark.asyncio
     async def test_stop_signals_shutdown(self, trader: WhaleCopyTrader) -> None:
@@ -477,121 +416,108 @@ class TestSideLeg:
         assert leg.entry_price == Decimal("0.5667")
 
 
-class TestComputeDualSidePnl:
-    """Tests for the _compute_dual_side_pnl helper."""
+class TestComputePnl:
+    """Tests for the compute_pnl helper."""
 
-    def _make_position(
+    def _make_unhedged_position(
         self,
-        up_qty: Decimal = Decimal(14),
-        up_cost: Decimal = Decimal("2.66"),
-        down_qty: Decimal = Decimal(5),
-        down_cost: Decimal = Decimal("3.95"),
+        leg1_side: str = "Up",
+        leg1_qty: Decimal = Decimal("18.18"),
+        leg1_cost: Decimal = Decimal("10.00"),
     ) -> OpenPosition:
-        """Create an OpenPosition with both legs for P&L testing.
+        """Create an UNHEDGED position for P&L testing.
 
         Args:
-            up_qty: Up leg quantity.
-            up_cost: Up leg cost basis.
-            down_qty: Down leg quantity.
-            down_cost: Down leg cost basis.
+            leg1_side: Direction of the directional entry.
+            leg1_qty: Token quantity for leg 1.
+            leg1_cost: Cost basis for leg 1.
 
         Returns:
-            An OpenPosition with both legs populated.
+            An unhedged OpenPosition.
 
         """
         return OpenPosition(
             signal=_make_signal(),
-            favoured_side="Up",
-            up_leg=SideLeg(
-                side="Up",
-                entry_price=Decimal("0.19"),
-                quantity=up_qty,
-                cost_basis=up_cost,
+            state=PositionState.UNHEDGED,
+            leg1=SideLeg(
+                side=leg1_side,
+                entry_price=Decimal("0.55"),
+                quantity=leg1_qty,
+                cost_basis=leg1_cost,
             ),
-            down_leg=SideLeg(
-                side="Down",
-                entry_price=Decimal("0.79"),
-                quantity=down_qty,
-                cost_basis=down_cost,
-            ),
+            hedge_leg=None,
+            hedge_side="Down" if leg1_side == "Up" else "Up",
             entry_time=1000,
-            last_bias=Decimal("2.0"),
         )
 
-    def test_pnl_when_up_wins(self) -> None:
-        """P&L = up_qty - total_cost when Up wins."""
-        pos = self._make_position()
-        pnl = _compute_dual_side_pnl(pos, "Up")
-        # 14 - (2.66 + 3.95) = 14 - 6.61 = 7.39
-        assert pnl == Decimal(14) - Decimal("6.61")
+    def _make_hedged_position(self) -> OpenPosition:
+        """Create a HEDGED position for P&L testing.
 
-    def test_pnl_when_down_wins(self) -> None:
-        """P&L = down_qty - total_cost when Down wins."""
-        pos = self._make_position()
-        pnl = _compute_dual_side_pnl(pos, "Down")
-        # 5 - (2.66 + 3.95) = 5 - 6.61 = -1.61
-        assert pnl == Decimal(5) - Decimal("6.61")
+        Use capital-based sizing: $10 per leg at different prices, giving
+        different token quantities per side (whale-like opportunistic hedge).
 
-    def test_pnl_single_leg_only(self) -> None:
-        """Handle single-leg position where one leg is None."""
-        pos = OpenPosition(
+        Returns:
+            A hedged OpenPosition with both legs.
+
+        """
+        return OpenPosition(
             signal=_make_signal(),
-            favoured_side="Up",
-            up_leg=SideLeg(
+            state=PositionState.HEDGED,
+            leg1=SideLeg(
                 side="Up",
-                entry_price=Decimal("0.72"),
-                quantity=Decimal(10),
-                cost_basis=Decimal("7.20"),
+                entry_price=Decimal("0.55"),
+                quantity=Decimal("18.18"),
+                cost_basis=Decimal("10.00"),
             ),
-            down_leg=None,
+            hedge_leg=SideLeg(
+                side="Down",
+                entry_price=Decimal("0.35"),
+                quantity=Decimal("28.57"),
+                cost_basis=Decimal("10.00"),
+            ),
+            hedge_side="Down",
             entry_time=1000,
-            last_bias=Decimal("2.0"),
         )
-        pnl = _compute_dual_side_pnl(pos, "Up")
-        assert pnl == Decimal(10) - Decimal("7.20")
 
-        pnl_loss = _compute_dual_side_pnl(pos, "Down")
-        assert pnl_loss == Decimal(0) - Decimal("7.20")
+    def test_unhedged_pnl_when_leg1_wins(self) -> None:
+        """P&L = leg1_qty - leg1_cost when leg1 side wins."""
+        pos = self._make_unhedged_position()
+        pnl = compute_pnl(pos, "Up")
+        assert pnl == Decimal("18.18") - Decimal("10.00")
 
+    def test_unhedged_pnl_when_leg1_loses(self) -> None:
+        """P&L = -leg1_cost when leg1 side loses."""
+        pos = self._make_unhedged_position()
+        pnl = compute_pnl(pos, "Down")
+        assert pnl == -Decimal("10.00")
 
-class TestParseGammaPrices:
-    """Tests for the _parse_gamma_prices helper."""
+    def test_hedged_pnl_when_leg1_wins(self) -> None:
+        """P&L = leg1_qty - total_cost when leg1 wins (hedged)."""
+        pos = self._make_hedged_position()
+        pnl = compute_pnl(pos, "Up")
+        # 18.18 - (10 + 10) = -1.82 (leg1 wins but fewer tokens than cost)
+        assert pnl == Decimal("18.18") - Decimal("20.00")
 
-    def test_parses_both_prices(self) -> None:
-        """Return both Up and Down prices from valid Gamma data."""
-        market = {
-            "outcomes": '["Up","Down"]',
-            "outcomePrices": '["0.72","0.28"]',
-        }
-        prices = _parse_gamma_prices(market)
-        assert prices["Up"] == Decimal("0.72")
-        assert prices["Down"] == Decimal("0.28")
+    def test_hedged_pnl_when_hedge_wins(self) -> None:
+        """P&L = hedge_qty - total_cost when hedge side wins."""
+        pos = self._make_hedged_position()
+        pnl = compute_pnl(pos, "Down")
+        # 28.57 - (10 + 10) = 8.57 (hedge side has more tokens)
+        assert pnl == Decimal("28.57") - Decimal("20.00")
 
-    def test_derives_missing_down(self) -> None:
-        """Derive Down price as 1.0 - Up when Down is missing."""
-        market = {
-            "outcomes": '["Up"]',
-            "outcomePrices": '["0.72"]',
-        }
-        prices = _parse_gamma_prices(market)
-        assert prices["Up"] == Decimal("0.72")
-        assert prices["Down"] == Decimal("0.28")
+    def test_hedged_asymmetric_pnl_reflects_token_counts(self) -> None:
+        """Hedge side win yields more profit than leg1 win when hedge is cheaper."""
+        # Up=0.55, Down=0.35 → $10 each side
+        # Up tokens: 10/0.55 ≈ 18.18, Down tokens: 10/0.35 ≈ 28.57
+        pos = self._make_hedged_position()
+        pnl_leg1_wins = compute_pnl(pos, "Up")  # 18.18 - 20 = -1.82
+        pnl_hedge_wins = compute_pnl(pos, "Down")  # 28.57 - 20 = +8.57
 
-    def test_returns_midpoints_for_invalid_json(self) -> None:
-        """Fall back to midpoints when outcome data is invalid JSON."""
-        market = {
-            "outcomes": "not json",
-            "outcomePrices": "not json",
-        }
-        prices = _parse_gamma_prices(market)
-        assert prices["Up"] == Decimal("0.50")
-        assert prices["Down"] == Decimal("0.50")
-
-    def test_returns_midpoints_for_missing_fields(self) -> None:
-        """Fall back to midpoints when market dict lacks outcome fields."""
-        prices = _parse_gamma_prices({})
-        assert prices["Up"] == Decimal("0.50")
-        assert prices["Down"] == Decimal("0.50")
+        # Cheap hedge side yields more tokens → bigger win when it hits
+        assert pnl_hedge_wins > pnl_leg1_wins
+        assert pnl_hedge_wins > Decimal(0)
+        # Leg1 win is a small loss (spread > 1 from cost perspective)
+        assert pnl_leg1_wins < Decimal(0)
 
 
 class TestLiveTradingFlow:
@@ -600,34 +526,7 @@ class TestLiveTradingFlow:
     @pytest.fixture
     def mock_client(self) -> AsyncMock:
         """Create a mock PolymarketClient."""
-        client = AsyncMock()
-        client.get_market = AsyncMock(
-            return_value=Market(
-                condition_id="cond_a",
-                question="BTC Up or Down?",
-                description="5 min market",
-                tokens=(
-                    MarketToken(token_id="tok_up", outcome="Up", price=Decimal("0.60")),
-                    MarketToken(token_id="tok_down", outcome="Down", price=Decimal("0.40")),
-                ),
-                end_date="2099-01-01",
-                volume=Decimal(10000),
-                liquidity=Decimal(5000),
-                active=True,
-            )
-        )
-        client.place_order = AsyncMock(
-            return_value=OrderResponse(
-                order_id="order_123",
-                status="matched",
-                token_id="tok_up",
-                side="BUY",
-                price=Decimal("0.60"),
-                size=Decimal("16.66"),
-                filled=Decimal("16.66"),
-            )
-        )
-        return client
+        return _mock_client()
 
     @pytest.fixture
     def live_trader(self, mock_client: AsyncMock) -> WhaleCopyTrader:
@@ -642,10 +541,10 @@ class TestLiveTradingFlow:
         )
 
     @pytest.mark.asyncio
-    async def test_live_places_orders_for_both_sides(
+    async def test_live_places_single_leg_order(
         self, live_trader: WhaleCopyTrader, mock_client: AsyncMock
     ) -> None:
-        """Place orders for both Up and Down when in live mode."""
+        """Place only 1 order for leg 1 on entry (not 2)."""
         signal = _make_signal()
 
         with patch.object(live_trader, "_detector") as mock_detector:
@@ -653,16 +552,15 @@ class TestLiveTradingFlow:
             live_trader._detector = mock_detector
             await live_trader._poll_cycle()
 
-        mock_client.get_market.assert_called_once_with("cond_a")
-        # Should place 2 orders (one per side)
-        _expected_order_count = 2
-        assert mock_client.place_order.call_count == _expected_order_count
+        # get_market called twice: once for prices in _open_position,
+        # once for tokens in _open_position, once for hedge check
+        assert mock_client.place_order.call_count == 1
 
         pos = live_trader.positions["cond_a"]
         assert not pos.is_paper
-        assert pos.up_leg is not None
-        assert pos.down_leg is not None
-        assert len(pos.all_order_ids) == _expected_order_count
+        assert pos.state == PositionState.UNHEDGED
+        assert pos.leg1.side == "Up"
+        assert len(pos.all_order_ids) == 1
 
     @pytest.mark.asyncio
     async def test_live_handles_market_fetch_error(
