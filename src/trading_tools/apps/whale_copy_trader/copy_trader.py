@@ -318,10 +318,10 @@ class WhaleCopyTrader:
 
         For each UNHEDGED position, fetch the current price of the hedge
         side. If ``leg1_entry + hedge_price <= max_spread_cost``, the
-        opposite side is cheap enough to be worth hedging. Buy a
-        capital-sized allocation (same dollar amount as leg 1) to reduce
-        directional risk. This doesn't guarantee profit on every trade
-        but provides positive expected value across many trades.
+        opposite side is cheap enough to lock in a guaranteed spread
+        profit.  Buy the **same token quantity** as leg 1 so that
+        whichever side wins pays out ``qty * $1.00``, guaranteeing
+        ``qty * (1.0 - combined)`` profit.
         """
         unhedged = [
             (cid, pos)
@@ -348,10 +348,10 @@ class WhaleCopyTrader:
                 )
                 continue
 
-            # Hedge opportunity found — buy a capital-sized allocation
-            # on the opposite side (same dollar spend as leg 1).
-            spend = self._get_capital() * self.config.max_position_pct
-            hedge_qty = (spend / hedge_price).quantize(Decimal("0.01"))
+            # Hedge opportunity found — match leg 1's token quantity so
+            # that whichever side wins pays qty * $1.00, locking in
+            # guaranteed profit of qty * (1 - combined).
+            hedge_qty = pos.leg1.quantity
 
             if hedge_qty < _MIN_TOKEN_QTY:
                 logger.debug("  HEDGE-SKIP %s: qty %.2f below minimum", cid[:12], hedge_qty)
