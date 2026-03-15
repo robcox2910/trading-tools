@@ -183,7 +183,9 @@ class SignalDetector:
         """Fetch the whale's latest trades from the Polymarket Data API.
 
         Make a single HTTP request for the most recent trades and
-        deduplicate by transaction hash against previously seen trades.
+        deduplicate against previously seen trades. Use a composite key
+        of ``hash:asset:size`` because one transaction can contain
+        multiple fills with the same hash but different assets or sizes.
 
         Returns:
             List of new ``WhaleTrade`` instances not seen before.
@@ -212,9 +214,12 @@ class SignalDetector:
 
         for raw in raw_trades:
             tx_hash = str(raw.get("transactionHash", ""))
-            if not tx_hash or tx_hash in self._seen_hashes:
+            asset = str(raw.get("asset", raw.get("asset_id", "")))
+            size = str(raw.get("size", ""))
+            dedup_key = f"{tx_hash}:{asset}:{size}"
+            if not tx_hash or dedup_key in self._seen_hashes:
                 continue
-            self._seen_hashes.add(tx_hash)
+            self._seen_hashes.add(dedup_key)
             trade = _parse_trade(raw, self.whale_address, now_ms)
             if trade is not None:
                 new_trades.append(trade)
