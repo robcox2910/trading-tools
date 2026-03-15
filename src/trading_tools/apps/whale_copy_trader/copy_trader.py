@@ -99,6 +99,7 @@ class WhaleCopyTrader:
     _last_heartbeat: float = field(default=0.0, repr=False)
     _redeemer: PositionRedeemer | None = field(default=None, init=False, repr=False)
     _executor: OrderExecutor | None = field(default=None, init=False, repr=False)
+    _live_balance: Decimal = field(default=ZERO, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize shared services when running in live mode."""
@@ -126,7 +127,12 @@ class WhaleCopyTrader:
         )
         self._binance = BinanceClient()
         self._running = True
+
+        if self.live and self.client is not None:
+            await self._refresh_balance()
+
         mode = "LIVE" if self.live else "PAPER"
+        capital = self._get_capital()
         logger.info(
             "whale-copy started mode=%s address=%s poll=%ds"
             " lookback=%ds min_bias=%.1f min_trades=%d"
@@ -139,7 +145,7 @@ class WhaleCopyTrader:
             self.config.min_bias,
             self.config.min_trades,
             self.config.min_time_to_start,
-            self.config.capital,
+            capital,
             self.config.max_position_pct * 100,
             self.config.max_spread_cost,
             self.config.max_entry_price,
@@ -161,6 +167,41 @@ class WhaleCopyTrader:
     def stop(self) -> None:
         """Signal the polling loop to stop after the current cycle."""
         self._running = False
+
+    def _get_capital(self) -> Decimal:
+        """Return the current capital available for position sizing.
+
+        In live mode, use the real USDC balance from the CLOB. In paper
+        mode, use the configured starting capital.
+
+        Returns:
+            Available capital in USDC.
+
+        """
+        if self.live and self._live_balance > ZERO:
+            return self._live_balance
+        return self.config.capital
+
+    async def _refresh_balance(self) -> None:
+        """Fetch the live USDC balance from the CLOB API.
+
+        Call ``sync_balance`` first to ensure the cached value reflects
+        the latest on-chain state, then read the balance. On failure,
+        log a warning and keep the last known balance.
+        """
+        if self.client is None:
+            return
+        try:
+            await self.client.sync_balance("COLLATERAL")
+            bal = await self.client.get_balance("COLLATERAL")
+            self._live_balance = bal.balance
+            logger.info("BALANCE refreshed: $%.2f", self._live_balance)
+        except Exception:
+            logger.warning(
+                "Balance refresh failed, using last known: $%.2f",
+                self._live_balance,
+                exc_info=True,
+            )
 
     async def _poll_cycle(self) -> None:
         """Execute one poll-detect-act cycle.
@@ -228,7 +269,7 @@ class WhaleCopyTrader:
             )
             return
 
-        spend = self.config.capital * self.config.max_position_pct
+        spend = self._get_capital() * self.config.max_position_pct
         qty = (spend / favoured_price).quantize(Decimal("0.01"))
 
         if qty < _MIN_TOKEN_QTY:
@@ -318,7 +359,7 @@ class WhaleCopyTrader:
 
             # Hedge opportunity found — buy a capital-sized allocation
             # on the opposite side (same dollar spend as leg 1).
-            spend = self.config.capital * self.config.max_position_pct
+            spend = self._get_capital() * self.config.max_position_pct
             hedge_qty = (spend / hedge_price).quantize(Decimal("0.01"))
 
             if hedge_qty < _MIN_TOKEN_QTY:
