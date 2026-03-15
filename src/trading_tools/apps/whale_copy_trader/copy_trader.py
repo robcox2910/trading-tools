@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _HEARTBEAT_INTERVAL = 60
+_BALANCE_REFRESH_POLLS = 60
 _WIN_PRICE = Decimal("1.0")
 _MIN_TOKEN_QTY = Decimal(5)
 _ONE = Decimal(1)
@@ -206,11 +207,15 @@ class WhaleCopyTrader:
     async def _poll_cycle(self) -> None:
         """Execute one poll-detect-act cycle.
 
-        Detect new signals, open leg 1 for new markets, check hedge
-        opportunities for unhedged positions, and close expired ones.
+        Refresh the live balance periodically, detect new signals, open
+        leg 1 for new markets, check hedge opportunities for unhedged
+        positions, and close expired ones.
         """
         assert self._detector is not None  # noqa: S101
         self._poll_count += 1
+
+        if self.live and self._poll_count % _BALANCE_REFRESH_POLLS == 0:
+            await self._refresh_balance()
 
         signals = await self._detector.detect_signals()
         for signal in signals:
