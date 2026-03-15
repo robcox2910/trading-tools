@@ -50,6 +50,11 @@ _DECIMAL_PARAMS: dict[str, str] = {
     "max_asset_exposure_pct": "max_asset_exposure_pct",
     "hedge_urgency_threshold": "hedge_urgency_threshold",
     "hedge_urgency_spread_bump": "hedge_urgency_spread_bump",
+    "max_drawdown_pct": "max_drawdown_pct",
+    "drawdown_throttle_pct": "drawdown_throttle_pct",
+    "paper_slippage_pct": "paper_slippage_pct",
+    "max_entry_age_pct": "max_entry_age_pct",
+    "halt_win_rate": "halt_win_rate",
 }
 
 # Maps CLI parameter names to config field names for pass-through values
@@ -74,6 +79,7 @@ def _build_config(
     adaptive_kelly: bool | None,
     compound_profits: bool | None,
     use_market_orders: bool | None,
+    signal_strength_sizing: bool | None,
     **cli_args: object,
 ) -> WhaleCopyConfig:
     """Build a ``WhaleCopyConfig`` from an optional YAML file plus CLI overrides.
@@ -89,6 +95,7 @@ def _build_config(
         adaptive_kelly: Tri-state bool (``None`` = not set on CLI).
         compound_profits: Tri-state bool (``None`` = not set on CLI).
         use_market_orders: Tri-state bool (``None`` = not set on CLI).
+        signal_strength_sizing: Tri-state bool (``None`` = not set on CLI).
         **cli_args: Remaining CLI parameters keyed by their CLI name.
 
     Returns:
@@ -122,6 +129,8 @@ def _build_config(
         overrides["compound_profits"] = compound_profits
     if use_market_orders is not None:
         overrides["use_market_orders"] = use_market_orders
+    if signal_strength_sizing is not None:
+        overrides["signal_strength_sizing"] = signal_strength_sizing
 
     return WhaleCopyConfig.with_overrides(base, **overrides)
 
@@ -241,6 +250,33 @@ def whale_copy(  # noqa: PLR0913
             help="Use market orders (FOK) instead of limit orders (GTC)",
         ),
     ] = None,
+    max_drawdown_pct: Annotated[
+        str | None,
+        typer.Option(help="Max session drawdown as fraction (e.g. 0.15 = halt at 15%% loss)"),
+    ] = None,
+    drawdown_throttle_pct: Annotated[
+        str | None,
+        typer.Option(help="HWM drawdown fraction to throttle Kelly by 50%% (e.g. 0.10)"),
+    ] = None,
+    paper_slippage_pct: Annotated[
+        str | None,
+        typer.Option(help="Simulated slippage for paper fills (e.g. 0.005 = 0.5%%)"),
+    ] = None,
+    signal_strength_sizing: Annotated[
+        bool | None,
+        typer.Option(
+            "--signal-strength-sizing/--no-signal-strength-sizing",
+            help="Scale position size by signal strength score",
+        ),
+    ] = None,
+    max_entry_age_pct: Annotated[
+        str | None,
+        typer.Option(help="Max fraction of window elapsed to enter (e.g. 0.60 = first 60%%)"),
+    ] = None,
+    halt_win_rate: Annotated[
+        str | None,
+        typer.Option(help="Halt entries when adaptive win rate drops below this (e.g. 0.55)"),
+    ] = None,
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
@@ -290,6 +326,12 @@ def whale_copy(  # noqa: PLR0913
         hedge_urgency_spread_bump=hedge_urgency_spread_bump,
         circuit_breaker_losses=circuit_breaker_losses,
         circuit_breaker_cooldown=circuit_breaker_cooldown,
+        max_drawdown_pct=max_drawdown_pct,
+        drawdown_throttle_pct=drawdown_throttle_pct,
+        paper_slippage_pct=paper_slippage_pct,
+        signal_strength_sizing=signal_strength_sizing,
+        max_entry_age_pct=max_entry_age_pct,
+        halt_win_rate=halt_win_rate,
     )
 
     if confirm_live:

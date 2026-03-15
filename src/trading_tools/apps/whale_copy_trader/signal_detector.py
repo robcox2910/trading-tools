@@ -283,6 +283,13 @@ class SignalDetector:
             up_pct = Decimal(str(bd.up_volume / total_vol)) if total_vol > 0 else Decimal("0.5")
             down_pct = Decimal(1) - up_pct
 
+            # Composite signal strength: bias quality x trade volume
+            _max_bias = Decimal(3)
+            _max_trades = 10
+            bias_score = min(Decimal(1), Decimal(str(bd.bias_ratio)) / _max_bias)
+            trade_score = Decimal(min(bd.trade_count, _max_trades)) / Decimal(_max_trades)
+            strength = bias_score * trade_score
+
             signals.append(
                 CopySignal(
                     condition_id=bd.condition_id,
@@ -296,6 +303,7 @@ class SignalDetector:
                     detected_at=now,
                     up_volume_pct=up_pct,
                     down_volume_pct=down_pct,
+                    strength_score=strength,
                 )
             )
 
