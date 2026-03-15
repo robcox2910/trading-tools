@@ -408,16 +408,22 @@ circuit_breaker_cooldown: 600
 | `--kelly-fraction` | `0.5` | Fractional Kelly multiplier (e.g. 0.5 = half-Kelly for safety) |
 | `--clob-fee-rate` | `0.0` | Per-leg CLOB fee rate for hedge profitability check |
 | `--take-profit-pct` | `0.15` | Take profit at this % gain above entry (e.g. 0.15 = 15%) |
-| `--max-unhedged-exposure-pct` | `0.50` | Max fraction of capital in unhedged (non-guaranteed) positions |
+| `--max-unhedged-exposure-pct` | `0.50` | Max fraction of capital in net unhedged exposure per asset (opposite sides offset) |
 | `--adaptive-kelly/--no-adaptive-kelly` | `true` | Dynamically adjust Kelly win rate from realised unhedged outcomes |
 | `--min-kelly-results` | `20` | Min closed unhedged trades before adaptive Kelly activates |
-| `--min-win-rate` | `0.55` | Floor for adaptive Kelly win rate |
+| `--min-win-rate` | `0.65` | Floor for adaptive Kelly win rate |
 | `--max-asset-exposure-pct` | `0.30` | Max fraction of capital per asset+side (e.g. all BTC-USD Up) |
 | `--compound-profits/--no-compound-profits` | `true` | Grow paper capital by adding realised P&L from closed trades |
 | `--hedge-urgency-threshold` | `0.20` | Time fraction below which hedge spread threshold is relaxed |
 | `--hedge-urgency-spread-bump` | `0.03` | Amount added to max_spread_cost in urgency zone |
 | `--circuit-breaker-losses` | `3` | Consecutive unhedged losses to trigger cooldown pause (0=disabled) |
 | `--circuit-breaker-cooldown` | `300` | Seconds to pause new entries after circuit breaker triggers |
+| `--max-drawdown-pct` | `0.15` | Max session drawdown as fraction — halt entries at 15% loss from start |
+| `--drawdown-throttle-pct` | `0.10` | HWM drawdown fraction to throttle Kelly by 50% (e.g. 0.10 = throttle at 10% below peak) |
+| `--paper-slippage-pct` | `0.005` | Simulated slippage for paper fills (e.g. 0.005 = 0.5% worse price) |
+| `--signal-strength-sizing/--no-signal-strength-sizing` | `true` | Scale position size by signal strength (bias ratio × trade count) |
+| `--max-entry-age-pct` | `0.60` | Max fraction of window elapsed before skipping entry (e.g. 0.60 = first 60% only) |
+| `--halt-win-rate` | `0.55` | Halt entries when adaptive win rate drops below this threshold |
 | `--confirm-live` | `false` | **Required flag** for live trading |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
@@ -428,9 +434,9 @@ circuit_breaker_cooldown: 600
 2. Group by `condition_id`, compute bias via `analyse_markets()`
 3. Filter: BTC/ETH asset only, future time window, bias > threshold, trades >= min
 4. Fetch current CLOB prices; skip if favoured side > `max_entry_price`
-5. Open directional leg 1 (buy whale's favoured side, Kelly-sized)
+5. Open directional leg 1 (buy whale's favoured side, Kelly-sized with optional signal strength scaling)
 6. Each poll cycle checks (in order): take-profit → defensive hedge → profit hedge → expiry
-7. Take-profit: sell if leg 1 price ≥ `take_profit_price`
+7. Take-profit: prefer hedging opposite side when combined < $1.00; sell as fallback if hedge too expensive
 8. Defensive hedge: buy opposite side if leg 1 price drops below `entry × (1 - defensive_hedge_pct)`
 9. Hedge: if `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee`, buy matching token quantity on opposite side (FOK by default)
 10. Close remaining positions when the market window expires; P&L depends on state

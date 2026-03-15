@@ -55,6 +55,8 @@ class CopySignal:
         detected_at: UTC epoch seconds when the signal was detected.
         up_volume_pct: Fraction of whale spend on Up (0.0-1.0).
         down_volume_pct: Fraction of whale spend on Down (sums to 1.0).
+        strength_score: Composite signal quality score (0.0-1.0) derived
+            from bias ratio and trade count. Used for proportional sizing.
 
     """
 
@@ -69,6 +71,7 @@ class CopySignal:
     detected_at: int
     up_volume_pct: Decimal = Decimal("0.5")
     down_volume_pct: Decimal = Decimal("0.5")
+    strength_score: Decimal = Decimal("1.0")
 
 
 def _empty_str_list() -> list[str]:

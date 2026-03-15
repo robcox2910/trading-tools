@@ -52,6 +52,11 @@ def _make_config(**overrides: object) -> WhaleCopyConfig:
         "max_position_pct": Decimal("0.10"),
         "max_spread_cost": Decimal("0.95"),
         "max_entry_price": Decimal("0.65"),
+        "signal_strength_sizing": False,
+        "halt_win_rate": Decimal(0),
+        "max_entry_age_pct": Decimal(0),
+        "max_drawdown_pct": Decimal("1.0"),
+        "paper_slippage_pct": Decimal(0),
     }
     defaults.update(overrides)
     return WhaleCopyConfig(**defaults)  # type: ignore[arg-type]
@@ -806,11 +811,12 @@ class TestKellyPositionSizing:
 
         # At price 0.55: b = 0.45/0.55 ≈ 0.818, kelly = (0.818*0.8-0.2)/0.818 ≈ 0.556
         # half-kelly = 0.278, clamped to max 0.20
-        pct_low = trader._kelly_position_pct(Decimal("0.55"))
+        sig = _make_signal()
+        pct_low = trader._kelly_position_pct(Decimal("0.55"), sig)
 
         # At price 0.62: b = 0.38/0.62 ≈ 0.613, kelly = (0.613*0.8-0.2)/0.613 ≈ 0.474
         # half-kelly = 0.237, clamped to max 0.20
-        pct_high = trader._kelly_position_pct(Decimal("0.62"))
+        pct_high = trader._kelly_position_pct(Decimal("0.62"), sig)
 
         # Both clamped to max in this case, but kelly itself is smaller for higher price
         assert pct_low <= Decimal("0.20")
@@ -825,7 +831,7 @@ class TestKellyPositionSizing:
         trader = WhaleCopyTrader(config=config, client=_mock_client())
 
         # At price 0.55 with 30% win rate: b = 0.818, kelly = (0.818*0.3-0.7)/0.818 < 0
-        pct = trader._kelly_position_pct(Decimal("0.55"))
+        pct = trader._kelly_position_pct(Decimal("0.55"), _make_signal())
         assert pct == Decimal(0)
 
     def test_kelly_clamped_to_max_position_pct(self) -> None:
@@ -837,7 +843,7 @@ class TestKellyPositionSizing:
         )
         trader = WhaleCopyTrader(config=config, client=_mock_client())
 
-        pct = trader._kelly_position_pct(Decimal("0.40"))
+        pct = trader._kelly_position_pct(Decimal("0.40"), _make_signal())
         assert pct <= Decimal("0.10")
 
 
@@ -902,7 +908,8 @@ class TestTakeProfit:
             take_profit_pct=Decimal("0.55"),
         )
         market_open = _mock_market("0.55", "0.45")
-        market_up = _mock_market("0.90", "0.10")
+        # Down=0.50 → combined 0.55+0.50=1.05 ≥ 1.0 → sell fallback
+        market_up = _mock_market("0.90", "0.50")
 
         client = AsyncMock()
         # First cycle needs: 1 price fetch (open), then take-profit/stop-loss/hedge checks
@@ -985,9 +992,8 @@ class TestTakeProfit:
 
         assert "cond_a" in trader.positions
 
-        # Second cycle: price jumps — both take-profit (0.90 >= 0.85) and
-        # hedge (0.55 + 0.05 = 0.60 < 0.95) could trigger, but take-profit
-        # is checked first and wins
+        # Second cycle: price jumps — take-profit triggers and prefers
+        # hedging when combined < 1.0 (0.55 + 0.05 = 0.60)
         client.get_market = AsyncMock(return_value=market_jump)
 
         with patch.object(trader, "_detector") as mock_detector:
@@ -995,8 +1001,9 @@ class TestTakeProfit:
             trader._detector = mock_detector
             await trader._poll_cycle()
 
-        assert "cond_a" not in trader.positions
-        assert trader.results[0].state == PositionState.EXITED
+        # Take-profit-by-hedging: position becomes HEDGED, not removed
+        assert "cond_a" in trader.positions
+        assert trader.positions["cond_a"].state == PositionState.HEDGED
 
 
 class TestDatabasePersistence:
@@ -1028,14 +1035,15 @@ class TestDatabasePersistence:
 
     @pytest.mark.asyncio
     async def test_persist_on_take_profit(self) -> None:
-        """Verify save_result is called on take-profit exit."""
+        """Verify save_result is called on take-profit sell exit."""
         config = _make_config(
             max_spread_cost=Decimal("0.80"),
             max_entry_price=Decimal("0.65"),
             take_profit_pct=Decimal("0.55"),
         )
         market_open = _mock_market("0.55", "0.45")
-        market_up = _mock_market("0.90", "0.10")
+        # Down=0.50 → combined 0.55+0.50=1.05 ≥ 1.0 → sell fallback
+        market_up = _mock_market("0.90", "0.50")
 
         client = AsyncMock()
         client.get_market = AsyncMock(return_value=market_open)
@@ -1757,3 +1765,668 @@ class TestUnknownOutcome:
 
         # 2 known results, 2 wins → 100% win rate (unknown excluded)
         assert trader._effective_win_rate() == Decimal(1)
+
+
+class TestDefensiveHedgePartialFill:
+    """Tests for partial fill guard on defensive hedge orders."""
+
+    @pytest.mark.asyncio
+    async def test_partial_defensive_hedge_stays_unhedged(self) -> None:
+        """Keep position UNHEDGED when defensive hedge fill is less than leg 1 qty."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),  # prevent profit hedge
+            max_entry_price=Decimal("0.65"),
+            defensive_hedge_pct=Decimal("0.50"),
+            hedge_with_market_orders=True,
+        )
+        market_open = _mock_market("0.55", "0.45")
+        market_drop = _mock_market("0.20", "0.80")
+
+        _leg1_fill = Decimal("18.18")
+        _hedge_partial = Decimal("10.00")
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+        client.place_order = AsyncMock(
+            side_effect=[
+                # Leg 1: full fill
+                OrderResponse(
+                    order_id="order_leg1",
+                    status="matched",
+                    token_id="tok_up",
+                    side="BUY",
+                    price=Decimal("0.55"),
+                    size=_leg1_fill,
+                    filled=_leg1_fill,
+                ),
+                # Defensive hedge: partial fill
+                OrderResponse(
+                    order_id="order_def_hedge",
+                    status="matched",
+                    token_id="tok_down",
+                    side="BUY",
+                    price=Decimal("0.80"),
+                    size=_leg1_fill,
+                    filled=_hedge_partial,
+                ),
+            ]
+        )
+
+        trader = WhaleCopyTrader(config=config, live=True, client=client)
+
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+        assert trader.positions["cond_a"].state == PositionState.UNHEDGED
+
+        # Second cycle: price drops, defensive hedge triggers but partial fill
+        client.get_market = AsyncMock(return_value=market_drop)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        pos = trader.positions["cond_a"]
+        assert pos.state == PositionState.UNHEDGED
+        assert pos.hedge_leg is None
+
+
+class TestMaxDrawdownKillSwitch:
+    """Tests for session-level max drawdown kill-switch."""
+
+    @pytest.mark.asyncio
+    async def test_halts_entries_at_max_drawdown(self) -> None:
+        """Block new positions when cumulative P&L exceeds max drawdown."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_drawdown_pct=Decimal("0.15"),
+            compound_profits=True,
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+        trader._session_start_capital = Decimal(100)
+
+        # Simulate -16% drawdown (exceeds 15% limit)
+        _big_loss = Decimal("-16.0")
+        trader._results.append(
+            CopyResult(
+                signal=_make_signal(),
+                state=PositionState.UNHEDGED,
+                leg1_side="Up",
+                leg1_entry=Decimal("0.55"),
+                leg1_qty=Decimal(30),
+                hedge_entry=None,
+                hedge_qty=None,
+                total_cost_basis=Decimal("16.50"),
+                entry_time=1000,
+                pnl=_big_loss,
+                outcome_known=True,
+            )
+        )
+
+        signal = _make_signal(condition_id="cond_new")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_new" not in trader.positions
+
+    @pytest.mark.asyncio
+    async def test_allows_entries_within_drawdown(self) -> None:
+        """Allow new positions when drawdown is within the limit."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_drawdown_pct=Decimal("0.15"),
+            compound_profits=True,
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+        trader._session_start_capital = Decimal(100)
+
+        # Simulate -10% drawdown (within 15% limit)
+        _small_loss = Decimal("-10.0")
+        trader._results.append(
+            CopyResult(
+                signal=_make_signal(),
+                state=PositionState.UNHEDGED,
+                leg1_side="Up",
+                leg1_entry=Decimal("0.55"),
+                leg1_qty=Decimal(20),
+                hedge_entry=None,
+                hedge_qty=None,
+                total_cost_basis=Decimal("11.0"),
+                entry_time=1000,
+                pnl=_small_loss,
+                outcome_known=True,
+            )
+        )
+
+        signal = _make_signal(condition_id="cond_new")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_new" in trader.positions
+
+
+class TestHighWaterMarkThrottle:
+    """Tests for HWM drawdown throttle on Kelly sizing."""
+
+    def test_throttle_activates_below_hwm(self) -> None:
+        """Halve Kelly sizing when total capital drops below HWM threshold."""
+        config = _make_config(
+            win_rate=Decimal("0.80"),
+            kelly_fraction=Decimal("0.5"),
+            max_position_pct=Decimal("0.50"),
+            drawdown_throttle_pct=Decimal("0.10"),
+            compound_profits=True,
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client())
+        trader._high_water_mark = Decimal(100)
+
+        # Simulate losses to bring total below HWM * 0.90
+        _loss = Decimal("-15.0")
+        trader._results.append(
+            CopyResult(
+                signal=_make_signal(),
+                state=PositionState.UNHEDGED,
+                leg1_side="Up",
+                leg1_entry=Decimal("0.55"),
+                leg1_qty=Decimal(30),
+                hedge_entry=None,
+                hedge_qty=None,
+                total_cost_basis=Decimal("16.50"),
+                entry_time=1000,
+                pnl=_loss,
+                outcome_known=True,
+            )
+        )
+
+        signal = _make_signal()
+        pct_throttled = trader._kelly_position_pct(Decimal("0.55"), signal)
+
+        # Reset HWM low so no throttle
+        trader._high_water_mark = Decimal(50)
+        pct_normal = trader._kelly_position_pct(Decimal("0.55"), signal)
+
+        assert pct_throttled < pct_normal
+
+
+class TestSignalStrengthSizing:
+    """Tests for signal strength proportional sizing."""
+
+    def test_strength_score_scales_position(self) -> None:
+        """Position size scales with signal strength score."""
+        config = _make_config(
+            win_rate=Decimal("0.80"),
+            kelly_fraction=Decimal("0.5"),
+            max_position_pct=Decimal("0.50"),
+            signal_strength_sizing=True,
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client())
+
+        full_signal = _make_signal()  # strength_score=1.0
+        half_signal = CopySignal(
+            condition_id="cond_half",
+            title="Test signal",
+            asset="BTC-USD",
+            favoured_side="Up",
+            bias_ratio=Decimal("1.5"),
+            trade_count=5,
+            window_start_ts=_FUTURE_TS - 300,
+            window_end_ts=_FUTURE_TS,
+            detected_at=int(time.time()),
+            strength_score=Decimal("0.5"),
+        )
+
+        pct_full = trader._kelly_position_pct(Decimal("0.55"), full_signal)
+        pct_half = trader._kelly_position_pct(Decimal("0.55"), half_signal)
+
+        assert pct_full > Decimal(0)
+        assert pct_half > Decimal(0)
+        # Half signal should get roughly half the size
+        _tolerance = Decimal("0.001")
+        assert abs(pct_half - pct_full * Decimal("0.5")) < _tolerance
+
+    def test_disabled_ignores_strength(self) -> None:
+        """Position size ignores strength when signal_strength_sizing is False."""
+        config = _make_config(
+            win_rate=Decimal("0.80"),
+            kelly_fraction=Decimal("0.5"),
+            max_position_pct=Decimal("0.50"),
+            signal_strength_sizing=False,
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client())
+
+        full_signal = _make_signal()  # strength_score=1.0
+        half_signal = CopySignal(
+            condition_id="cond_half",
+            title="Test signal",
+            asset="BTC-USD",
+            favoured_side="Up",
+            bias_ratio=Decimal("1.5"),
+            trade_count=5,
+            window_start_ts=_FUTURE_TS - 300,
+            window_end_ts=_FUTURE_TS,
+            detected_at=int(time.time()),
+            strength_score=Decimal("0.5"),
+        )
+
+        pct_full = trader._kelly_position_pct(Decimal("0.55"), full_signal)
+        pct_half = trader._kelly_position_pct(Decimal("0.55"), half_signal)
+
+        assert pct_full == pct_half
+
+
+class TestPriceCache:
+    """Tests for per-cycle price caching."""
+
+    @pytest.mark.asyncio
+    async def test_cache_built_for_all_positions(self) -> None:
+        """Price cache contains entries for all open positions."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_price=Decimal("0.65"),
+            max_position_pct=Decimal("0.10"),
+        )
+        client = _mock_client("0.55", "0.45")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        # Open two positions
+        signals = [
+            _make_signal(condition_id="cond_a"),
+            _make_signal(condition_id="cond_b"),
+        ]
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=signals)
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        _expected = 2
+        assert len(trader.positions) == _expected
+
+        cache = await trader._build_price_cache()
+        assert "cond_a" in cache
+        assert "cond_b" in cache
+        assert "Up" in cache["cond_a"]
+        assert "Down" in cache["cond_a"]
+
+
+class TestTakeProfitByHedging:
+    """Tests for take-profit via hedging instead of selling."""
+
+    @pytest.mark.asyncio
+    async def test_hedges_when_combined_below_one(self) -> None:
+        """Take-profit hedges the opposite side when combined < $1.00."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),  # prevent normal hedge
+            max_entry_price=Decimal("0.65"),
+            take_profit_pct=Decimal("0.55"),
+        )
+        market_open = _mock_market("0.55", "0.45")
+        # Price jumps: leg1 is now 0.90, opposite side is 0.05
+        # combined = 0.55 + 0.05 = 0.60 < 1.0 → hedge path
+        market_up = _mock_market("0.90", "0.05")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+
+        # Second cycle: take-profit triggers, hedge path used
+        client.get_market = AsyncMock(return_value=market_up)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Position should be HEDGED, not EXITED (stays open for settlement)
+        assert "cond_a" in trader.positions
+        pos = trader.positions["cond_a"]
+        assert pos.state == PositionState.HEDGED
+        assert pos.hedge_leg is not None
+        assert pos.hedge_leg.side == "Down"
+
+    @pytest.mark.asyncio
+    async def test_sells_when_hedge_too_expensive(self) -> None:
+        """Fall back to selling when hedge price makes combined >= $1.00."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_price=Decimal("0.65"),
+            take_profit_pct=Decimal("0.55"),
+        )
+        market_open = _mock_market("0.55", "0.45")
+        # Price jumps: leg1=0.90, opposite=0.50 → combined=0.55+0.50=1.05 >= 1.0
+        market_up = _mock_market("0.90", "0.50")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+
+        # Second cycle: take-profit triggers, sell fallback
+        client.get_market = AsyncMock(return_value=market_up)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" not in trader.positions
+        assert len(trader.results) == 1
+        assert trader.results[0].state == PositionState.EXITED
+        assert trader.results[0].pnl > Decimal(0)
+
+
+class TestNetDirectionalExposure:
+    """Tests for net directional exposure calculation."""
+
+    @pytest.mark.asyncio
+    async def test_opposite_sides_offset(self) -> None:
+        """BTC-Up and BTC-Down positions offset in net exposure calc."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_price=Decimal("0.65"),
+            max_position_pct=Decimal("0.50"),
+            max_unhedged_exposure_pct=Decimal("0.50"),
+        )
+        client = _mock_client("0.55", "0.45")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        # Open BTC-Up position at ~50% of capital
+        signal_up = _make_signal(condition_id="cond_up", asset="BTC-USD", favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_up])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_up" in trader.positions
+
+        # Open BTC-Down — gross would reject (50%+50% > 50%) but net allows
+        # because Up and Down offset each other
+        signal_down = _make_signal(condition_id="cond_down", asset="BTC-USD", favoured_side="Down")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_down])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_down" in trader.positions
+
+    @pytest.mark.asyncio
+    async def test_same_side_accumulates(self) -> None:
+        """Same-side positions still accumulate in net exposure calc."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_price=Decimal("0.65"),
+            max_position_pct=Decimal("0.50"),
+            max_unhedged_exposure_pct=Decimal("0.50"),
+        )
+        client = _mock_client("0.55", "0.45")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        signal_a = _make_signal(condition_id="cond_a", asset="BTC-USD", favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_a])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+
+        # Second Up signal same side — should be blocked at 50% cap
+        signal_b = _make_signal(condition_id="cond_b", asset="BTC-USD", favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal_b])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_b" not in trader.positions
+
+
+class TestMaxEntryAge:
+    """Tests for maximum entry age filter."""
+
+    @pytest.mark.asyncio
+    async def test_skip_when_window_mostly_elapsed(self) -> None:
+        """Skip entry when more than max_entry_age_pct of window has elapsed."""
+        now = int(time.time())
+        # Window 70% elapsed: 210s out of 300s
+        window_start = now - 210
+        window_end = now + 90
+
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_age_pct=Decimal("0.60"),
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+
+        signal = _make_signal(
+            window_start_ts=window_start,
+            window_end_ts=window_end,
+        )
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" not in trader.positions
+
+    @pytest.mark.asyncio
+    async def test_allow_when_window_early(self) -> None:
+        """Allow entry when less than max_entry_age_pct has elapsed."""
+        now = int(time.time())
+        # Window 50% elapsed: 150s out of 300s
+        window_start = now - 150
+        window_end = now + 150
+
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_age_pct=Decimal("0.60"),
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+
+        signal = _make_signal(
+            window_start_ts=window_start,
+            window_end_ts=window_end,
+        )
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+
+
+class TestWinRateHalt:
+    """Tests for win rate halt threshold."""
+
+    @pytest.mark.asyncio
+    async def test_halts_when_win_rate_below_threshold(self) -> None:
+        """Block entries when adaptive win rate drops below halt_win_rate."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            adaptive_kelly=True,
+            min_kelly_results=2,
+            min_win_rate=Decimal("0.40"),
+            halt_win_rate=Decimal("0.55"),
+            win_rate=Decimal("0.80"),
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+
+        # All losses → adaptive win rate = 0.40 (floored at min_win_rate)
+        _loss = Decimal("-5.0")
+        for _ in range(3):
+            trader._results.append(
+                CopyResult(
+                    signal=_make_signal(),
+                    state=PositionState.UNHEDGED,
+                    leg1_side="Up",
+                    leg1_entry=Decimal("0.55"),
+                    leg1_qty=Decimal(10),
+                    hedge_entry=None,
+                    hedge_qty=None,
+                    total_cost_basis=Decimal("5.50"),
+                    entry_time=1000,
+                    pnl=_loss,
+                    outcome_known=True,
+                )
+            )
+
+        signal = _make_signal(condition_id="cond_new")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_new" not in trader.positions
+
+    @pytest.mark.asyncio
+    async def test_allows_when_win_rate_above_threshold(self) -> None:
+        """Allow entries when adaptive win rate is above halt_win_rate."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            adaptive_kelly=True,
+            min_kelly_results=2,
+            min_win_rate=Decimal("0.40"),
+            halt_win_rate=Decimal("0.55"),
+            win_rate=Decimal("0.80"),
+        )
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
+
+        # 3 wins, 1 loss → adaptive rate = 0.75 > 0.55
+        _win = Decimal("5.0")
+        _loss = Decimal("-5.0")
+        for pnl_val in [_win, _win, _win, _loss]:
+            trader._results.append(
+                CopyResult(
+                    signal=_make_signal(),
+                    state=PositionState.UNHEDGED,
+                    leg1_side="Up",
+                    leg1_entry=Decimal("0.55"),
+                    leg1_qty=Decimal(10),
+                    hedge_entry=None,
+                    hedge_qty=None,
+                    total_cost_basis=Decimal("5.50"),
+                    entry_time=1000,
+                    pnl=pnl_val,
+                    outcome_known=True,
+                )
+            )
+
+        signal = _make_signal(condition_id="cond_new")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_new" in trader.positions
+
+
+class TestPaperSlippage:
+    """Tests for paper mode slippage simulation."""
+
+    @pytest.mark.asyncio
+    async def test_entry_price_includes_slippage(self) -> None:
+        """Paper entry price is worsened by slippage percentage."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_price=Decimal("0.65"),
+            paper_slippage_pct=Decimal("0.01"),
+        )
+        client = _mock_client("0.55", "0.45")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        pos = trader.positions["cond_a"]
+        # Entry price should be 0.55 * 1.01 = 0.5555
+        expected_price = Decimal("0.55") * Decimal("1.01")
+        assert pos.leg1.entry_price == expected_price
+
+    @pytest.mark.asyncio
+    async def test_hedge_price_includes_slippage(self) -> None:
+        """Paper hedge price is worsened by slippage percentage."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.95"),
+            max_entry_price=Decimal("0.65"),
+            paper_slippage_pct=Decimal("0.01"),
+        )
+        client = _mock_client("0.55", "0.35")
+        trader = WhaleCopyTrader(config=config, client=client)
+
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        pos = trader.positions["cond_a"]
+        assert pos.state == PositionState.HEDGED
+        assert pos.hedge_leg is not None
+        # Hedge price should be 0.35 * 1.01 = 0.3535
+        expected_hedge = Decimal("0.35") * Decimal("1.01")
+        assert pos.hedge_leg.entry_price == expected_hedge
+
+    @pytest.mark.asyncio
+    async def test_live_mode_ignores_slippage(self) -> None:
+        """Live mode does not apply paper slippage."""
+        config = _make_config(
+            max_entry_price=Decimal("0.65"),
+            paper_slippage_pct=Decimal("0.05"),
+        )
+        client = _mock_client("0.55", "0.45")
+        trader = WhaleCopyTrader(config=config, live=True, client=client)
+
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        pos = trader.positions["cond_a"]
+        # Live mode: price comes from order response, not slippage-adjusted
+        assert pos.leg1.entry_price == Decimal("0.55")

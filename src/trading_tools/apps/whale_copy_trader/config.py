@@ -127,6 +127,25 @@ class WhaleCopyConfig:
             that triggers a cooldown pause. Set to ``0`` to disable.
         circuit_breaker_cooldown: Seconds to pause new entries after the
             circuit breaker triggers.
+        max_drawdown_pct: Maximum session drawdown as a fraction of starting
+            capital. When cumulative P&L drops below ``-max_drawdown_pct *
+            session_start_capital``, all new entries are halted until the
+            session is restarted.
+        drawdown_throttle_pct: Fraction below the high-water mark at which
+            Kelly sizing is throttled to 50 %. Reduces position sizes during
+            drawdowns without fully halting.
+        paper_slippage_pct: Simulated slippage applied to paper fills.
+            Entry and hedge prices are worsened by this percentage so that
+            paper results more closely approximate live execution.
+        signal_strength_sizing: Scale Kelly position size proportionally to
+            each signal's ``strength_score``. Stronger signals (higher bias,
+            more trades) receive larger allocations.
+        max_entry_age_pct: Maximum fraction of the market window elapsed
+            before entries are skipped. A value of ``0.60`` means entries
+            are only allowed in the first 60 % of the window.
+        halt_win_rate: When the adaptive win rate drops below this level,
+            halt all new entries. Unlike ``min_win_rate`` which floors Kelly
+            sizing, this stops trading entirely to limit losses.
 
     """
 
@@ -151,13 +170,19 @@ class WhaleCopyConfig:
     max_unhedged_exposure_pct: Decimal = Decimal("0.50")
     adaptive_kelly: bool = True
     min_kelly_results: int = 20
-    min_win_rate: Decimal = Decimal("0.55")
+    min_win_rate: Decimal = Decimal("0.65")
     max_asset_exposure_pct: Decimal = Decimal("0.30")
     compound_profits: bool = True
     hedge_urgency_threshold: Decimal = Decimal("0.20")
     hedge_urgency_spread_bump: Decimal = Decimal("0.03")
     circuit_breaker_losses: int = 3
     circuit_breaker_cooldown: int = 300
+    max_drawdown_pct: Decimal = Decimal("0.15")
+    drawdown_throttle_pct: Decimal = Decimal("0.10")
+    paper_slippage_pct: Decimal = Decimal("0.005")
+    signal_strength_sizing: bool = True
+    max_entry_age_pct: Decimal = Decimal("0.60")
+    halt_win_rate: Decimal = Decimal("0.55")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "WhaleCopyConfig":

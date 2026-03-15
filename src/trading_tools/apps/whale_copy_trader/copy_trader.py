@@ -107,6 +107,8 @@ class WhaleCopyTrader:
     _repo: CopyResultRepository | None = field(default=None, init=False, repr=False)
     _consecutive_losses: int = field(default=0, init=False, repr=False)
     _circuit_breaker_until: int = field(default=0, init=False, repr=False)
+    _session_start_capital: Decimal = field(default=ZERO, init=False, repr=False)
+    _high_water_mark: Decimal = field(default=ZERO, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize shared services when running in live mode."""
@@ -141,6 +143,8 @@ class WhaleCopyTrader:
 
         mode = "LIVE" if self.live else "PAPER"
         capital = self._get_capital()
+        self._session_start_capital = capital
+        self._high_water_mark = capital
         logger.info(
             "whale-copy started mode=%s address=%s poll=%ds"
             " lookback=%ds min_bias=%.1f min_trades=%d"
@@ -269,9 +273,10 @@ class WhaleCopyTrader:
         for signal in signals:
             await self._process_signal(signal)
 
-        await self._check_take_profits()
-        await self._check_defensive_hedges()
-        await self._check_hedge_opportunities()
+        price_cache = await self._build_price_cache()
+        await self._check_take_profits(price_cache)
+        await self._check_defensive_hedges(price_cache)
+        await self._check_hedge_opportunities(price_cache)
         await self._close_expired_positions()
 
         if self._redeemer is not None:
@@ -280,7 +285,9 @@ class WhaleCopyTrader:
     async def _process_signal(self, signal: CopySignal) -> None:
         """Open a directional entry for new markets, ignore existing ones.
 
-        Skip signals during a circuit-breaker cooldown period.
+        Skip signals during a circuit-breaker cooldown period, when session
+        drawdown exceeds the limit, when the market window is too far elapsed,
+        or when the adaptive win rate drops below the halt threshold.
 
         Args:
             signal: The copy signal to process.
@@ -291,6 +298,12 @@ class WhaleCopyTrader:
             return
 
         now = int(time.time())
+
+        # Max drawdown kill-switch
+        if self._check_drawdown_halt():
+            logger.info("  DRAWDOWN-HALT active, skipping %s", cid[:12])
+            return
+
         if self._circuit_breaker_until > now:
             logger.info(
                 "  CIRCUIT-BREAKER active for %ds, skipping %s",
@@ -298,6 +311,34 @@ class WhaleCopyTrader:
                 cid[:12],
             )
             return
+
+        # Max entry age filter
+        if self.config.max_entry_age_pct > ZERO:
+            window_duration = signal.window_end_ts - signal.window_start_ts
+            if window_duration > 0:
+                elapsed_pct = Decimal(str(now - signal.window_start_ts)) / Decimal(
+                    str(window_duration)
+                )
+                if elapsed_pct > self.config.max_entry_age_pct:
+                    logger.info(
+                        "  SKIP %s: window %.0f%% elapsed > max %.0f%%",
+                        cid[:12],
+                        elapsed_pct * 100,
+                        self.config.max_entry_age_pct * 100,
+                    )
+                    return
+
+        # Win rate halt
+        if self.config.halt_win_rate > ZERO:
+            adaptive_rate = self._effective_win_rate()
+            if adaptive_rate < self.config.halt_win_rate:
+                logger.info(
+                    "  WIN-RATE-HALT: adaptive=%.2f < halt=%.2f, skipping %s",
+                    adaptive_rate,
+                    self.config.halt_win_rate,
+                    cid[:12],
+                )
+                return
 
         await self._open_position(signal)
 
@@ -328,7 +369,24 @@ class WhaleCopyTrader:
         computed = Decimal(wins) / Decimal(len(eligible))
         return max(computed, self.config.min_win_rate)
 
-    def _kelly_position_pct(self, entry_price: Decimal) -> Decimal:
+    def _check_drawdown_halt(self) -> bool:
+        """Return ``True`` when session drawdown exceeds the configured limit.
+
+        Compare cumulative P&L against the session start capital. When the
+        loss exceeds ``max_drawdown_pct`` of starting capital, halt all new
+        entries until the session is restarted.
+
+        Returns:
+            ``True`` if new entries should be blocked.
+
+        """
+        if self._session_start_capital <= ZERO:
+            return False
+        total_pnl = sum((r.pnl for r in self._results), start=ZERO)
+        max_loss = self.config.max_drawdown_pct * self._session_start_capital
+        return total_pnl < ZERO - max_loss
+
+    def _kelly_position_pct(self, entry_price: Decimal, signal: CopySignal) -> Decimal:
         """Compute the Kelly-optimal position fraction for a binary market.
 
         For a binary outcome token bought at ``entry_price``, the win payoff
@@ -336,8 +394,17 @@ class WhaleCopyTrader:
         Apply fractional Kelly (``kelly_fraction``) for safety and clamp to
         ``max_position_pct`` as an upper bound.
 
+        When the current total capital is below the high-water mark by
+        more than ``drawdown_throttle_pct``, reduce the sized fraction by
+        50 % to slow bleeding during drawdowns.
+
+        When ``signal_strength_sizing`` is enabled, scale the sized
+        fraction by the signal's ``strength_score`` so stronger signals
+        receive proportionally larger allocations.
+
         Args:
             entry_price: Price of the favoured-side token (0 < p < 1).
+            signal: The copy signal for proportional sizing.
 
         Returns:
             Fraction of capital to allocate (0 to ``max_position_pct``).
@@ -355,7 +422,89 @@ class WhaleCopyTrader:
             return ZERO
 
         sized = kelly * self.config.kelly_fraction
+
+        # HWM drawdown throttle: halve sizing when below HWM by threshold
+        _throttle_factor = Decimal("0.5")
+        if self._high_water_mark > ZERO:
+            total_capital = self._total_capital()
+            throttle_level = self._high_water_mark * (_ONE - self.config.drawdown_throttle_pct)
+            if total_capital < throttle_level:
+                sized = sized * _throttle_factor
+
+        # Signal strength proportional sizing
+        if self.config.signal_strength_sizing:
+            sized = sized * signal.strength_score
+
         return min(sized, self.config.max_position_pct)
+
+    def _check_exposure_limits(
+        self,
+        signal: CopySignal,
+        proposed_cost: Decimal,
+        capital: Decimal,
+    ) -> bool:
+        """Check net directional and per-asset exposure limits.
+
+        Net directional exposure offsets same-asset opposite-side positions
+        (e.g. BTC-Up and BTC-Down cancel out) rather than using gross cost.
+
+        Args:
+            signal: The copy signal for the proposed entry.
+            proposed_cost: Cost basis of the proposed new position.
+            capital: Current available capital for limit calculations.
+
+        Returns:
+            ``True`` if exposure is within limits, ``False`` to skip entry.
+
+        """
+        same_side_cost = ZERO
+        opposite_side_cost = ZERO
+        for pos in self._positions.values():
+            if pos.state != PositionState.UNHEDGED:
+                continue
+            if pos.signal.asset != signal.asset:
+                continue
+            if pos.favoured_side == signal.favoured_side:
+                same_side_cost += pos.leg1.cost_basis
+            else:
+                opposite_side_cost += pos.leg1.cost_basis
+        net_exposure = same_side_cost - opposite_side_cost + proposed_cost
+        max_unhedged = capital * self.config.max_unhedged_exposure_pct
+        if net_exposure > max_unhedged:
+            logger.info(
+                "  SKIP %s: net unhedged exposure $%.2f (same=$%.2f opp=$%.2f + $%.2f)"
+                " > max $%.2f (%.0f%%)",
+                signal.condition_id[:12],
+                net_exposure,
+                same_side_cost,
+                opposite_side_cost,
+                proposed_cost,
+                max_unhedged,
+                self.config.max_unhedged_exposure_pct * 100,
+            )
+            return False
+
+        total_cap = self._total_capital()
+        asset_cost = sum(
+            p.total_cost_basis
+            for p in self._positions.values()
+            if p.signal.asset == signal.asset and p.favoured_side == signal.favoured_side
+        )
+        max_asset = total_cap * self.config.max_asset_exposure_pct
+        if asset_cost + proposed_cost > max_asset:
+            logger.info(
+                "  SKIP %s: asset %s %s exposure $%.2f + $%.2f > max $%.2f (%.0f%%)",
+                signal.condition_id[:12],
+                signal.asset,
+                signal.favoured_side,
+                asset_cost,
+                proposed_cost,
+                max_asset,
+                self.config.max_asset_exposure_pct * 100,
+            )
+            return False
+
+        return True
 
     async def _open_position(self, signal: CopySignal) -> None:
         """Open a directional leg 1 position copying the whale.
@@ -391,8 +540,12 @@ class WhaleCopyTrader:
             )
             return
 
+        # Paper slippage: worsen entry price to approximate live execution
+        if not self.live and self.config.paper_slippage_pct > ZERO:
+            favoured_price = favoured_price * (_ONE + self.config.paper_slippage_pct)
+
         capital = self._get_capital()
-        position_pct = self._kelly_position_pct(favoured_price)
+        position_pct = self._kelly_position_pct(favoured_price, signal)
         spend = capital * position_pct
         qty = (spend / favoured_price).quantize(Decimal("0.01"))
 
@@ -403,42 +556,8 @@ class WhaleCopyTrader:
             return
 
         proposed_cost = favoured_price * qty
-        unhedged_cost = sum(
-            pos.leg1.cost_basis
-            for pos in self._positions.values()
-            if pos.state == PositionState.UNHEDGED
-        )
-        max_unhedged = capital * self.config.max_unhedged_exposure_pct
-        if unhedged_cost + proposed_cost > max_unhedged:
-            logger.info(
-                "  SKIP %s: unhedged exposure $%.2f + $%.2f > max $%.2f (%.0f%%)",
-                signal.condition_id[:12],
-                unhedged_cost,
-                proposed_cost,
-                max_unhedged,
-                self.config.max_unhedged_exposure_pct * 100,
-            )
-            return
 
-        # Per-asset concentration limit
-        total_cap = self._total_capital()
-        asset_cost = sum(
-            pos.total_cost_basis
-            for pos in self._positions.values()
-            if pos.signal.asset == signal.asset and pos.favoured_side == signal.favoured_side
-        )
-        max_asset = total_cap * self.config.max_asset_exposure_pct
-        if asset_cost + proposed_cost > max_asset:
-            logger.info(
-                "  SKIP %s: asset %s %s exposure $%.2f + $%.2f > max $%.2f (%.0f%%)",
-                signal.condition_id[:12],
-                signal.asset,
-                signal.favoured_side,
-                asset_cost,
-                proposed_cost,
-                max_asset,
-                self.config.max_asset_exposure_pct * 100,
-            )
+        if not self._check_exposure_limits(signal, proposed_cost, capital):
             return
 
         cost_basis = favoured_price * qty
@@ -485,16 +604,40 @@ class WhaleCopyTrader:
             signal.bias_ratio,
         )
 
-    async def _check_take_profits(self) -> None:
-        """Sell unhedged leg 1 tokens when the price reaches take-profit level.
+    async def _build_price_cache(self) -> dict[str, dict[str, Decimal]]:
+        """Fetch current CLOB prices once for all open positions.
 
-        For each UNHEDGED position, fetch the current price of the favoured
-        side.  If the price has risen by ``take_profit_pct`` above the entry
-        price, exit early to lock in known profit rather than waiting for
-        settlement.
+        Build a mapping from condition_id to price dict so that
+        ``_check_take_profits``, ``_check_defensive_hedges``, and
+        ``_check_hedge_opportunities`` share a single set of price fetches
+        per poll cycle instead of each fetching independently.
 
-        Only applies to UNHEDGED positions — HEDGED positions already have
-        guaranteed profit and should always hold to settlement.
+        Returns:
+            Dict mapping condition_id to ``{"Up": price, "Down": price}``.
+
+        """
+        cache: dict[str, dict[str, Decimal]] = {}
+        for cid in self._positions:
+            prices = await self._fetch_clob_prices(cid)
+            if prices is not None:
+                cache[cid] = prices
+        return cache
+
+    async def _check_take_profits(
+        self,
+        price_cache: dict[str, dict[str, Decimal]],
+    ) -> None:
+        """Take profit via hedging (preferred) or selling when leg 1 rises.
+
+        For each UNHEDGED position, check if the favoured side price has
+        risen by ``take_profit_pct`` above entry. When triggered, prefer
+        buying the opposite side to lock in a guaranteed settlement profit
+        (combined < $1.00). Only fall back to selling if the hedge price
+        is too expensive.
+
+        Args:
+            price_cache: Pre-fetched prices keyed by condition_id.
+
         """
         unhedged = [
             (cid, pos)
@@ -503,7 +646,9 @@ class WhaleCopyTrader:
         ]
 
         for cid, pos in unhedged:
-            prices = await self._fetch_clob_prices(cid)
+            prices = price_cache.get(cid)
+            if prices is None:
+                prices = await self._fetch_clob_prices(cid)
             if prices is None:
                 continue
 
@@ -512,72 +657,176 @@ class WhaleCopyTrader:
             if current_price < take_target:
                 continue
 
-            # Take profit — sell at current price
-            pnl = current_price * pos.leg1.quantity - pos.leg1.cost_basis
+            # Prefer take-profit by hedging the opposite side
+            hedge_price = prices.get(pos.hedge_side, ZERO)
+            effective_leg1 = pos.leg1.cost_basis / pos.leg1.quantity
+            combined = effective_leg1 + hedge_price
 
-            if self.live:
-                tokens_by_side = await self._fetch_clob_tokens(cid)
-                if tokens_by_side is None:
+            if hedge_price > ZERO and combined < _ONE:
+                hedged = await self._take_profit_hedge(cid, pos, hedge_price, combined)
+                if hedged:
                     continue
-                token = tokens_by_side.get(pos.leg1.side)
-                if token is None or self._executor is None:
-                    continue
-                response = await self._executor.place_order(
-                    token.token_id,
-                    "SELL",
-                    current_price,
+
+            # Sell fallback: hedge too expensive or failed
+            await self._take_profit_sell(cid, pos, current_price, take_target)
+
+    async def _take_profit_hedge(
+        self,
+        cid: str,
+        pos: OpenPosition,
+        hedge_price: Decimal,
+        combined: Decimal,
+    ) -> bool:
+        """Execute take-profit by hedging the opposite side.
+
+        Buy the opposite side to lock in a guaranteed settlement profit.
+        Return ``True`` if the hedge was placed successfully.
+
+        Args:
+            cid: Market condition_id.
+            pos: The open position to hedge.
+            hedge_price: Current price of the hedge side.
+            combined: Sum of effective leg1 price and hedge price.
+
+        Returns:
+            ``True`` if hedged, ``False`` if hedge failed or was partial.
+
+        """
+        hedge_qty = pos.leg1.quantity
+        if not self.live and self.config.paper_slippage_pct > ZERO:
+            hedge_price = hedge_price * (_ONE + self.config.paper_slippage_pct)
+        hedge_cost = hedge_price * hedge_qty
+        hedge_leg = SideLeg(
+            side=pos.hedge_side,
+            entry_price=hedge_price,
+            quantity=hedge_qty,
+            cost_basis=hedge_cost,
+        )
+
+        if self.live:
+            tokens_by_side = await self._fetch_clob_tokens(cid)
+            if tokens_by_side is None:
+                return False
+            token = tokens_by_side.get(pos.hedge_side)
+            hedge_leg = await self._place_leg_order(hedge_leg, token, is_hedge=True)
+            if hedge_leg is None:
+                return False
+            if hedge_leg.quantity < pos.leg1.quantity:
+                logger.warning(
+                    "Partial take-profit hedge on %s: hedge=%.2f < leg1=%.2f",
+                    cid[:12],
+                    hedge_leg.quantity,
                     pos.leg1.quantity,
-                    order_type="market",
                 )
-                if response is None:
-                    continue
-                pnl = response.price * response.filled - pos.leg1.cost_basis
-                pos.leg1.order_ids.append(response.order_id)
+                return False
 
-            pos.state = PositionState.EXITED
-            self._positions.pop(cid)
+        pos.hedge_leg = hedge_leg
+        pos.state = PositionState.HEDGED
+        self._consecutive_losses = 0
 
-            result = CopyResult(
-                signal=pos.signal,
-                state=PositionState.EXITED,
-                leg1_side=pos.leg1.side,
-                leg1_entry=pos.leg1.entry_price,
-                leg1_qty=pos.leg1.quantity,
-                hedge_entry=None,
-                hedge_qty=None,
-                total_cost_basis=pos.leg1.cost_basis,
-                entry_time=pos.entry_time,
-                exit_time=int(time.time()),
-                winning_side=pos.leg1.side,
-                pnl=pnl,
-                is_paper=pos.is_paper,
-                order_ids=tuple(pos.all_order_ids),
-            )
-            self._results.append(result)
-            self._consecutive_losses = 0
-            await self._persist_result(result)
+        mode = "LIVE" if self.live else "PAPER"
+        logger.info(
+            "%s TAKE-PROFIT-HEDGE %s hedge_side=%s hedge_price=%.4f combined=%.4f entry=%.4f",
+            mode,
+            cid[:12],
+            pos.hedge_side,
+            hedge_price,
+            combined,
+            pos.leg1.entry_price,
+        )
+        return True
 
-            mode = "LIVE" if self.live else "PAPER"
-            logger.info(
-                "%s TAKE-PROFIT %s price=%.4f target=%.4f entry=%.4f pnl=%.4f cost=$%.4f",
-                mode,
-                cid[:12],
+    async def _take_profit_sell(
+        self,
+        cid: str,
+        pos: OpenPosition,
+        current_price: Decimal,
+        take_target: Decimal,
+    ) -> None:
+        """Execute take-profit by selling leg 1 tokens.
+
+        Fallback path when hedging is too expensive (combined >= $1.00).
+
+        Args:
+            cid: Market condition_id.
+            pos: The open position to sell.
+            current_price: Current favoured-side price.
+            take_target: The take-profit trigger price.
+
+        """
+        if not self.live and self.config.paper_slippage_pct > ZERO:
+            current_price = current_price * (_ONE - self.config.paper_slippage_pct)
+
+        pnl = current_price * pos.leg1.quantity - pos.leg1.cost_basis
+
+        if self.live:
+            tokens_by_side = await self._fetch_clob_tokens(cid)
+            if tokens_by_side is None:
+                return
+            token = tokens_by_side.get(pos.leg1.side)
+            if token is None or self._executor is None:
+                return
+            response = await self._executor.place_order(
+                token.token_id,
+                "SELL",
                 current_price,
-                take_target,
-                pos.leg1.entry_price,
-                pnl,
-                pos.leg1.cost_basis,
+                pos.leg1.quantity,
+                order_type="market",
             )
+            if response is None:
+                return
+            pnl = response.price * response.filled - pos.leg1.cost_basis
+            pos.leg1.order_ids.append(response.order_id)
 
-    async def _check_defensive_hedges(self) -> None:
+        pos.state = PositionState.EXITED
+        self._positions.pop(cid)
+
+        result = CopyResult(
+            signal=pos.signal,
+            state=PositionState.EXITED,
+            leg1_side=pos.leg1.side,
+            leg1_entry=pos.leg1.entry_price,
+            leg1_qty=pos.leg1.quantity,
+            hedge_entry=None,
+            hedge_qty=None,
+            total_cost_basis=pos.leg1.cost_basis,
+            entry_time=pos.entry_time,
+            exit_time=int(time.time()),
+            winning_side=pos.leg1.side,
+            pnl=pnl,
+            is_paper=pos.is_paper,
+            order_ids=tuple(pos.all_order_ids),
+        )
+        self._results.append(result)
+        self._consecutive_losses = 0
+        await self._persist_result(result)
+
+        mode = "LIVE" if self.live else "PAPER"
+        logger.info(
+            "%s TAKE-PROFIT-SELL %s price=%.4f target=%.4f entry=%.4f pnl=%.4f cost=$%.4f",
+            mode,
+            cid[:12],
+            current_price,
+            take_target,
+            pos.leg1.entry_price,
+            pnl,
+            pos.leg1.cost_basis,
+        )
+
+    async def _check_defensive_hedges(
+        self,
+        price_cache: dict[str, dict[str, Decimal]],
+    ) -> None:
         """Buy the opposite side when leg 1 price drops, capping loss at settlement.
 
-        For each UNHEDGED position, fetch the current price of the favoured
-        side.  If it has fallen below ``entry_price * (1 - defensive_hedge_pct)``,
+        For each UNHEDGED position, check if the favoured side price has
+        fallen below ``entry_price * (1 - defensive_hedge_pct)``. If so,
         buy the opposite side with equal token quantity instead of selling
-        into a thin book.  This caps the maximum loss at
-        ``(combined - 1.0) * qty`` at settlement, and still profits if the
-        market reverses back in our favour.
+        into a thin book to cap maximum loss at settlement.
+
+        Args:
+            price_cache: Pre-fetched prices keyed by condition_id.
+
         """
         unhedged = [
             (cid, pos)
@@ -586,7 +835,9 @@ class WhaleCopyTrader:
         ]
 
         for cid, pos in unhedged:
-            prices = await self._fetch_clob_prices(cid)
+            prices = price_cache.get(cid)
+            if prices is None:
+                prices = await self._fetch_clob_prices(cid)
             if prices is None:
                 continue
 
@@ -604,6 +855,10 @@ class WhaleCopyTrader:
             if hedge_qty < _MIN_TOKEN_QTY:
                 continue
 
+            # Paper slippage on hedge price
+            if not self.live and self.config.paper_slippage_pct > ZERO:
+                hedge_price = hedge_price * (_ONE + self.config.paper_slippage_pct)
+
             hedge_cost = hedge_price * hedge_qty
             hedge_leg = SideLeg(
                 side=pos.hedge_side,
@@ -619,6 +874,17 @@ class WhaleCopyTrader:
                 token = tokens_by_side.get(pos.hedge_side)
                 hedge_leg = await self._place_leg_order(hedge_leg, token, is_hedge=True)
                 if hedge_leg is None:
+                    continue
+
+                # Partial fill guard — stay UNHEDGED if hedge qty doesn't match leg 1
+                if hedge_leg.quantity < pos.leg1.quantity:
+                    logger.warning(
+                        "Partial defensive hedge fill on %s: hedge=%.2f < leg1=%.2f,"
+                        " staying UNHEDGED",
+                        cid[:12],
+                        hedge_leg.quantity,
+                        pos.leg1.quantity,
+                    )
                     continue
 
             pos.hedge_leg = hedge_leg
@@ -642,15 +908,49 @@ class WhaleCopyTrader:
                 max_loss_per_token,
             )
 
-    async def _check_hedge_opportunities(self) -> None:
+    def _effective_hedge_spread(self, signal: CopySignal) -> Decimal:
+        """Compute the effective max spread cost, applying urgency bump near expiry.
+
+        Deduct per-leg CLOB fees from the configured max spread cost. If the
+        remaining time fraction of the market window is below the urgency
+        threshold, relax the spread by ``hedge_urgency_spread_bump``.
+
+        Args:
+            signal: The copy signal containing window timestamps.
+
+        Returns:
+            The effective maximum combined cost threshold.
+
+        """
+        fee_cost = 2 * self.config.clob_fee_rate
+        effective = self.config.max_spread_cost - fee_cost
+
+        window_duration = signal.window_end_ts - signal.window_start_ts
+        if window_duration > 0:
+            now = int(time.time())
+            time_remaining = signal.window_end_ts - now
+            time_fraction = Decimal(str(time_remaining)) / Decimal(str(window_duration))
+            if time_fraction < self.config.hedge_urgency_threshold:
+                effective = min(
+                    effective + self.config.hedge_urgency_spread_bump,
+                    Decimal("0.99"),
+                )
+        return effective
+
+    async def _check_hedge_opportunities(
+        self,
+        price_cache: dict[str, dict[str, Decimal]],
+    ) -> None:
         """Scan unhedged positions and place opportunistic hedge legs.
 
-        For each UNHEDGED position, fetch the current price of the hedge
-        side. If ``leg1_entry + hedge_price <= max_spread_cost``, the
-        opposite side is cheap enough to lock in a guaranteed spread
-        profit.  Buy the **same token quantity** as leg 1 so that
-        whichever side wins pays out ``qty * $1.00``, guaranteeing
-        ``qty * (1.0 - combined)`` profit.
+        For each UNHEDGED position, check whether the hedge side is cheap
+        enough to lock in a guaranteed spread profit. Buy the same token
+        quantity as leg 1 so that whichever side wins pays out
+        ``qty * $1.00``, guaranteeing ``qty * (1.0 - combined)`` profit.
+
+        Args:
+            price_cache: Pre-fetched prices keyed by condition_id.
+
         """
         unhedged = [
             (cid, pos)
@@ -659,7 +959,9 @@ class WhaleCopyTrader:
         ]
 
         for cid, pos in unhedged:
-            prices = await self._fetch_clob_prices(cid)
+            prices = price_cache.get(cid)
+            if prices is None:
+                prices = await self._fetch_clob_prices(cid)
             if prices is None:
                 continue
 
@@ -668,20 +970,7 @@ class WhaleCopyTrader:
                 continue
 
             effective_leg1_price = pos.leg1.cost_basis / pos.leg1.quantity
-            fee_cost = 2 * self.config.clob_fee_rate
-            effective_max_spread = self.config.max_spread_cost - fee_cost
-
-            # Dynamic hedge urgency: relax threshold near expiry
-            now = int(time.time())
-            window_duration = pos.signal.window_end_ts - pos.signal.window_start_ts
-            if window_duration > 0:
-                time_remaining = pos.signal.window_end_ts - now
-                time_fraction = Decimal(str(time_remaining)) / Decimal(str(window_duration))
-                if time_fraction < self.config.hedge_urgency_threshold:
-                    effective_max_spread = min(
-                        effective_max_spread + self.config.hedge_urgency_spread_bump,
-                        Decimal("0.99"),
-                    )
+            effective_max_spread = self._effective_hedge_spread(pos.signal)
 
             combined = effective_leg1_price + hedge_price
             if combined > effective_max_spread:
@@ -701,6 +990,10 @@ class WhaleCopyTrader:
             if hedge_qty < _MIN_TOKEN_QTY:
                 logger.debug("  HEDGE-SKIP %s: qty %.2f below minimum", cid[:12], hedge_qty)
                 continue
+
+            # Paper slippage on hedge price
+            if not self.live and self.config.paper_slippage_pct > ZERO:
+                hedge_price = hedge_price * (_ONE + self.config.paper_slippage_pct)
 
             hedge_cost = hedge_price * hedge_qty
             hedge_leg = SideLeg(
@@ -890,6 +1183,11 @@ class WhaleCopyTrader:
             )
             self._results.append(closed)
             await self._persist_result(closed)
+
+            # Update high-water mark after profitable close
+            if pnl > ZERO:
+                current_total = self._total_capital()
+                self._high_water_mark = max(self._high_water_mark, current_total)
 
             # Circuit breaker tracking for unhedged positions with known outcomes
             if pos.state == PositionState.UNHEDGED and outcome_known:
