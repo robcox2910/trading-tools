@@ -287,6 +287,68 @@ Production infrastructure is defined in `infra/` using Terraform:
 - **CloudWatch** — log aggregation and alarms
 - **Secrets Manager** — API keys and database credentials
 
+### Deployment
+
+```bash
+# SSH into EC2
+ssh -i ~/.ssh/trading-tools-key ubuntu@54.229.75.103
+
+# Pull latest code and sync dependencies
+cd /opt/trading-tools && sudo git pull origin main
+sudo /root/.local/bin/uv sync --all-extras
+
+# Restart services (pick relevant ones)
+sudo systemctl restart tick-collector whale-monitor trading-bot-paper whale-copy-paper
+```
+
+### Systemd Services
+
+| Service | Description |
+|---------|-------------|
+| `tick-collector` | Polymarket tick collector (WebSocket → PostgreSQL) |
+| `whale-monitor` | Polymarket whale trade monitor (→ PostgreSQL) |
+| `trading-bot-paper` | Paper trading bot (late snipe strategy) |
+| `trading-bot-live` | Live trading bot (late snipe strategy, disabled by default) |
+| `whale-copy-paper` | Whale copy-trader paper bot (dual-side spread capture) |
+| `whale-copy-live` | Whale copy-trader live bot (dual-side spread capture, real orders) |
+
+**Useful commands:**
+
+```bash
+# Quick health check
+sudo systemctl is-active tick-collector whale-monitor trading-bot-paper whale-copy-paper
+
+# Service status details
+sudo systemctl status whale-copy-paper
+
+# If a service is stuck in deactivating
+sudo systemctl kill <service> && sudo systemctl start <service>
+```
+
+### Application Logs
+
+All services log to `/var/log/trading-tools/`. Logs are **not** in journald — use `tail`/`grep` on the log files directly.
+
+| Service | Log file |
+|---------|----------|
+| `tick-collector` | `/var/log/trading-tools/tick-collector.log` |
+| `whale-monitor` | `/var/log/trading-tools/whale-monitor.log` |
+| `trading-bot-paper` | `/var/log/trading-tools/trading-bot-paper.log` |
+| `trading-bot-live` | `/var/log/trading-tools/trading-bot-live.log` |
+| `whale-copy-paper` | `/var/log/trading-tools/whale-copy-paper.log` |
+| `whale-copy-live` | `/var/log/trading-tools/whale-copy-live.log` |
+
+```bash
+# Follow a log
+sudo tail -f /var/log/trading-tools/whale-copy-paper.log
+
+# Filter out noisy third-party debug output
+sudo grep -v 'Encoding\|Decoded\|Decoding\|Adding.*header table\|Encoded header\|Resizing header' \
+  /var/log/trading-tools/whale-copy-paper.log | tail -50
+```
+
+**Log rotation:** configured via `/etc/logrotate.d/trading-tools` — daily rotation, 7 days retained, compressed.
+
 See [Getting Started](GETTING_STARTED.md) for local development setup.
 
 ## Testing Strategy

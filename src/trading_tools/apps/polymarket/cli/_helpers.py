@@ -75,7 +75,7 @@ def configure_logging(*, verbose: bool = False) -> None:
     )
     if verbose:
         # Silence noisy third-party loggers that flood disk at DEBUG level
-        for name in ("websockets", "httpx", "httpcore", "py_clob_client"):
+        for name in ("websockets", "httpx", "httpcore", "py_clob_client", "hpack", "h2"):
             logging.getLogger(name).setLevel(logging.WARNING)
 
 
