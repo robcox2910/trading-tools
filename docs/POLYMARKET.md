@@ -333,9 +333,14 @@ trading-tools-polymarket whale-correlate --address 0x1234... --days 1 --min-trad
 
 ### `whale-copy` — Copy Whale Bets in Real-Time
 
-Run a polling service that detects a whale's directional bias on BTC/ETH 5-minute markets and copies them with **dual-side spread capture**. Paper mode by default; pass `--confirm-live` for real orders.
+Run a polling service that detects a whale's directional bias on BTC/ETH 5-minute markets and copies them with **temporal spread arbitrage**. Paper mode by default; pass `--confirm-live` for real orders.
 
-The bot buys **both** Up and Down tokens for each market, splitting capital according to the whale's volume allocation. The favoured side gets more capital (directional tilt), while the unfavoured side provides hedging and spread capture. When prices sum to less than $1.00 this creates guaranteed profit regardless of outcome.
+The bot uses a two-phase approach:
+
+1. **Directional entry (leg 1):** detect the whale's favoured side and buy it immediately at current CLOB prices.
+2. **Hedge (leg 2):** monitor the opposite side each poll cycle. When `leg1_price + hedge_price ≤ max_spread_cost`, the opposite side is cheap enough to be worth buying. Place an opportunistic hedge with the same dollar allocation — this reduces directional risk and provides large upside if the hedge side wins.
+
+If no hedge opportunity arises before market expiry, the position resolves as a pure directional bet (profitable when the whale is correct ~80% of the time).
 
 The service uses **incremental polling** for minimal latency: only new trades since the last poll are fetched, and a rolling window of trades is maintained in memory.
 
@@ -347,9 +352,11 @@ trading-tools-polymarket whale-copy \
   --min-bias 1.5 \
   --min-trades 3 \
   --capital 100 \
+  --max-spread-cost 0.95 \
+  --max-entry-price 0.65 \
   -v
 
-# Live mode — place real market orders on Polymarket
+# Live mode — place real limit orders on Polymarket
 trading-tools-polymarket whale-copy \
   --address 0xa45f... \
   --capital 100 \
@@ -361,12 +368,14 @@ trading-tools-polymarket whale-copy \
 |------|---------|-------------|
 | `--address` | *(required)* | Whale proxy wallet address to copy |
 | `--poll-interval` | `5` | Seconds between DB polls (lower = faster) |
-| `--lookback` | `3600` | Rolling window in seconds for trade accumulation |
-| `--min-bias` | `1.5` | Minimum bias ratio to trigger a copy signal |
-| `--min-trades` | `3` | Minimum trades per market to trigger a signal |
+| `--lookback` | `900` | Rolling window in seconds for trade accumulation |
+| `--min-bias` | `1.3` | Minimum bias ratio to trigger a copy signal |
+| `--min-trades` | `2` | Minimum trades per market to trigger a signal |
 | `--capital` | `100` | Starting capital in USDC (paper mode) |
 | `--max-position-pct` | `0.10` | Max fraction of capital per single trade |
-| `--min-unfavoured-pct` | `0.15` | Floor for unfavoured side allocation (0.0-1.0) |
+| `--max-spread-cost` | `0.95` | Max combined cost of both legs to trigger hedge (e.g. 0.95 = min 5% return) |
+| `--max-entry-price` | `0.65` | Max price for directional entry (skip if favoured side already above this) |
+| `--max-window` | `0` | Max market window in seconds (e.g. 300 for 5-min only, 0=all) |
 | `--confirm-live` | `false` | **Required flag** for live trading |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
@@ -376,12 +385,13 @@ trading-tools-polymarket whale-copy \
 1. Poll `whale_trades` table incrementally (only new trades since last check)
 2. Group by `condition_id`, compute bias via `analyse_markets()`
 3. Filter: BTC/ETH asset only, future time window, bias > threshold, trades >= min
-4. Compute dual-side allocation: split capital by whale's Up/Down volume ratio (with `min_unfavoured_pct` floor)
-5. Paper: open virtual dual-side position at Gamma API prices
-6. Live: fetch market tokens from CLOB, place limit orders for both sides
-7. Close positions when the market window expires; P&L = winning_qty - total_cost
+4. Fetch current CLOB prices; skip if favoured side > `max_entry_price`
+5. Open directional leg 1 (buy whale's favoured side)
+6. Each poll: check unhedged positions for hedge opportunity (combined spread ≤ `max_spread_cost`)
+7. If hedge found: buy matching token quantity on opposite side, lock in profit
+8. Close positions when the market window expires; P&L depends on state (hedged = guaranteed, unhedged = directional)
 
-**Heartbeat:** Logs status every 60 seconds (poll count, open positions, P&L) for CloudWatch monitoring.
+**Heartbeat:** Logs status every 60 seconds (poll count, unhedged/hedged positions, P&L) for CloudWatch monitoring.
 
 ## Backtesting Polymarket Strategies
 

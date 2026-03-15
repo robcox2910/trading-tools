@@ -1,12 +1,25 @@
 """Data models for the whale copy-trading service.
 
 Define value objects for copy signals (detected whale bias), side legs
-(individual Up/Down token positions), open positions that hold two legs
-for dual-side spread capture, and closed trade results.
+(individual Up/Down token positions), open positions that transition
+through UNHEDGED → HEDGED states for temporal spread arbitrage, and
+closed trade results.
 """
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from enum import Enum
+
+
+class PositionState(Enum):
+    """Lifecycle state of a copy-trading position.
+
+    UNHEDGED: Leg 1 (directional) placed, waiting for hedge opportunity.
+    HEDGED: Both legs placed, guaranteed profit locked in.
+    """
+
+    UNHEDGED = "unhedged"
+    HEDGED = "hedged"
 
 
 @dataclass(frozen=True)
@@ -52,11 +65,10 @@ def _empty_str_list() -> list[str]:
 
 @dataclass
 class SideLeg:
-    """One side of a dual-side spread position (Up or Down).
+    """One side of a spread position (Up or Down).
 
     Track the weighted-average entry price, total quantity, and cost basis
-    for a single outcome token. Mutable so fills can be added incrementally
-    as the whale increases conviction or the bot tops up.
+    for a single outcome token. Mutable so fills can be added incrementally.
 
     Attributes:
         side: Outcome direction (``"Up"`` or ``"Down"``).
@@ -89,64 +101,67 @@ class SideLeg:
 
 @dataclass
 class OpenPosition:
-    """A live (open) dual-side copy position that accumulates top-ups.
+    """A live (open) temporal spread arbitrage position.
 
-    Hold two optional legs (Up and Down) for spread capture. The favoured
-    side gets more capital based on the whale's volume allocation, while
-    the unfavoured side provides hedging. Either leg may be ``None`` if
-    the computed quantity falls below the 5-token minimum.
+    Start with a single directional leg (leg1) copying the whale's
+    favoured side. Transition to HEDGED when the opposite side becomes
+    cheap enough that combined cost < ``max_spread_cost``, locking in
+    guaranteed profit.
 
     Attributes:
         signal: The most recent signal for this market.
-        favoured_side: Current favoured direction (``"Up"`` or ``"Down"``).
-        up_leg: Position leg for Up tokens, or ``None`` if below minimum.
-        down_leg: Position leg for Down tokens, or ``None`` if below minimum.
+        state: Current lifecycle state (UNHEDGED or HEDGED).
+        leg1: The directional entry leg (whale's favoured side).
+        hedge_leg: The hedge leg (opposite side), or ``None`` if unhedged.
+        hedge_side: The outcome name for the hedge leg (opposite of leg1).
         entry_time: UTC epoch seconds of the first entry.
-        last_bias: Bias ratio at the most recent entry or top-up.
         is_paper: ``True`` for simulated trades, ``False`` for live.
 
     """
 
     signal: CopySignal
-    favoured_side: str
-    up_leg: SideLeg | None
-    down_leg: SideLeg | None
+    state: PositionState
+    leg1: SideLeg
+    hedge_leg: SideLeg | None
+    hedge_side: str
     entry_time: int
-    last_bias: Decimal
     is_paper: bool = True
 
     @property
     def total_cost_basis(self) -> Decimal:
         """Return the combined cost basis of both legs."""
-        up_cost = self.up_leg.cost_basis if self.up_leg else Decimal(0)
-        down_cost = self.down_leg.cost_basis if self.down_leg else Decimal(0)
-        return up_cost + down_cost
+        hedge_cost = self.hedge_leg.cost_basis if self.hedge_leg else Decimal(0)
+        return self.leg1.cost_basis + hedge_cost
 
     @property
     def all_order_ids(self) -> list[str]:
         """Return all CLOB order IDs across both legs."""
-        ids: list[str] = []
-        if self.up_leg:
-            ids.extend(self.up_leg.order_ids)
-        if self.down_leg:
-            ids.extend(self.down_leg.order_ids)
+        ids: list[str] = list(self.leg1.order_ids)
+        if self.hedge_leg:
+            ids.extend(self.hedge_leg.order_ids)
         return ids
+
+    @property
+    def favoured_side(self) -> str:
+        """Return the whale's favoured side (leg1 direction)."""
+        return self.leg1.side
 
 
 @dataclass(frozen=True)
 class CopyResult:
-    """Outcome of a closed dual-side copy trade.
+    """Outcome of a closed copy trade.
 
     Immutable record of a position that has been closed, with final
     P&L calculated from the winning leg's payout minus total cost.
 
     Attributes:
         signal: The copy signal that triggered this trade.
-        favoured_side: Position direction when closed.
-        up_entry: Weighted-average entry price for Up leg, or ``None``.
-        up_qty: Total Up tokens, or ``None`` if no Up leg.
-        down_entry: Weighted-average entry price for Down leg, or ``None``.
-        down_qty: Total Down tokens, or ``None`` if no Down leg.
+        state: Position state at close (UNHEDGED or HEDGED).
+        leg1_side: Direction of the directional entry leg.
+        leg1_entry: Entry price for leg 1.
+        leg1_qty: Token quantity for leg 1.
+        hedge_entry: Entry price for hedge leg, or ``None``.
+        hedge_qty: Token quantity for hedge leg, or ``None``.
         total_cost_basis: Total USDC spent across both legs.
         entry_time: UTC epoch seconds when first opened.
         exit_time: UTC epoch seconds when closed, or ``None`` if still open.
@@ -158,11 +173,12 @@ class CopyResult:
     """
 
     signal: CopySignal
-    favoured_side: str
-    up_entry: Decimal | None
-    up_qty: Decimal | None
-    down_entry: Decimal | None
-    down_qty: Decimal | None
+    state: PositionState
+    leg1_side: str
+    leg1_entry: Decimal
+    leg1_qty: Decimal
+    hedge_entry: Decimal | None
+    hedge_qty: Decimal | None
     total_cost_basis: Decimal
     entry_time: int
     exit_time: int | None = None

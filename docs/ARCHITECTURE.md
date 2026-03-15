@@ -25,6 +25,9 @@ trading-tools/
 │   │   │   ├── backtest_common.py   # Shared backtest utilities
 │   │   │   ├── grid_backtest.py     # Grid search engine
 │   │   │   └── run.py               # CLI entry point
+│   │   ├── bot_framework/           # Shared composable services for trading bots
+│   │   │   ├── redeemer.py          # CTF position redemption service
+│   │   │   └── order_executor.py    # CLOB order placement wrapper
 │   │   ├── polymarket_bot/          # Paper and live trading bot engines
 │   │   │   ├── strategies/          # 5 Polymarket-specific strategies
 │   │   │   ├── bot_engine.py        # Paper trading engine
@@ -46,7 +49,7 @@ trading-tools/
 │   │       ├── config.py            # WhaleCopyConfig (frozen dataclass)
 │   │       ├── models.py            # CopySignal, SideLeg, OpenPosition, CopyResult
 │   │       ├── signal_detector.py   # Incremental polling and signal detection
-│   │       └── copy_trader.py       # Dual-side spread copy-trading engine
+│   │       └── copy_trader.py       # Temporal spread arbitrage copy-trading engine
 │   ├── clients/                     # External API clients
 │   │   ├── revolut_x/               # Revolut X API client
 │   │   │   ├── auth/                # Ed25519 authentication
@@ -118,13 +121,14 @@ Runnable applications and long-lived services. Each application has:
 
 | App | Purpose |
 |-----|---------|
+| `bot_framework` | Shared composable services (redemption, order execution) for trading bots |
 | `fetcher` | Download historical OHLCV data from Revolut X or Binance |
 | `backtester` | Run strategies against candle data, compare, simulate, and optimise |
 | `polymarket` | CLI for market queries, trading, bots, tick collection, and whale monitoring |
 | `polymarket_bot` | Paper and live trading engines with fee/slippage modelling and loss limits (consumed by `polymarket` CLI) |
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
 | `whale_monitor` | Polling service that tracks whale trades, with analysis, per-market breakdown, trade enrichment, and Binance spot correlation |
-| `whale_copy_trader` | Dual-side spread whale copy-trading (paper and live) |
+| `whale_copy_trader` | Temporal spread arbitrage whale copy-trading (paper and live) |
 
 ### `/clients` — API Clients
 
@@ -294,6 +298,7 @@ Tests mirror the source structure:
 tests/
 ├── apps/
 │   ├── backtester/
+│   ├── bot_framework/
 │   ├── polymarket/
 │   ├── polymarket_bot/
 │   ├── tick_collector/
