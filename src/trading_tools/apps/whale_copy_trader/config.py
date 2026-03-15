@@ -49,6 +49,27 @@ class WhaleCopyConfig:
             committed to unhedged (non-guaranteed) positions at any time.
             Once reached, no new positions are opened until existing ones
             are hedged, stopped, exited, or settled.
+        adaptive_kelly: Dynamically adjust Kelly win rate from realised
+            unhedged trade outcomes instead of using a static estimate.
+        min_kelly_results: Minimum closed unhedged trades before adaptive
+            Kelly activates. Below this count, the static ``win_rate``
+            is used.
+        min_win_rate: Floor for the adaptive Kelly win rate. Prevents the
+            sizing from collapsing after a short losing streak.
+        max_asset_exposure_pct: Maximum fraction of total capital that may
+            be committed to a single asset + side combination (e.g. all
+            BTC-USD Up positions). Prevents over-concentration.
+        compound_profits: In paper mode, grow available capital by adding
+            realised P&L from closed trades. When ``False``, capital
+            remains fixed at the starting value.
+        hedge_urgency_threshold: Fraction of time remaining in a market
+            window below which the hedge spread threshold is relaxed.
+        hedge_urgency_spread_bump: Amount added to ``max_spread_cost``
+            when the market window is in the urgency zone.
+        circuit_breaker_losses: Number of consecutive unhedged losses
+            that triggers a cooldown pause. Set to ``0`` to disable.
+        circuit_breaker_cooldown: Seconds to pause new entries after the
+            circuit breaker triggers.
 
     """
 
@@ -71,3 +92,12 @@ class WhaleCopyConfig:
     clob_fee_rate: Decimal = Decimal("0.0")
     take_profit_pct: Decimal = Decimal("0.15")
     max_unhedged_exposure_pct: Decimal = Decimal("0.50")
+    adaptive_kelly: bool = True
+    min_kelly_results: int = 20
+    min_win_rate: Decimal = Decimal("0.55")
+    max_asset_exposure_pct: Decimal = Decimal("0.30")
+    compound_profits: bool = True
+    hedge_urgency_threshold: Decimal = Decimal("0.20")
+    hedge_urgency_spread_bump: Decimal = Decimal("0.03")
+    circuit_breaker_losses: int = 3
+    circuit_breaker_cooldown: int = 300

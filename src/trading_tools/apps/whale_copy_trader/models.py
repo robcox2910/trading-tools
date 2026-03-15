@@ -182,6 +182,9 @@ class CopyResult:
         pnl: Realised profit/loss in USDC.
         is_paper: ``True`` for simulated trades, ``False`` for live.
         order_ids: All CLOB order IDs for this position.
+        outcome_known: ``True`` when the market outcome was definitively
+            resolved. ``False`` when candle data was unavailable and a
+            fallback P&L was applied (hedged → zero, unhedged → loss).
 
     """
 
@@ -199,6 +202,7 @@ class CopyResult:
     pnl: Decimal = Decimal(0)
     is_paper: bool = True
     order_ids: tuple[str, ...] = ()
+    outcome_known: bool = True
 
 
 class Base(DeclarativeBase):
@@ -237,6 +241,8 @@ class CopyResultRecord(Base):
         pnl: Realised profit/loss in USDC.
         is_paper: ``True`` for simulated trades, ``False`` for live.
         order_ids: Comma-separated CLOB order IDs for this position.
+        outcome_known: ``True`` when the market outcome was definitively
+            resolved via candle data. ``False`` when a fallback was used.
 
     """
 
@@ -264,6 +270,7 @@ class CopyResultRecord(Base):
     pnl: Mapped[float] = mapped_column(Float)
     is_paper: Mapped[bool] = mapped_column(Boolean)
     order_ids: Mapped[str] = mapped_column(String, default="")
+    outcome_known: Mapped[bool] = mapped_column(Boolean, default=True)
 
     __table_args__ = (
         Index("ix_copy_results_condition_exit", "condition_id", "exit_time"),
@@ -308,4 +315,5 @@ class CopyResultRecord(Base):
             pnl=float(result.pnl),
             is_paper=result.is_paper,
             order_ids=",".join(result.order_ids),
+            outcome_known=result.outcome_known,
         )

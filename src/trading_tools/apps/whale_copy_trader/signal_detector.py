@@ -126,6 +126,9 @@ class SignalDetector:
             self._trades.popleft()
             trimmed += 1
         if trimmed:
+            self._seen_hashes = {
+                f"{t.transaction_hash}:{t.asset_id}:{t.size}" for t in self._trades
+            }
             logger.debug("Trimmed %d expired trades from window", trimmed)
 
         if not self._trades:
