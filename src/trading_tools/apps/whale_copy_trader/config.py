@@ -146,6 +146,17 @@ class WhaleCopyConfig:
         halt_win_rate: When the adaptive win rate drops below this level,
             halt all new entries. Unlike ``min_win_rate`` which floors Kelly
             sizing, this stops trading entirely to limit losses.
+        enable_flipping: Master toggle for flip trading. When enabled,
+            take-profit sell exits are replaced with immediate re-entry on
+            the opposite side, capturing multiple spread swings per window.
+        max_flips_per_market: Maximum number of flips allowed per market
+            window. Prevents runaway flip loops in volatile markets.
+        min_flip_buffer_seconds: Stop flipping when fewer than this many
+            seconds remain before market expiry. Ensures enough time for
+            the flipped position to settle or hedge.
+        flip_take_profit_pct: Tighter take-profit threshold used for flip
+            legs (e.g. 0.10 = 10% vs 0.15 for initial entry). Faster
+            exits on flips since we're capturing smaller swings.
 
     """
 
@@ -183,6 +194,10 @@ class WhaleCopyConfig:
     signal_strength_sizing: bool = True
     max_entry_age_pct: Decimal = Decimal("0.60")
     halt_win_rate: Decimal = Decimal("0.55")
+    enable_flipping: bool = False
+    max_flips_per_market: int = 4
+    min_flip_buffer_seconds: int = 30
+    flip_take_profit_pct: Decimal = Decimal("0.10")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "WhaleCopyConfig":

@@ -74,6 +74,32 @@ class CopySignal:
     strength_score: Decimal = Decimal("1.0")
 
 
+@dataclass
+class FlipState:
+    """Track per-market flip activity across close/reopen cycles.
+
+    Maintain a running count of flips executed within a single market
+    window so the trader can enforce ``max_flips_per_market`` and use
+    the original signal's metadata for logging. The state persists
+    across position close/reopen cycles because each flip closes one
+    position and immediately opens another.
+
+    Attributes:
+        original_signal: The initial copy signal that triggered entry.
+        flip_count: Number of flips executed so far in this market.
+        last_flip_side: The side of the most recent flip entry
+            (``"Up"`` or ``"Down"``).
+        entry_amount: Dollar amount used for each flip (fixed from
+            the first entry's cost basis).
+
+    """
+
+    original_signal: CopySignal
+    flip_count: int = 0
+    last_flip_side: str = ""
+    entry_amount: Decimal = Decimal(0)
+
+
 def _empty_str_list() -> list[str]:
     """Return an empty list[str] for dataclass default_factory."""
     return []
@@ -206,6 +232,7 @@ class CopyResult:
     is_paper: bool = True
     order_ids: tuple[str, ...] = ()
     outcome_known: bool = True
+    flip_number: int | None = None
 
 
 class Base(DeclarativeBase):

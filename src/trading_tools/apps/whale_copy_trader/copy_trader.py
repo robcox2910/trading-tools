@@ -44,7 +44,15 @@ from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.core.models import ZERO, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
-from .models import CopyResult, CopyResultRecord, CopySignal, OpenPosition, PositionState, SideLeg
+from .models import (
+    CopyResult,
+    CopyResultRecord,
+    CopySignal,
+    FlipState,
+    OpenPosition,
+    PositionState,
+    SideLeg,
+)
 from .signal_detector import SignalDetector
 
 if TYPE_CHECKING:
@@ -70,6 +78,11 @@ def _empty_position_dict() -> dict[str, OpenPosition]:
 def _empty_result_list() -> list[CopyResult]:
     """Return an empty list[CopyResult] for dataclass default_factory."""
     return []
+
+
+def _empty_flip_dict() -> dict[str, FlipState]:
+    """Return an empty dict[str, FlipState] for dataclass default_factory."""
+    return {}
 
 
 @dataclass
@@ -101,6 +114,7 @@ class WhaleCopyTrader:
     _poll_count: int = field(default=0, repr=False)
     _shutdown: GracefulShutdown = field(default_factory=GracefulShutdown, init=False, repr=False)
     _heartbeat: HeartbeatLogger = field(default_factory=HeartbeatLogger, init=False, repr=False)
+    _summary_due: float = field(default=0.0, init=False, repr=False)
     _redeemer: PositionRedeemer | None = field(default=None, init=False, repr=False)
     _executor: OrderExecutor | None = field(default=None, init=False, repr=False)
     _balance_manager: BalanceManager | None = field(default=None, init=False, repr=False)
@@ -109,6 +123,10 @@ class WhaleCopyTrader:
     _circuit_breaker_until: int = field(default=0, init=False, repr=False)
     _session_start_capital: Decimal = field(default=ZERO, init=False, repr=False)
     _high_water_mark: Decimal = field(default=ZERO, init=False, repr=False)
+    _flip_states: dict[str, FlipState] = field(
+        default_factory=_empty_flip_dict, init=False, repr=False
+    )
+    _flip_count: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize shared services when running in live mode."""
@@ -151,7 +169,8 @@ class WhaleCopyTrader:
             " min_time_to_start=%ds capital=$%s max_pos=%s%%"
             " max_spread_cost=%.2f max_entry_price=%.2f"
             " hedge_market=%s def_hedge=%.0f%% kelly=%.0f%%x%.1f"
-            " take_profit=%.0f%% fee_rate=%.4f max_unhedged=%.0f%%",
+            " take_profit=%.0f%% fee_rate=%.4f max_unhedged=%.0f%%"
+            " flipping=%s max_flips=%d flip_buffer=%ds flip_tp=%.0f%%",
             mode,
             self.config.whale_address,
             self.config.poll_interval,
@@ -170,12 +189,21 @@ class WhaleCopyTrader:
             self.config.take_profit_pct * 100,
             self.config.clob_fee_rate,
             self.config.max_unhedged_exposure_pct * 100,
+            self.config.enable_flipping,
+            self.config.max_flips_per_market,
+            self.config.min_flip_buffer_seconds,
+            self.config.flip_take_profit_pct * 100,
         )
 
+        _summary_interval = 900  # 15 minutes
         try:
             while not self._shutdown.should_stop:
                 await self._poll_cycle()
                 self._log_heartbeat()
+                now = time.monotonic()
+                if now >= self._summary_due:
+                    self._log_periodic_summary()
+                    self._summary_due = now + _summary_interval
                 await asyncio.sleep(self.config.poll_interval)
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
@@ -591,6 +619,14 @@ class WhaleCopyTrader:
         )
         self._positions[signal.condition_id] = pos
 
+        if self.config.enable_flipping and signal.condition_id not in self._flip_states:
+            self._flip_states[signal.condition_id] = FlipState(
+                original_signal=signal,
+                flip_count=0,
+                last_flip_side=signal.favoured_side,
+                entry_amount=cost_basis,
+            )
+
         mode = "LIVE" if self.live else "PAPER"
         logger.info(
             "%s OPEN %s leg1=%s price=%.4f qty=%.2f cost=$%.4f asset=%s bias=%.1f",
@@ -653,7 +689,15 @@ class WhaleCopyTrader:
                 continue
 
             current_price = prices.get(pos.leg1.side, ZERO)
-            take_target = pos.leg1.entry_price * (_ONE + self.config.take_profit_pct)
+
+            # Use tighter take-profit threshold for flip legs
+            flip_state = self._flip_states.get(cid)
+            tp_pct = (
+                self.config.flip_take_profit_pct
+                if flip_state is not None and flip_state.flip_count > 0
+                else self.config.take_profit_pct
+            )
+            take_target = pos.leg1.entry_price * (_ONE + tp_pct)
             if current_price < take_target:
                 continue
 
@@ -667,7 +711,13 @@ class WhaleCopyTrader:
                 if hedged:
                     continue
 
-            # Sell fallback: hedge too expensive or failed
+            # Attempt flip before falling through to sell
+            if self.config.enable_flipping:
+                flipped = await self._try_flip(cid, pos, current_price, prices)
+                if flipped:
+                    continue
+
+            # Sell fallback: hedge too expensive, flip disabled/failed
             await self._take_profit_sell(cid, pos, current_price, take_target)
 
     async def _take_profit_hedge(
@@ -812,6 +862,236 @@ class WhaleCopyTrader:
             pnl,
             pos.leg1.cost_basis,
         )
+
+    async def _try_flip(
+        self,
+        cid: str,
+        pos: OpenPosition,
+        sell_price: Decimal,
+        prices: dict[str, Decimal],
+    ) -> bool:
+        """Attempt to flip from the current side to the opposite side.
+
+        Close the current position (recording P&L as a take-profit sell)
+        and immediately re-enter on the opposite side with the same dollar
+        amount. Return ``True`` if the flip succeeded, ``False`` to fall
+        through to a normal sell.
+
+        Args:
+            cid: Market condition_id.
+            pos: The open position to flip.
+            sell_price: Current price of the leg being closed.
+            prices: Current CLOB prices for both sides.
+
+        Returns:
+            ``True`` if flip executed successfully.
+
+        """
+        flip_state = self._flip_states.get(cid)
+        if flip_state is None:
+            return False
+
+        # Check max flips
+        if flip_state.flip_count >= self.config.max_flips_per_market:
+            logger.info(
+                "  FLIP-LIMIT %s: %d/%d flips reached",
+                cid[:12],
+                flip_state.flip_count,
+                self.config.max_flips_per_market,
+            )
+            return False
+
+        # Check time buffer
+        now = int(time.time())
+        time_remaining = pos.signal.window_end_ts - now
+        if time_remaining < self.config.min_flip_buffer_seconds:
+            logger.info(
+                "  FLIP-BUFFER %s: %ds remaining < %ds buffer",
+                cid[:12],
+                time_remaining,
+                self.config.min_flip_buffer_seconds,
+            )
+            return False
+
+        # Determine the new side and its price
+        new_side = pos.hedge_side
+        new_price = prices.get(new_side, ZERO)
+        if new_price <= ZERO:
+            return False
+
+        sell_pnl = await self._flip_close_leg(cid, pos, sell_price, now, flip_state)
+        if sell_pnl is None:
+            return False
+
+        flip_number = flip_state.flip_count
+        await self._flip_open_opposite(
+            cid,
+            pos,
+            new_side,
+            new_price,
+            flip_state,
+            now,
+        )
+
+        mode = "LIVE" if self.live else "PAPER"
+        logger.info(
+            "%s FLIP #%d %s %s→%s sell=%.4f buy=%.4f pnl=%.4f",
+            mode,
+            flip_number,
+            cid[:12],
+            pos.leg1.side,
+            new_side,
+            sell_price,
+            new_price,
+            sell_pnl,
+        )
+        return True
+
+    async def _flip_close_leg(
+        self,
+        cid: str,
+        pos: OpenPosition,
+        sell_price: Decimal,
+        now: int,
+        flip_state: FlipState,
+    ) -> Decimal | None:
+        """Close the current leg of a flip, recording P&L.
+
+        Apply paper slippage, execute live sell if needed, persist the
+        result, and remove the position. Return the realised P&L, or
+        ``None`` if the live sell failed.
+
+        Args:
+            cid: Market condition_id.
+            pos: The open position being closed.
+            sell_price: Current price of the leg being sold.
+            now: Current epoch seconds.
+            flip_state: Flip tracking state for this market.
+
+        Returns:
+            Realised P&L as Decimal, or ``None`` on failure.
+
+        """
+        effective_sell = sell_price
+        if not self.live and self.config.paper_slippage_pct > ZERO:
+            effective_sell = sell_price * (_ONE - self.config.paper_slippage_pct)
+
+        sell_pnl = effective_sell * pos.leg1.quantity - pos.leg1.cost_basis
+
+        if self.live:
+            tokens_by_side = await self._fetch_clob_tokens(cid)
+            if tokens_by_side is None:
+                return None
+            token = tokens_by_side.get(pos.leg1.side)
+            if token is None or self._executor is None:
+                return None
+            response = await self._executor.place_order(
+                token.token_id,
+                "SELL",
+                sell_price,
+                pos.leg1.quantity,
+                order_type="market",
+            )
+            if response is None:
+                return None
+            sell_pnl = response.price * response.filled - pos.leg1.cost_basis
+            pos.leg1.order_ids.append(response.order_id)
+
+        flip_number = flip_state.flip_count + 1
+        close_result = CopyResult(
+            signal=pos.signal,
+            state=PositionState.EXITED,
+            leg1_side=pos.leg1.side,
+            leg1_entry=pos.leg1.entry_price,
+            leg1_qty=pos.leg1.quantity,
+            hedge_entry=None,
+            hedge_qty=None,
+            total_cost_basis=pos.leg1.cost_basis,
+            entry_time=pos.entry_time,
+            exit_time=now,
+            winning_side=pos.leg1.side,
+            pnl=sell_pnl,
+            is_paper=pos.is_paper,
+            order_ids=tuple(pos.all_order_ids),
+            flip_number=flip_number,
+        )
+        self._results.append(close_result)
+        self._consecutive_losses = 0
+        await self._persist_result(close_result)
+        self._positions.pop(cid)
+        return sell_pnl
+
+    async def _flip_open_opposite(
+        self,
+        cid: str,
+        pos: OpenPosition,
+        new_side: str,
+        new_price: Decimal,
+        flip_state: FlipState,
+        now: int,
+    ) -> None:
+        """Open the opposite side of a flip with the same dollar amount.
+
+        Apply paper slippage, place a live order if needed, and register
+        the new position in the tracker.
+
+        Args:
+            cid: Market condition_id.
+            pos: The original position (for signal and paper flag).
+            new_side: Direction of the new entry.
+            new_price: Current price of the new side.
+            flip_state: Flip tracking state for this market.
+            now: Current epoch seconds.
+
+        """
+        spend = flip_state.entry_amount
+        if not self.live and self.config.paper_slippage_pct > ZERO:
+            new_price = new_price * (_ONE + self.config.paper_slippage_pct)
+
+        qty = (spend / new_price).quantize(Decimal("0.01"))
+        if qty < _MIN_TOKEN_QTY:
+            logger.info("  FLIP-SKIP %s: qty %.2f below minimum", cid[:12], qty)
+            flip_state.flip_count += 1
+            self._flip_count += 1
+            return
+
+        new_cost = new_price * qty
+        new_leg = SideLeg(
+            side=new_side,
+            entry_price=new_price,
+            quantity=qty,
+            cost_basis=new_cost,
+        )
+        new_hedge_side = "Down" if new_side == "Up" else "Up"
+
+        if self.live:
+            tokens_by_side = await self._fetch_clob_tokens(cid)
+            if tokens_by_side is None:
+                flip_state.flip_count += 1
+                self._flip_count += 1
+                return
+            token = tokens_by_side.get(new_side)
+            new_leg_result = await self._place_leg_order(new_leg, token)
+            if new_leg_result is None:
+                flip_state.flip_count += 1
+                self._flip_count += 1
+                return
+            new_leg = new_leg_result
+
+        new_pos = OpenPosition(
+            signal=pos.signal,
+            state=PositionState.UNHEDGED,
+            leg1=new_leg,
+            hedge_leg=None,
+            hedge_side=new_hedge_side,
+            entry_time=now,
+            is_paper=pos.is_paper,
+        )
+        self._positions[cid] = new_pos
+
+        flip_state.flip_count += 1
+        flip_state.last_flip_side = new_side
+        self._flip_count += 1
 
     async def _check_defensive_hedges(
         self,
@@ -1152,6 +1432,7 @@ class WhaleCopyTrader:
 
         for cid in expired:
             pos = self._positions.pop(cid)
+            self._flip_states.pop(cid, None)
             winning_side = await self._resolve_outcome(pos)
             outcome_known = winning_side is not None
 
@@ -1278,7 +1559,60 @@ class WhaleCopyTrader:
             stopped=stopped,
             exited=exited,
             pnl=float(total_pnl),
+            flips=self._flip_count,
         )
+
+    def _log_periodic_summary(self) -> None:
+        """Log a detailed session summary every 15 minutes.
+
+        Include per-state position counts, win/loss breakdown, capital
+        status, and individual open position details so operators can
+        monitor the bot without digging through granular logs.
+        """
+        total_pnl = sum(r.pnl for r in self._results)
+        wins = sum(1 for r in self._results if r.pnl > ZERO)
+        losses = sum(1 for r in self._results if r.pnl <= ZERO)
+        win_rate = (wins / len(self._results) * 100) if self._results else 0.0
+        unhedged = [p for p in self._positions.values() if p.state == PositionState.UNHEDGED]
+        hedged = [p for p in self._positions.values() if p.state == PositionState.HEDGED]
+        capital = self._get_capital()
+
+        logger.info("=" * 60)
+        logger.info(
+            "SUMMARY | capital=$%.2f | pnl=$%.2f | hwm=$%.2f | wins=%d losses=%d (%.0f%%)",
+            capital,
+            total_pnl,
+            self._high_water_mark,
+            wins,
+            losses,
+            win_rate,
+        )
+        logger.info(
+            "SUMMARY | open=%d (unhedged=%d hedged=%d) | closed=%d | polls=%d",
+            len(self._positions),
+            len(unhedged),
+            len(hedged),
+            len(self._results),
+            self._poll_count,
+        )
+        for cid, pos in self._positions.items():
+            combined = "n/a"
+            if pos.hedge_leg is not None:
+                eff = pos.leg1.cost_basis / pos.leg1.quantity
+                comb = eff + pos.hedge_leg.entry_price
+                combined = f"{comb:.4f}"
+            logger.info(
+                "SUMMARY |   %s %s %s %s entry=%.4f qty=%.2f cost=$%.2f combined=%s",
+                pos.state.value.upper(),
+                cid[:12],
+                pos.signal.asset,
+                pos.leg1.side,
+                pos.leg1.entry_price,
+                pos.leg1.quantity,
+                pos.leg1.cost_basis,
+                combined,
+            )
+        logger.info("=" * 60)
 
     def _log_summary(self) -> None:
         """Log a final session summary on shutdown."""
