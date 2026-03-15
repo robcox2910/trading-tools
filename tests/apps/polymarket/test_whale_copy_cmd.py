@@ -32,9 +32,15 @@ class TestWhaleCopyCommand:
             patch(
                 "trading_tools.apps.polymarket.cli.whale_copy_cmd.WhaleCopyTrader"
             ) as mock_trader_cls,
+            patch(
+                "trading_tools.apps.polymarket.cli.whale_copy_cmd.build_authenticated_client"
+            ) as mock_build,
         ):
             mock_repo = AsyncMock()
             mock_repo_cls.return_value = mock_repo
+
+            mock_client = AsyncMock()
+            mock_build.return_value = mock_client
 
             mock_trader = AsyncMock()
             mock_trader.run = AsyncMock()
@@ -55,7 +61,7 @@ class TestWhaleCopyCommand:
         mock_trader_cls.assert_called_once()
         call_kwargs = mock_trader_cls.call_args[1]
         assert call_kwargs["live"] is False
-        assert call_kwargs["client"] is None
+        assert call_kwargs["client"] is mock_client
 
     def test_confirm_live_shows_warning(self, runner: CliRunner) -> None:
         """Display a warning banner when --confirm-live is passed."""
@@ -108,6 +114,10 @@ class TestWhaleCopyCommand:
             patch(
                 "trading_tools.apps.polymarket.cli.whale_copy_cmd.WhaleCopyTrader"
             ) as mock_trader_cls,
+            patch(
+                "trading_tools.apps.polymarket.cli.whale_copy_cmd.build_authenticated_client",
+                return_value=AsyncMock(),
+            ),
         ):
             mock_repo = AsyncMock()
             mock_repo_cls.return_value = mock_repo

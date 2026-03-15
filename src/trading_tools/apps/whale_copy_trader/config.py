@@ -2,7 +2,7 @@
 
 Define an immutable configuration dataclass that holds all tunable
 parameters: polling frequency, signal thresholds, position sizing,
-and capital management.
+spread arbitrage targets, and capital management.
 """
 
 from dataclasses import dataclass
@@ -13,8 +13,9 @@ from decimal import Decimal
 class WhaleCopyConfig:
     """Immutable configuration for the whale copy-trading service.
 
-    Control polling behaviour, signal detection thresholds, and position
-    sizing. All monetary values use ``Decimal`` for precision.
+    Control polling behaviour, signal detection thresholds, position
+    sizing, and temporal spread arbitrage parameters. All monetary
+    values use ``Decimal`` for precision.
 
     Attributes:
         whale_address: Proxy wallet address of the whale to copy.
@@ -25,11 +26,12 @@ class WhaleCopyConfig:
         min_time_to_start: Minimum seconds before window opens to act on a signal.
         capital: Starting capital for paper mode (USDC).
         max_position_pct: Maximum fraction of capital per single trade.
-        max_bias_scale: Maximum multiplier for bias-proportional position sizing.
-        topup_bias_delta: Minimum bias increase to trigger a top-up.
         max_window_seconds: Maximum market window duration to trade (0 = no limit).
         use_market_orders: Use market orders (FOK) instead of limit orders (GTC).
-        min_unfavoured_pct: Floor for unfavoured side allocation (0.0-1.0).
+        max_spread_cost: Maximum combined cost of both legs to trigger a hedge.
+            A value below 1.0 guarantees profit (e.g. 0.95 = min 5% return).
+        max_entry_price: Maximum price for the directional entry leg. Skip
+            markets where the favoured side has already moved above this.
 
     """
 
@@ -41,8 +43,7 @@ class WhaleCopyConfig:
     min_time_to_start: int = 0
     capital: Decimal = Decimal(100)
     max_position_pct: Decimal = Decimal("0.10")
-    max_bias_scale: Decimal = Decimal("3.0")
-    topup_bias_delta: Decimal = Decimal("0.5")
     max_window_seconds: int = 0
     use_market_orders: bool = False
-    min_unfavoured_pct: Decimal = Decimal("0.15")
+    max_spread_cost: Decimal = Decimal("0.95")
+    max_entry_price: Decimal = Decimal("0.65")

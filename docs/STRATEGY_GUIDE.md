@@ -158,7 +158,7 @@ Create `src/trading_tools/apps/polymarket/cli/my_strategy_cmd.py` and register i
 
 ### 4. Reference implementation
 
-See `src/trading_tools/apps/whale_copy_trader/` for a complete working example of a polling strategy with dual-side spread capture.
+See `src/trading_tools/apps/whale_copy_trader/` for a complete working example of a polling strategy with temporal spread arbitrage.
 
 ## Shared Services Reference
 

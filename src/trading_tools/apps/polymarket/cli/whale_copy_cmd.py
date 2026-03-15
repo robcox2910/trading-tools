@@ -1,8 +1,9 @@
 """CLI command for real-time whale copy-trading on Polymarket.
 
 Run a polling service that monitors a whale's trades, detects directional
-bias signals on BTC/ETH 5-minute markets, and copies them. Defaults to
-paper mode (virtual P&L tracking); pass ``--confirm-live`` for real orders.
+bias signals on BTC/ETH 5-minute markets, and copies them using temporal
+spread arbitrage. Defaults to paper mode; pass ``--confirm-live`` for
+real orders.
 """
 
 import asyncio
@@ -28,10 +29,9 @@ _DEFAULT_MIN_TRADES = 2
 _DEFAULT_MIN_TIME_TO_START = 0
 _DEFAULT_CAPITAL = "100"
 _DEFAULT_MAX_POSITION_PCT = "0.10"
-_DEFAULT_MAX_BIAS_SCALE = "3.0"
-_DEFAULT_TOPUP_BIAS_DELTA = "0.5"
 _DEFAULT_MAX_WINDOW = 0
-_DEFAULT_MIN_UNFAVOURED_PCT = "0.15"
+_DEFAULT_MAX_SPREAD_COST = "0.95"
+_DEFAULT_MAX_ENTRY_PRICE = "0.65"
 _LIVE_WARNING_DELAY = 2
 
 
@@ -58,18 +58,15 @@ def whale_copy(
     max_position_pct: Annotated[
         str, typer.Option(help="Max fraction of capital per trade (e.g. 0.10)")
     ] = _DEFAULT_MAX_POSITION_PCT,
-    max_bias_scale: Annotated[
-        str, typer.Option(help="Max bias scaling multiplier for position sizing")
-    ] = _DEFAULT_MAX_BIAS_SCALE,
-    topup_bias_delta: Annotated[
-        str, typer.Option(help="Min bias increase to trigger a position top-up")
-    ] = _DEFAULT_TOPUP_BIAS_DELTA,
     max_window: Annotated[
         int, typer.Option(help="Max market window in seconds (e.g. 300 for 5-min only, 0=all)")
     ] = _DEFAULT_MAX_WINDOW,
-    min_unfavoured_pct: Annotated[
-        str, typer.Option(help="Floor for unfavoured side allocation (e.g. 0.15)")
-    ] = _DEFAULT_MIN_UNFAVOURED_PCT,
+    max_spread_cost: Annotated[
+        str, typer.Option(help="Max combined cost of both legs to trigger hedge (e.g. 0.95)")
+    ] = _DEFAULT_MAX_SPREAD_COST,
+    max_entry_price: Annotated[
+        str, typer.Option(help="Max price for directional entry (skip if above, e.g. 0.65)")
+    ] = _DEFAULT_MAX_ENTRY_PRICE,
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
@@ -80,9 +77,10 @@ def whale_copy(
 ) -> None:
     """Copy a whale's directional bets on BTC/ETH 5-minute markets.
 
-    Poll the whale_trades database for new trades, detect markets with
-    strong directional bias, and copy them. Paper mode by default;
-    use ``--confirm-live`` for real Polymarket orders.
+    Use temporal spread arbitrage: enter on the whale's favoured side,
+    then hedge the opposite side when the spread is cheap enough to
+    lock in guaranteed profit. Paper mode by default; use
+    ``--confirm-live`` for real Polymarket orders.
     """
     resolved_db_url = db_url or require_whale_db_url()
     configure_logging(verbose=verbose)
@@ -96,10 +94,9 @@ def whale_copy(
         min_time_to_start=min_time_to_start,
         capital=Decimal(capital),
         max_position_pct=Decimal(max_position_pct),
-        max_bias_scale=Decimal(max_bias_scale),
-        topup_bias_delta=Decimal(topup_bias_delta),
         max_window_seconds=max_window,
-        min_unfavoured_pct=Decimal(min_unfavoured_pct),
+        max_spread_cost=Decimal(max_spread_cost),
+        max_entry_price=Decimal(max_entry_price),
     )
 
     if confirm_live:
@@ -114,9 +111,8 @@ def whale_copy(
         repo = WhaleRepository(resolved_db_url)
         await repo.init_db()
 
-        client = None
-        if confirm_live:
-            client = build_authenticated_client()
+        # Both paper and live modes need a client for CLOB price data
+        client = build_authenticated_client()
 
         trader = WhaleCopyTrader(
             config=config,
@@ -128,8 +124,7 @@ def whale_copy(
         try:
             await trader.run()
         finally:
-            if client is not None:
-                await client.close()
+            await client.close()
             await repo.close()
 
     asyncio.run(_run())
