@@ -10,6 +10,7 @@ from trading_tools.apps.polymarket.cli.backtest_ticks_cmd import backtest_ticks
 from trading_tools.apps.polymarket.cli.book_cmd import book
 from trading_tools.apps.polymarket.cli.bot_cmd import bot
 from trading_tools.apps.polymarket.cli.bot_live_cmd import bot_live
+from trading_tools.apps.polymarket.cli.copy_backtest_cmd import copy_backtest
 from trading_tools.apps.polymarket.cli.grid_backtest_cmd import grid_backtest
 from trading_tools.apps.polymarket.cli.markets_cmd import markets
 from trading_tools.apps.polymarket.cli.odds_cmd import odds
@@ -44,5 +45,6 @@ app.command(name="whale-analyse")(whale_analyse)
 app.command(name="whale-markets")(whale_markets)
 app.command(name="whale-copy")(whale_copy)
 app.command(name="whale-correlate")(whale_correlate)
+app.command(name="copy-backtest")(copy_backtest)
 
 __all__ = ["app"]
