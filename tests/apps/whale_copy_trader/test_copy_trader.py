@@ -144,18 +144,10 @@ class TestWhaleCopyTrader:
     """Tests for the temporal spread arbitrage copy-trading engine."""
 
     @pytest.fixture
-    def mock_repo(self) -> AsyncMock:
-        """Create a mock WhaleRepository."""
-        repo = AsyncMock()
-        repo.get_trades = AsyncMock(return_value=[])
-        return repo
-
-    @pytest.fixture
-    def trader(self, mock_repo: AsyncMock) -> WhaleCopyTrader:
+    def trader(self) -> WhaleCopyTrader:
         """Create a WhaleCopyTrader in paper mode with CLOB client."""
         return WhaleCopyTrader(
             config=_make_config(),
-            repo=mock_repo,
             client=_mock_client(),
         )
 
@@ -194,10 +186,8 @@ class TestWhaleCopyTrader:
     async def test_skips_entry_when_price_too_high(self) -> None:
         """Skip entry when favoured side price exceeds max_entry_price."""
         config = _make_config(max_entry_price=Decimal("0.50"))
-        repo = AsyncMock()
-        repo.get_trades = AsyncMock(return_value=[])
         # Up price = 0.55 > max_entry_price = 0.50
-        trader = WhaleCopyTrader(config=config, repo=repo, client=_mock_client("0.55", "0.45"))
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
 
         signal = _make_signal(favoured_side="Up")
 
@@ -230,11 +220,9 @@ class TestWhaleCopyTrader:
             max_spread_cost=Decimal("0.95"),
             max_entry_price=Decimal("0.65"),
         )
-        repo = AsyncMock()
-        repo.get_trades = AsyncMock(return_value=[])
         # Up=0.55, Down=0.35 → combined=0.90 < 0.95 target
         client = _mock_client("0.55", "0.35")
-        trader = WhaleCopyTrader(config=config, repo=repo, client=client)
+        trader = WhaleCopyTrader(config=config, client=client)
 
         signal = _make_signal(favoured_side="Up")
 
@@ -256,10 +244,8 @@ class TestWhaleCopyTrader:
             max_spread_cost=Decimal("0.90"),
             max_entry_price=Decimal("0.65"),
         )
-        repo = AsyncMock()
-        repo.get_trades = AsyncMock(return_value=[])
         # Up=0.55, Down=0.45 → combined=1.00 > 0.90 target
-        trader = WhaleCopyTrader(config=config, repo=repo, client=_mock_client("0.55", "0.45"))
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
 
         signal = _make_signal(favoured_side="Up")
 
@@ -276,9 +262,7 @@ class TestWhaleCopyTrader:
     async def test_unhedged_pnl_whale_correct(self) -> None:
         """Compute positive P&L when unhedged and whale is correct."""
         config = _make_config(max_spread_cost=Decimal("0.80"))
-        repo = AsyncMock()
-        repo.get_trades = AsyncMock(return_value=[])
-        trader = WhaleCopyTrader(config=config, repo=repo, client=_mock_client("0.55", "0.45"))
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
 
         signal = _make_signal(favoured_side="Up", window_end_ts=_PAST_TS)
 
@@ -301,9 +285,7 @@ class TestWhaleCopyTrader:
     async def test_unhedged_pnl_whale_wrong(self) -> None:
         """Compute negative P&L when unhedged and whale is wrong."""
         config = _make_config(max_spread_cost=Decimal("0.80"))
-        repo = AsyncMock()
-        repo.get_trades = AsyncMock(return_value=[])
-        trader = WhaleCopyTrader(config=config, repo=repo, client=_mock_client("0.55", "0.45"))
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
 
         signal = _make_signal(favoured_side="Up", window_end_ts=_PAST_TS)
 
@@ -328,11 +310,9 @@ class TestWhaleCopyTrader:
             max_spread_cost=Decimal("0.95"),
             max_entry_price=Decimal("0.65"),
         )
-        repo = AsyncMock()
-        repo.get_trades = AsyncMock(return_value=[])
         # Spread = 0.55 + 0.35 = 0.90 < 0.95 → hedge triggers
         client = _mock_client("0.55", "0.35")
-        trader = WhaleCopyTrader(config=config, repo=repo, client=client)
+        trader = WhaleCopyTrader(config=config, client=client)
 
         signal = _make_signal(favoured_side="Up", window_end_ts=_PAST_TS)
 
@@ -357,9 +337,7 @@ class TestWhaleCopyTrader:
     async def test_expired_unhedged_position_closes(self) -> None:
         """Close an unhedged position when its market window expires."""
         config = _make_config(max_spread_cost=Decimal("0.80"))
-        repo = AsyncMock()
-        repo.get_trades = AsyncMock(return_value=[])
-        trader = WhaleCopyTrader(config=config, repo=repo, client=_mock_client("0.55", "0.45"))
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
 
         signal = _make_signal(window_end_ts=_PAST_TS)
 
@@ -531,11 +509,8 @@ class TestLiveTradingFlow:
     @pytest.fixture
     def live_trader(self, mock_client: AsyncMock) -> WhaleCopyTrader:
         """Create a WhaleCopyTrader in live mode."""
-        repo = AsyncMock()
-        repo.get_trades = AsyncMock(return_value=[])
         return WhaleCopyTrader(
             config=_make_config(),
-            repo=repo,
             live=True,
             client=mock_client,
         )

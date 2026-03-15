@@ -27,18 +27,12 @@ class TestWhaleCopyCommand:
         """Run in paper mode when --confirm-live is not passed."""
         with (
             patch(
-                "trading_tools.apps.polymarket.cli.whale_copy_cmd.WhaleRepository"
-            ) as mock_repo_cls,
-            patch(
                 "trading_tools.apps.polymarket.cli.whale_copy_cmd.WhaleCopyTrader"
             ) as mock_trader_cls,
             patch(
                 "trading_tools.apps.polymarket.cli.whale_copy_cmd.build_authenticated_client"
             ) as mock_build,
         ):
-            mock_repo = AsyncMock()
-            mock_repo_cls.return_value = mock_repo
-
             mock_client = AsyncMock()
             mock_build.return_value = mock_client
 
@@ -52,8 +46,6 @@ class TestWhaleCopyCommand:
                     "whale-copy",
                     "--address",
                     _ADDRESS,
-                    "--db-url",
-                    "sqlite+aiosqlite:///test.db",
                 ],
             )
 
@@ -67,9 +59,6 @@ class TestWhaleCopyCommand:
         """Display a warning banner when --confirm-live is passed."""
         with (
             patch(
-                "trading_tools.apps.polymarket.cli.whale_copy_cmd.WhaleRepository"
-            ) as mock_repo_cls,
-            patch(
                 "trading_tools.apps.polymarket.cli.whale_copy_cmd.WhaleCopyTrader"
             ) as mock_trader_cls,
             patch(
@@ -77,9 +66,6 @@ class TestWhaleCopyCommand:
             ) as mock_build,
             patch("trading_tools.apps.polymarket.cli.whale_copy_cmd.time"),
         ):
-            mock_repo = AsyncMock()
-            mock_repo_cls.return_value = mock_repo
-
             mock_client = AsyncMock()
             mock_build.return_value = mock_client
 
@@ -94,8 +80,6 @@ class TestWhaleCopyCommand:
                     "--address",
                     _ADDRESS,
                     "--confirm-live",
-                    "--db-url",
-                    "sqlite+aiosqlite:///test.db",
                 ],
             )
 
@@ -109,9 +93,6 @@ class TestWhaleCopyCommand:
         """Pass custom config options through to WhaleCopyConfig."""
         with (
             patch(
-                "trading_tools.apps.polymarket.cli.whale_copy_cmd.WhaleRepository"
-            ) as mock_repo_cls,
-            patch(
                 "trading_tools.apps.polymarket.cli.whale_copy_cmd.WhaleCopyTrader"
             ) as mock_trader_cls,
             patch(
@@ -119,9 +100,6 @@ class TestWhaleCopyCommand:
                 return_value=AsyncMock(),
             ),
         ):
-            mock_repo = AsyncMock()
-            mock_repo_cls.return_value = mock_repo
-
             mock_trader = AsyncMock()
             mock_trader.run = AsyncMock()
             mock_trader_cls.return_value = mock_trader
@@ -140,8 +118,6 @@ class TestWhaleCopyCommand:
                     str(_CUSTOM_MIN_TRADES),
                     "--capital",
                     "500",
-                    "--db-url",
-                    "sqlite+aiosqlite:///test.db",
                 ],
             )
 
