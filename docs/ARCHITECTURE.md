@@ -121,7 +121,7 @@ Runnable applications and long-lived services. Each application has:
 
 | App | Purpose |
 |-----|---------|
-| `bot_framework` | Shared composable services (redemption, order execution) for trading bots |
+| `bot_framework` | Shared composable services (balance management, order execution, redemption) for trading bots |
 | `fetcher` | Download historical OHLCV data from Revolut X or Binance |
 | `backtester` | Run strategies against candle data, compare, simulate, and optimise |
 | `polymarket` | CLI for market queries, trading, bots, tick collection, and whale monitoring |
