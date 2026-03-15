@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from trading_tools.apps.bot_framework.balance_manager import BalanceManager
 from trading_tools.apps.bot_framework.order_executor import OrderExecutor
 from trading_tools.apps.bot_framework.redeemer import PositionRedeemer
 from trading_tools.clients.binance.client import BinanceClient
@@ -100,7 +101,7 @@ class WhaleCopyTrader:
     _last_heartbeat: float = field(default=0.0, repr=False)
     _redeemer: PositionRedeemer | None = field(default=None, init=False, repr=False)
     _executor: OrderExecutor | None = field(default=None, init=False, repr=False)
-    _live_balance: Decimal = field(default=ZERO, init=False, repr=False)
+    _balance_manager: BalanceManager | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize shared services when running in live mode."""
@@ -110,6 +111,7 @@ class WhaleCopyTrader:
                 client=self.client,
                 use_market_orders=self.config.use_market_orders,
             )
+            self._balance_manager = BalanceManager(client=self.client)
 
     async def run(self) -> None:
         """Run the polling loop until interrupted.
@@ -129,8 +131,8 @@ class WhaleCopyTrader:
         self._binance = BinanceClient()
         self._running = True
 
-        if self.live and self.client is not None:
-            await self._refresh_balance()
+        if self.live and self._balance_manager is not None:
+            await self._balance_manager.refresh()
 
         mode = "LIVE" if self.live else "PAPER"
         capital = self._get_capital()
@@ -172,37 +174,17 @@ class WhaleCopyTrader:
     def _get_capital(self) -> Decimal:
         """Return the current capital available for position sizing.
 
-        In live mode, use the real USDC balance from the CLOB. In paper
-        mode, use the configured starting capital.
+        In live mode, use the real USDC balance from the shared
+        ``BalanceManager``. In paper mode, use the configured starting
+        capital.
 
         Returns:
             Available capital in USDC.
 
         """
-        if self.live and self._live_balance > ZERO:
-            return self._live_balance
+        if self._balance_manager is not None and self._balance_manager.balance > ZERO:
+            return self._balance_manager.balance
         return self.config.capital
-
-    async def _refresh_balance(self) -> None:
-        """Fetch the live USDC balance from the CLOB API.
-
-        Call ``sync_balance`` first to ensure the cached value reflects
-        the latest on-chain state, then read the balance. On failure,
-        log a warning and keep the last known balance.
-        """
-        if self.client is None:
-            return
-        try:
-            await self.client.sync_balance("COLLATERAL")
-            bal = await self.client.get_balance("COLLATERAL")
-            self._live_balance = bal.balance
-            logger.info("BALANCE refreshed: $%.2f", self._live_balance)
-        except Exception:
-            logger.warning(
-                "Balance refresh failed, using last known: $%.2f",
-                self._live_balance,
-                exc_info=True,
-            )
 
     async def _poll_cycle(self) -> None:
         """Execute one poll-detect-act cycle.
@@ -214,8 +196,12 @@ class WhaleCopyTrader:
         assert self._detector is not None  # noqa: S101
         self._poll_count += 1
 
-        if self.live and self._poll_count % _BALANCE_REFRESH_POLLS == 0:
-            await self._refresh_balance()
+        if (
+            self.live
+            and self._balance_manager is not None
+            and self._poll_count % _BALANCE_REFRESH_POLLS == 0
+        ):
+            await self._balance_manager.refresh()
 
         signals = await self._detector.detect_signals()
         for signal in signals:
