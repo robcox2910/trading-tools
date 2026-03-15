@@ -431,27 +431,33 @@ class TestComputePnl:
     def _make_hedged_position(self) -> OpenPosition:
         """Create a HEDGED position for P&L testing.
 
-        Use capital-based sizing: $10 per leg at different prices, giving
-        different token quantities per side (whale-like opportunistic hedge).
+        Use equal-token sizing: same quantity on both legs at different
+        prices, guaranteeing profit regardless of outcome when
+        ``combined < 1.0``.
+
+        Leg 1: 18.18 Up tokens @ 0.55 = $10.00
+        Hedge: 18.18 Down tokens @ 0.35 = $6.363
+        Total cost: $16.363, guaranteed payout: $18.18
 
         Returns:
             A hedged OpenPosition with both legs.
 
         """
+        qty = Decimal("18.18")
         return OpenPosition(
             signal=_make_signal(),
             state=PositionState.HEDGED,
             leg1=SideLeg(
                 side="Up",
                 entry_price=Decimal("0.55"),
-                quantity=Decimal("18.18"),
+                quantity=qty,
                 cost_basis=Decimal("10.00"),
             ),
             hedge_leg=SideLeg(
                 side="Down",
                 entry_price=Decimal("0.35"),
-                quantity=Decimal("28.57"),
-                cost_basis=Decimal("10.00"),
+                quantity=qty,
+                cost_basis=Decimal("6.363"),
             ),
             hedge_side="Down",
             entry_time=1000,
@@ -470,32 +476,30 @@ class TestComputePnl:
         assert pnl == -Decimal("10.00")
 
     def test_hedged_pnl_when_leg1_wins(self) -> None:
-        """P&L = leg1_qty - total_cost when leg1 wins (hedged)."""
+        """Guarantee profit when leg 1 wins (hedged, equal tokens)."""
         pos = self._make_hedged_position()
         pnl = compute_pnl(pos, "Up")
-        # 18.18 - (10 + 10) = -1.82 (leg1 wins but fewer tokens than cost)
-        assert pnl == Decimal("18.18") - Decimal("20.00")
+        # 18.18 - (10.00 + 6.363) = 1.817
+        assert pnl == Decimal("18.18") - Decimal("16.363")
+        assert pnl > Decimal(0)
 
     def test_hedged_pnl_when_hedge_wins(self) -> None:
-        """P&L = hedge_qty - total_cost when hedge side wins."""
+        """Guarantee profit when hedge side wins (equal tokens)."""
         pos = self._make_hedged_position()
         pnl = compute_pnl(pos, "Down")
-        # 28.57 - (10 + 10) = 8.57 (hedge side has more tokens)
-        assert pnl == Decimal("28.57") - Decimal("20.00")
+        # 18.18 - (10.00 + 6.363) = 1.817
+        assert pnl == Decimal("18.18") - Decimal("16.363")
+        assert pnl > Decimal(0)
 
-    def test_hedged_asymmetric_pnl_reflects_token_counts(self) -> None:
-        """Hedge side win yields more profit than leg1 win when hedge is cheaper."""
-        # Up=0.55, Down=0.35 → $10 each side
-        # Up tokens: 10/0.55 ≈ 18.18, Down tokens: 10/0.35 ≈ 28.57
+    def test_hedged_equal_tokens_identical_pnl_either_outcome(self) -> None:
+        """Verify equal token quantities yield identical P&L regardless of outcome."""
         pos = self._make_hedged_position()
-        pnl_leg1_wins = compute_pnl(pos, "Up")  # 18.18 - 20 = -1.82
-        pnl_hedge_wins = compute_pnl(pos, "Down")  # 28.57 - 20 = +8.57
+        pnl_leg1_wins = compute_pnl(pos, "Up")
+        pnl_hedge_wins = compute_pnl(pos, "Down")
 
-        # Cheap hedge side yields more tokens → bigger win when it hits
-        assert pnl_hedge_wins > pnl_leg1_wins
-        assert pnl_hedge_wins > Decimal(0)
-        # Leg1 win is a small loss (spread > 1 from cost perspective)
-        assert pnl_leg1_wins < Decimal(0)
+        # Equal tokens → same payout ($18.18) regardless of winner
+        assert pnl_leg1_wins == pnl_hedge_wins
+        assert pnl_leg1_wins > Decimal(0)
 
 
 class TestLiveTradingFlow:
