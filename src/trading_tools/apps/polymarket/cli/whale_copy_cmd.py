@@ -42,7 +42,7 @@ _DEFAULT_STOP_LOSS_PCT = "0.50"
 _DEFAULT_WIN_RATE = "0.80"
 _DEFAULT_KELLY_FRACTION = "0.5"
 _DEFAULT_CLOB_FEE_RATE = "0.0"
-_DEFAULT_TAKE_PROFIT_PRICE = "0.85"
+_DEFAULT_TAKE_PROFIT_PCT = "0.15"
 _DEFAULT_MAX_UNHEDGED_EXPOSURE_PCT = "0.50"
 _LIVE_WARNING_DELAY = 2
 
@@ -98,9 +98,9 @@ def whale_copy(
     clob_fee_rate: Annotated[
         str, typer.Option(help="Per-leg CLOB fee rate for hedge profitability (e.g. 0.0)")
     ] = _DEFAULT_CLOB_FEE_RATE,
-    take_profit_price: Annotated[
-        str, typer.Option(help="Sell unhedged tokens when price reaches this level (e.g. 0.85)")
-    ] = _DEFAULT_TAKE_PROFIT_PRICE,
+    take_profit_pct: Annotated[
+        str, typer.Option(help="Take profit at this %% gain above entry (e.g. 0.15 = 15%%)")
+    ] = _DEFAULT_TAKE_PROFIT_PCT,
     max_unhedged_exposure_pct: Annotated[
         str,
         typer.Option(help="Max fraction of capital in unhedged positions (e.g. 0.50)"),
@@ -138,7 +138,7 @@ def whale_copy(
         win_rate=Decimal(win_rate),
         kelly_fraction=Decimal(kelly_fraction),
         clob_fee_rate=Decimal(clob_fee_rate),
-        take_profit_price=Decimal(take_profit_price),
+        take_profit_pct=Decimal(take_profit_pct),
         max_unhedged_exposure_pct=Decimal(max_unhedged_exposure_pct),
     )
 

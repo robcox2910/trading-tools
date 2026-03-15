@@ -384,7 +384,7 @@ trading-tools-polymarket whale-copy \
 | `--win-rate` | `0.80` | Estimated whale win rate for Kelly criterion sizing |
 | `--kelly-fraction` | `0.5` | Fractional Kelly multiplier (e.g. 0.5 = half-Kelly for safety) |
 | `--clob-fee-rate` | `0.0` | Per-leg CLOB fee rate for hedge profitability check |
-| `--take-profit-price` | `0.85` | Sell unhedged tokens when price reaches this level |
+| `--take-profit-pct` | `0.15` | Take profit at this % gain above entry (e.g. 0.15 = 15%) |
 | `--max-unhedged-exposure-pct` | `0.50` | Max fraction of capital in unhedged (non-guaranteed) positions |
 | `--confirm-live` | `false` | **Required flag** for live trading |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |

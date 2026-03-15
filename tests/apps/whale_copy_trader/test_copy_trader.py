@@ -892,7 +892,7 @@ class TestTakeProfit:
         config = _make_config(
             max_spread_cost=Decimal("0.80"),  # prevent hedge
             max_entry_price=Decimal("0.65"),
-            take_profit_price=Decimal("0.85"),
+            take_profit_pct=Decimal("0.55"),
         )
         market_open = _mock_market("0.55", "0.45")
         market_up = _mock_market("0.90", "0.10")
@@ -933,7 +933,7 @@ class TestTakeProfit:
         config = _make_config(
             max_spread_cost=Decimal("0.80"),
             max_entry_price=Decimal("0.65"),
-            take_profit_price=Decimal("0.85"),
+            take_profit_pct=Decimal("0.55"),
         )
         client = _mock_client("0.55", "0.45")
         trader = WhaleCopyTrader(config=config, client=client)
@@ -957,7 +957,7 @@ class TestTakeProfit:
         config = _make_config(
             max_spread_cost=Decimal("0.95"),
             max_entry_price=Decimal("0.65"),
-            take_profit_price=Decimal("0.85"),
+            take_profit_pct=Decimal("0.55"),
         )
         market_open = _mock_market("0.55", "0.45")
         market_jump = _mock_market("0.90", "0.05")
@@ -1025,7 +1025,7 @@ class TestDatabasePersistence:
         config = _make_config(
             max_spread_cost=Decimal("0.80"),
             max_entry_price=Decimal("0.65"),
-            take_profit_price=Decimal("0.85"),
+            take_profit_pct=Decimal("0.55"),
         )
         market_open = _mock_market("0.55", "0.45")
         market_up = _mock_market("0.90", "0.10")
