@@ -104,6 +104,7 @@ class WhaleCopyTrader:
     _poll_count: int = field(default=0, repr=False)
     _running: bool = field(default=False, repr=False)
     _last_heartbeat: float = field(default=0.0, repr=False)
+    _redeem_task: asyncio.Task[None] | None = field(default=None, repr=False)
 
     async def run(self) -> None:
         """Run the polling loop until interrupted.
@@ -175,6 +176,9 @@ class WhaleCopyTrader:
             await self._process_signal(signal)
 
         await self._close_expired_positions()
+
+        if self.live and self.client is not None:
+            await self._redeem_resolved()
 
     async def _process_signal(self, signal: CopySignal) -> None:
         """Decide the correct action for a signal and execute it.
@@ -670,6 +674,56 @@ class WhaleCopyTrader:
                 pos.favoured_side,
                 pos.signal.asset,
             )
+
+    async def _redeem_resolved(self) -> None:
+        """Discover and redeem resolved winning positions on-chain.
+
+        Query the Polymarket Data API for redeemable positions, then spawn
+        a background task to call ``redeem_positions()`` on the CTF contract.
+        Run in the background so the trading loop is not blocked by slow
+        Polygon transactions.
+        """
+        assert self.client is not None  # noqa: S101
+
+        if self._redeem_task is not None and not self._redeem_task.done():
+            return
+
+        try:
+            redeemable = await self.client.get_redeemable_positions()
+        except Exception:
+            logger.warning("Failed to discover redeemable positions", exc_info=True)
+            return
+
+        if not redeemable:
+            return
+
+        condition_ids = [pos.condition_id for pos in redeemable if pos.size >= _MIN_TOKEN_QTY]
+        if not condition_ids:
+            return
+
+        logger.info("AUTO-REDEEM: found %d redeemable positions", len(condition_ids))
+        self._redeem_task = asyncio.create_task(self._redeem_on_chain(condition_ids))
+
+    async def _redeem_on_chain(self, condition_ids: list[str]) -> None:
+        """Execute on-chain CTF redemption in the background.
+
+        Log results when complete. Errors are caught and logged so they
+        do not propagate to the main trading loop.
+
+        Args:
+            condition_ids: Resolved market condition IDs to redeem.
+
+        """
+        assert self.client is not None  # noqa: S101
+        try:
+            redeemed = await self.client.redeem_positions(condition_ids)
+            logger.info(
+                "AUTO-REDEEM: redeemed %d/%d positions on-chain via CTF",
+                redeemed,
+                len(condition_ids),
+            )
+        except Exception:
+            logger.warning("CTF redemption failed", exc_info=True)
 
     async def _resolve_outcome(self, pos: OpenPosition) -> str:
         """Determine which side won based on Binance spot price movement.
