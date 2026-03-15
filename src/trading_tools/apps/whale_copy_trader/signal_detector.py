@@ -1,13 +1,18 @@
 """Detect copy-worthy signals from whale trading activity.
 
-Poll the whale_trades table incrementally, maintain a rolling window
-of recent trades in memory, and identify markets where the whale has
-a strong enough directional bias to copy.
+Poll the Polymarket Data API directly for the whale's latest trades,
+maintain a rolling window in memory, and identify markets where the
+whale has a strong enough directional bias to copy.
+
+Direct API polling eliminates the latency of the whale monitor DB
+pipeline (API → collector → PostgreSQL → query), giving the copy bot
+near-real-time visibility into the whale's trades.
 
 Performance notes:
-- Incremental polling: only fetch trades newer than last seen timestamp.
+- Incremental deduplication: track seen transaction hashes to avoid
+  processing the same trade twice.
 - In-memory accumulation: trades are kept in a deque and trimmed by age.
-- No full-table scans: each poll is a narrow time-range query.
+- Single HTTP request per poll: fetch the latest N trades directly.
 """
 
 from __future__ import annotations
@@ -17,18 +22,21 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import Any
+
+import httpx
 
 from trading_tools.apps.whale_monitor.analyser import MarketBreakdown, analyse_markets
 from trading_tools.apps.whale_monitor.correlator import parse_asset, parse_time_window
+from trading_tools.apps.whale_monitor.models import WhaleTrade
 
 from .models import CopySignal
 
-if TYPE_CHECKING:
-    from trading_tools.apps.whale_monitor.models import WhaleTrade
-    from trading_tools.apps.whale_monitor.repository import WhaleRepository
-
 logger = logging.getLogger(__name__)
+
+_DATA_API_BASE = "https://data-api.polymarket.com"
+_API_LIMIT = 200
+_MS_PER_SECOND = 1000
 
 
 def _empty_deque() -> deque[WhaleTrade]:
@@ -36,55 +44,74 @@ def _empty_deque() -> deque[WhaleTrade]:
     return deque()
 
 
+def _empty_str_set() -> set[str]:
+    """Return an empty set[str] for dataclass default_factory."""
+    return set()
+
+
 @dataclass
 class SignalDetector:
-    """Detect copy signals from whale trades using incremental DB polling.
+    """Detect copy signals by polling the Polymarket Data API directly.
 
-    Maintain a rolling window of trades in memory. Each call to
-    ``detect_signals`` fetches only new trades since the last poll,
-    appends them to the window, trims expired trades, and runs bias
-    analysis to find actionable signals.
+    Fetch the whale's latest trades via HTTP, deduplicate by transaction
+    hash, maintain a rolling window in memory, and run bias analysis to
+    find actionable signals.
 
     Attributes:
-        repo: Async whale trade repository for DB access.
         whale_address: Proxy wallet address to monitor.
         min_bias: Minimum bias ratio to emit a signal.
         min_trades: Minimum trades per market to consider.
         lookback_seconds: Rolling window duration in seconds.
         min_time_to_start: Minimum seconds before window opens to act.
+        max_window_seconds: Maximum market window duration (0 = no limit).
 
     """
 
-    repo: WhaleRepository
     whale_address: str
     min_bias: Decimal
     min_trades: int
     lookback_seconds: int
     min_time_to_start: int = 60
     max_window_seconds: int = 0
-    _last_seen_ts: int = 0
     _trades: deque[WhaleTrade] = field(default_factory=_empty_deque)
+    _seen_hashes: set[str] = field(default_factory=_empty_str_set)
+    _http_client: httpx.AsyncClient | None = field(default=None, repr=False)
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Return the shared HTTP client, creating it lazily.
+
+        Returns:
+            An httpx.AsyncClient configured with reasonable timeouts.
+
+        """
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(10.0))
+        return self._http_client
+
+    async def close(self) -> None:
+        """Close the HTTP client if open."""
+        if self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
 
     async def detect_signals(self) -> list[CopySignal]:
-        """Poll for new trades and return any actionable copy signals.
+        """Poll the Data API for new trades and return actionable copy signals.
 
-        Fetch trades newer than ``_last_seen_ts``, append to the rolling
-        window, trim expired entries, then run ``analyse_markets`` and
-        filter for BTC/ETH markets with future time windows and sufficient
-        bias.
+        Fetch the whale's latest trades, deduplicate, append to the
+        rolling window, trim expired entries, then run ``analyse_markets``
+        and filter for BTC/ETH markets with future time windows and
+        sufficient bias.
 
         Returns:
             List of ``CopySignal`` for markets that meet all thresholds.
 
         """
         now = int(time.time())
-        start_ts = self._last_seen_ts + 1 if self._last_seen_ts else now - self.lookback_seconds
 
-        new_trades = await self.repo.get_trades(self.whale_address, start_ts, now)
+        new_trades = await self._fetch_recent_trades()
 
         if new_trades:
             self._trades.extend(new_trades)
-            self._last_seen_ts = max(t.timestamp for t in new_trades)
             logger.info(
                 "POLL +%d new trades (window=%d total)",
                 len(new_trades),
@@ -99,6 +126,9 @@ class SignalDetector:
             self._trades.popleft()
             trimmed += 1
         if trimmed:
+            self._seen_hashes = {
+                f"{t.transaction_hash}:{t.asset_id}:{t.size}" for t in self._trades
+            }
             logger.debug("Trimmed %d expired trades from window", trimmed)
 
         if not self._trades:
@@ -151,6 +181,54 @@ class SignalDetector:
                 )
 
         return signals
+
+    async def _fetch_recent_trades(self) -> list[WhaleTrade]:
+        """Fetch the whale's latest trades from the Polymarket Activity API.
+
+        Use the ``/activity`` endpoint which is near-real-time (~10-30s
+        delay) compared to ``/trades`` which lags by 3-5 minutes.
+        Deduplicate using a composite key of ``hash:asset:size`` because
+        one transaction can contain multiple fills.
+
+        Returns:
+            List of new ``WhaleTrade`` instances not seen before.
+
+        """
+        client = await self._get_client()
+        now_ms = int(time.time() * _MS_PER_SECOND)
+
+        try:
+            resp = await client.get(
+                f"{_DATA_API_BASE}/activity",
+                params={
+                    "user": self.whale_address,
+                    "limit": _API_LIMIT,
+                },
+            )
+            resp.raise_for_status()
+        except Exception:
+            logger.warning("Failed to fetch activity from Data API", exc_info=True)
+            return []
+
+        raw_trades: list[dict[str, Any]] = resp.json()
+        new_trades: list[WhaleTrade] = []
+
+        for raw in raw_trades:
+            # Activity endpoint includes non-trade types (e.g. REDEEM)
+            if raw.get("type") != "TRADE":
+                continue
+            tx_hash = str(raw.get("transactionHash", ""))
+            asset = str(raw.get("asset", raw.get("asset_id", "")))
+            size = str(raw.get("size", ""))
+            dedup_key = f"{tx_hash}:{asset}:{size}"
+            if not tx_hash or dedup_key in self._seen_hashes:
+                continue
+            self._seen_hashes.add(dedup_key)
+            trade = _parse_trade(raw, self.whale_address, now_ms)
+            if trade is not None:
+                new_trades.append(trade)
+
+        return new_trades
 
     def _filter_breakdowns(
         self,
@@ -205,6 +283,13 @@ class SignalDetector:
             up_pct = Decimal(str(bd.up_volume / total_vol)) if total_vol > 0 else Decimal("0.5")
             down_pct = Decimal(1) - up_pct
 
+            # Composite signal strength: bias quality x trade volume
+            _max_bias = Decimal(3)
+            _max_trades = 10
+            bias_score = min(Decimal(1), Decimal(str(bd.bias_ratio)) / _max_bias)
+            trade_score = Decimal(min(bd.trade_count, _max_trades)) / Decimal(_max_trades)
+            strength = bias_score * trade_score
+
             signals.append(
                 CopySignal(
                     condition_id=bd.condition_id,
@@ -218,6 +303,7 @@ class SignalDetector:
                     detected_at=now,
                     up_volume_pct=up_pct,
                     down_volume_pct=down_pct,
+                    strength_score=strength,
                 )
             )
 
@@ -227,3 +313,40 @@ class SignalDetector:
     def window_size(self) -> int:
         """Return the number of trades in the current rolling window."""
         return len(self._trades)
+
+
+def _parse_trade(
+    raw: dict[str, Any],
+    address: str,
+    collected_at_ms: int,
+) -> WhaleTrade | None:
+    """Parse a raw API trade dict into a WhaleTrade instance.
+
+    Args:
+        raw: Raw trade dictionary from the Polymarket Data API.
+        address: Whale proxy wallet address.
+        collected_at_ms: Epoch milliseconds when the trade was fetched.
+
+    Returns:
+        A ``WhaleTrade`` instance, or ``None`` if the record is malformed.
+
+    """
+    try:
+        return WhaleTrade(
+            whale_address=address.lower(),
+            transaction_hash=str(raw["transactionHash"]),
+            side=str(raw.get("side", "")),
+            asset_id=str(raw.get("asset_id", raw.get("assetId", ""))),
+            condition_id=str(raw.get("condition_id", raw.get("conditionId", ""))),
+            size=float(raw.get("size", 0)),
+            price=float(raw.get("price", 0)),
+            timestamp=int(raw.get("timestamp", 0)),
+            title=str(raw.get("market", raw.get("title", ""))),
+            slug=str(raw.get("slug", raw.get("market_slug", ""))),
+            outcome=str(raw.get("outcome", "")),
+            outcome_index=int(raw.get("outcome_index", raw.get("outcomeIndex", 0))),
+            collected_at=collected_at_ms,
+        )
+    except (KeyError, ValueError, TypeError):
+        logger.debug("Skipping malformed trade record: %s", raw)
+        return None

@@ -335,12 +335,15 @@ trading-tools-polymarket whale-correlate --address 0x1234... --days 1 --min-trad
 
 Run a polling service that detects a whale's directional bias on BTC/ETH 5-minute markets and copies them with **temporal spread arbitrage**. Paper mode by default; pass `--confirm-live` for real orders.
 
-The bot uses a two-phase approach:
+The bot uses a multi-phase approach:
 
-1. **Directional entry (leg 1):** detect the whale's favoured side and buy it immediately at current CLOB prices.
-2. **Hedge (leg 2):** monitor the opposite side each poll cycle. When `leg1_price + hedge_price ≤ max_spread_cost`, the opposite side is cheap enough to be worth buying. Place an opportunistic hedge with the same dollar allocation — this reduces directional risk and provides large upside if the hedge side wins.
+1. **Directional entry (leg 1):** detect the whale's favoured side and buy it immediately at current CLOB prices. Position size is determined by the Kelly criterion based on estimated win rate.
+2. **Take-profit:** each poll cycle, check if the leg 1 token price has risen above the take-profit threshold (`entry × (1 + take_profit_pct)`). If so, sell early to lock in known profit.
+3. **Defensive hedge:** if the leg 1 token price drops below `entry × (1 - defensive_hedge_pct)`, buy the opposite side to cap loss at settlement instead of selling into a thin book. The position becomes hedged with a bounded max loss.
+4. **Profit hedge (leg 2):** monitor the opposite side each poll cycle. When `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee_rate`, the opposite side is cheap enough to lock in guaranteed profit. Hedge uses FOK market orders by default for fast execution.
+5. **Settlement:** all hedged positions resolve at market expiry with known P&L (profit or capped loss).
 
-If no hedge opportunity arises before market expiry, the position resolves as a pure directional bet (profitable when the whale is correct ~80% of the time).
+If no hedge opportunity arises before expiry, the position resolves as a pure directional bet (profitable when the whale is correct ~80% of the time).
 
 The service uses **incremental polling** for minimal latency: only new trades since the last poll are fetched, and a rolling window of trades is maintained in memory.
 
@@ -362,11 +365,34 @@ trading-tools-polymarket whale-copy \
   --capital 100 \
   --max-position-pct 0.10 \
   --confirm-live
+
+# Load settings from a YAML config file (CLI flags override YAML values)
+trading-tools-polymarket whale-copy \
+  --config whale-copy.yaml \
+  --address 0xa45f... \
+  --capital 200 \
+  -v
+```
+
+**YAML config file** — all fields are optional (dataclass defaults fill omitted values). CLI flags override YAML values; YAML overrides defaults. Keys match ``WhaleCopyConfig`` field names:
+
+```yaml
+# whale-copy.yaml
+whale_address: "0xa45f..."
+capital: "200"
+max_position_pct: "0.15"
+max_spread_cost: "0.95"
+max_entry_price: "0.65"
+adaptive_kelly: true
+compound_profits: true
+circuit_breaker_losses: 5
+circuit_breaker_cooldown: 600
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--address` | *(required)* | Whale proxy wallet address to copy |
+| `--config` | *none* | Path to YAML config file (CLI flags override YAML values) |
 | `--poll-interval` | `5` | Seconds between DB polls (lower = faster) |
 | `--lookback` | `900` | Rolling window in seconds for trade accumulation |
 | `--min-bias` | `1.3` | Minimum bias ratio to trigger a copy signal |
@@ -376,6 +402,28 @@ trading-tools-polymarket whale-copy \
 | `--max-spread-cost` | `0.95` | Max combined cost of both legs to trigger hedge (e.g. 0.95 = min 5% return) |
 | `--max-entry-price` | `0.65` | Max price for directional entry (skip if favoured side already above this) |
 | `--max-window` | `0` | Max market window in seconds (e.g. 300 for 5-min only, 0=all) |
+| `--no-hedge-market-orders` | `false` | Use GTC limit orders for hedge leg instead of FOK market |
+| `--defensive-hedge-pct` | `0.20` | Buy opposite side when leg1 drops this % (e.g. 0.20 = hedge at 20% drop) |
+| `--win-rate` | `0.80` | Estimated whale win rate for Kelly criterion sizing |
+| `--kelly-fraction` | `0.5` | Fractional Kelly multiplier (e.g. 0.5 = half-Kelly for safety) |
+| `--clob-fee-rate` | `0.0` | Per-leg CLOB fee rate for hedge profitability check |
+| `--take-profit-pct` | `0.15` | Take profit at this % gain above entry (e.g. 0.15 = 15%) |
+| `--max-unhedged-exposure-pct` | `0.50` | Max fraction of capital in net unhedged exposure per asset (opposite sides offset) |
+| `--adaptive-kelly/--no-adaptive-kelly` | `true` | Dynamically adjust Kelly win rate from realised unhedged outcomes |
+| `--min-kelly-results` | `20` | Min closed unhedged trades before adaptive Kelly activates |
+| `--min-win-rate` | `0.65` | Floor for adaptive Kelly win rate |
+| `--max-asset-exposure-pct` | `0.30` | Max fraction of capital per asset+side (e.g. all BTC-USD Up) |
+| `--compound-profits/--no-compound-profits` | `true` | Grow paper capital by adding realised P&L from closed trades |
+| `--hedge-urgency-threshold` | `0.20` | Time fraction below which hedge spread threshold is relaxed |
+| `--hedge-urgency-spread-bump` | `0.03` | Amount added to max_spread_cost in urgency zone |
+| `--circuit-breaker-losses` | `3` | Consecutive unhedged losses to trigger cooldown pause (0=disabled) |
+| `--circuit-breaker-cooldown` | `300` | Seconds to pause new entries after circuit breaker triggers |
+| `--max-drawdown-pct` | `0.15` | Max session drawdown as fraction — halt entries at 15% loss from start |
+| `--drawdown-throttle-pct` | `0.10` | HWM drawdown fraction to throttle Kelly by 50% (e.g. 0.10 = throttle at 10% below peak) |
+| `--paper-slippage-pct` | `0.005` | Simulated slippage for paper fills (e.g. 0.005 = 0.5% worse price) |
+| `--signal-strength-sizing/--no-signal-strength-sizing` | `true` | Scale position size by signal strength (bias ratio × trade count) |
+| `--max-entry-age-pct` | `0.60` | Max fraction of window elapsed before skipping entry (e.g. 0.60 = first 60% only) |
+| `--halt-win-rate` | `0.55` | Halt entries when adaptive win rate drops below this threshold |
 | `--confirm-live` | `false` | **Required flag** for live trading |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
@@ -386,12 +434,29 @@ trading-tools-polymarket whale-copy \
 2. Group by `condition_id`, compute bias via `analyse_markets()`
 3. Filter: BTC/ETH asset only, future time window, bias > threshold, trades >= min
 4. Fetch current CLOB prices; skip if favoured side > `max_entry_price`
-5. Open directional leg 1 (buy whale's favoured side)
-6. Each poll: check unhedged positions for hedge opportunity (combined spread ≤ `max_spread_cost`)
-7. If hedge found: buy matching token quantity on opposite side, lock in profit
-8. Close positions when the market window expires; P&L depends on state (hedged = guaranteed, unhedged = directional)
+5. Open directional leg 1 (buy whale's favoured side, Kelly-sized with optional signal strength scaling)
+6. Each poll cycle checks (in order): take-profit → defensive hedge → profit hedge → expiry
+7. Take-profit: prefer hedging opposite side when combined < $1.00; sell as fallback if hedge too expensive
+8. Defensive hedge: buy opposite side if leg 1 price drops below `entry × (1 - defensive_hedge_pct)`
+9. Hedge: if `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee`, buy matching token quantity on opposite side (FOK by default)
+10. Close remaining positions when the market window expires; P&L depends on state
 
 **Heartbeat:** Logs status every 60 seconds (poll count, unhedged/hedged positions, P&L) for CloudWatch monitoring.
+
+**Database persistence:** When `WHALE_DB_URL` is set, closed trade results are automatically persisted to the `copy_results` table in the same database as whale trades. Each result is written immediately at close time (not batched) so data survives crashes. The table stores denormalized signal fields (condition_id, asset, bias_ratio, window timestamps) alongside execution details (entry/hedge prices, quantities, P&L, state) for direct querying without joins.
+
+This enables post-hoc analysis such as backtesting different `max_spread_cost` thresholds:
+
+```sql
+-- Compare hedge rates at different spread cost thresholds
+SELECT
+  CASE WHEN state = 'hedged' THEN 'hedged' ELSE 'unhedged' END AS outcome,
+  COUNT(*) AS trades,
+  AVG(pnl) AS avg_pnl
+FROM copy_results
+WHERE is_paper = true
+GROUP BY outcome;
+```
 
 ## Backtesting Polymarket Strategies
 

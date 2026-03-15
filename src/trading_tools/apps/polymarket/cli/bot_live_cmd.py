@@ -28,7 +28,7 @@ from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 
 
-def bot_live(  # noqa: PLR0913
+def bot_live(
     strategy: Annotated[
         str, typer.Option(help=f"Strategy name: {', '.join(PM_STRATEGY_NAMES)}")
     ] = "pm_late_snipe",
@@ -171,7 +171,7 @@ def _display_results(result: LiveTradingResult) -> None:
             typer.echo(f"  {key}: {value:.4f}")
 
 
-async def _bot_live(  # noqa: PLR0913
+async def _bot_live(
     *,
     strategy: str,
     markets: str,

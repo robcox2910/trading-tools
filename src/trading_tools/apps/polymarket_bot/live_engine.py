@@ -12,7 +12,6 @@ on exit.
 
 import asyncio
 import logging
-import signal
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -21,6 +20,7 @@ from typing import Any
 import httpx
 
 from trading_tools.apps.bot_framework.redeemer import PositionRedeemer
+from trading_tools.apps.bot_framework.shutdown import GracefulShutdown
 from trading_tools.apps.polymarket_bot.base_engine import BaseTradingEngine
 from trading_tools.apps.polymarket_bot.kelly import kelly_fraction
 from trading_tools.apps.polymarket_bot.live_portfolio import LivePortfolio
@@ -122,7 +122,7 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
         self._max_loss_pct = max_loss_pct
         self._auto_redeem = auto_redeem
         self._initial_balance = ZERO
-        self._shutdown = False
+        self._shutdown = GracefulShutdown()
         self._redeemer = PositionRedeemer(client=client) if auto_redeem else None
         self._token_ids: dict[str, tuple[str, str]] = {}
 
@@ -176,8 +176,7 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
             Summary of the live trading run including trades and metrics.
 
         """
-        loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGINT, self._handle_sigint)
+        self._shutdown.install()
 
         self._initial_balance = await self._portfolio.refresh_balance()
         logger.info("Initial USDC balance: %s", self._initial_balance)
@@ -197,8 +196,8 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
         tick_count = 0
         try:
             async for event in self._feed.stream(self._asset_ids):
-                if self._shutdown:
-                    logger.info("Shutdown signal received, closing positions...")
+                if self._shutdown.should_stop:
+                    logger.info("Shutdown requested, closing positions...")
                     break
 
                 if self._check_loss_limit():
@@ -440,7 +439,7 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
 
     def _handle_sigint(self) -> None:
         """Set the shutdown flag for graceful exit on SIGINT."""
-        self._shutdown = True
+        self._shutdown.request()
 
     def _check_loss_limit(self) -> bool:
         """Check whether the portfolio has breached the loss limit.

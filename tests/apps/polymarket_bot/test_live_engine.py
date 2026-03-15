@@ -302,7 +302,7 @@ class TestLiveTradingEngine:
                 event_count += 1
                 if event_count == 2:  # noqa: PLR2004
                     # Simulate balance drop after first event
-                    engine._portfolio._balance = low_balance
+                    engine._portfolio._balance_manager._balance = low_balance
                 yield event
 
         feed = MagicMock()
@@ -335,7 +335,7 @@ class TestLiveTradingEngine:
         engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         # Set shutdown before running
-        engine._shutdown = True
+        engine._shutdown.request()
 
         result = await engine.run(max_ticks=100)
 
