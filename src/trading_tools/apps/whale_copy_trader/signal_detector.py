@@ -19,13 +19,12 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from trading_tools.apps.whale_monitor.analyser import analyse_markets
+from trading_tools.apps.whale_monitor.analyser import MarketBreakdown, analyse_markets
 from trading_tools.apps.whale_monitor.correlator import parse_asset, parse_time_window
 
 from .models import CopySignal
 
 if TYPE_CHECKING:
-    from trading_tools.apps.whale_monitor.analyser import MarketBreakdown
     from trading_tools.apps.whale_monitor.models import WhaleTrade
     from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
@@ -106,7 +105,24 @@ class SignalDetector:
             logger.debug("Empty rolling window — nothing to analyse")
             return []
 
-        breakdowns = analyse_markets(list(self._trades), min_trades=self.min_trades)
+        breakdowns_df = analyse_markets(list(self._trades), min_trades=self.min_trades)
+        breakdowns = [
+            MarketBreakdown(
+                condition_id=str(row.condition_id),
+                title=str(row.title),
+                slug=str(row.slug),
+                up_volume=float(row.up_volume),  # type: ignore[arg-type]
+                down_volume=float(row.down_volume),  # type: ignore[arg-type]
+                up_size=float(row.up_size),  # type: ignore[arg-type]
+                down_size=float(row.down_size),  # type: ignore[arg-type]
+                trade_count=int(row.trade_count),  # type: ignore[arg-type]
+                bias_ratio=float(row.bias_ratio),  # type: ignore[arg-type]
+                favoured_side=str(row.favoured_side),
+                first_trade_ts=int(row.first_trade_ts),  # type: ignore[arg-type]
+                last_trade_ts=int(row.last_trade_ts),  # type: ignore[arg-type]
+            )
+            for row in breakdowns_df.itertuples(index=False)
+        ]
 
         signals, skip_counts = self._filter_breakdowns(breakdowns, now)
 
