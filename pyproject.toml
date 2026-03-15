@@ -109,6 +109,7 @@ max-returns = 8
     "S101",   # Use of assert
     "S105",   # Possible hardcoded password assigned to variable
     "S106",   # Possible hardcoded password assigned to argument
+    "S107",   # Possible hardcoded password assigned to function default
 ]
 
 [tool.ruff.format]

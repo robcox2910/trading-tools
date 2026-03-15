@@ -6,17 +6,33 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from trading_tools.apps.spread_capture.market_scanner import MarketScanner
-from trading_tools.clients.polymarket.models import Market, MarketToken
+from trading_tools.clients.polymarket.models import Market, MarketToken, OrderBook, OrderLevel
 
 _UP_PRICE = Decimal("0.48")
 _DOWN_PRICE = Decimal("0.47")
-_COMBINED = _UP_PRICE + _DOWN_PRICE
+_UP_BID = Decimal("0.46")
+_DOWN_BID = Decimal("0.45")
+_COMBINED_BID = _UP_BID + _DOWN_BID
 _NOW = 1_710_000_100
 _WINDOW_START = 1_710_000_000
 _WINDOW_END = 1_710_000_300
 _MAX_COMBINED = Decimal("0.98")
 _MIN_MARGIN = Decimal("0.01")
 _EXPECTED_TWO_OPPS = 2
+
+
+def _mock_order_book(
+    token_id: str = "tok",
+    best_bid: Decimal = Decimal("0.46"),
+) -> OrderBook:
+    """Build a mock OrderBook with a single best bid level."""
+    return OrderBook(
+        token_id=token_id,
+        bids=(OrderLevel(price=best_bid, size=Decimal(100)),),
+        asks=(OrderLevel(price=best_bid + Decimal("0.02"), size=Decimal(100)),),
+        spread=Decimal("0.02"),
+        midpoint=best_bid + Decimal("0.01"),
+    )
 
 
 def _mock_market(
@@ -48,6 +64,14 @@ def _make_scanner(**overrides: object) -> MarketScanner:
     client = AsyncMock()
     client.discover_series_markets = AsyncMock(return_value=[("cond_a", "2025-03-10T23:05:00Z")])
     client.get_market = AsyncMock(return_value=_mock_market())
+
+    async def _get_order_book(token_id: str) -> OrderBook:
+        return _mock_order_book(
+            token_id=token_id,
+            best_bid=_UP_BID if token_id == "up_tok" else _DOWN_BID,
+        )
+
+    client.get_order_book = AsyncMock(side_effect=_get_order_book)
     defaults: dict[str, object] = {
         "client": client,
         "series_slugs": ("btc-updown-5m",),
@@ -75,8 +99,57 @@ class TestMarketScanner:
 
         assert len(opps) == 1
         assert opps[0].condition_id == "cond_a"
-        assert opps[0].combined == _COMBINED
-        assert opps[0].margin == Decimal(1) - _COMBINED
+        assert opps[0].combined == _COMBINED_BID
+        assert opps[0].margin == Decimal(1) - _COMBINED_BID
+
+    async def test_uses_best_bid_not_midpoint(self) -> None:
+        """Scanner uses order book best bid prices, not midpoint prices."""
+        scanner = _make_scanner()
+        with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            mock_time.time.return_value = _NOW
+            opps = await scanner.scan(set())
+
+        assert len(opps) == 1
+        # Prices should be best bids, not midpoints
+        assert opps[0].up_price == _UP_BID
+        assert opps[0].down_price == _DOWN_BID
+
+    async def test_falls_back_to_midpoint_when_no_bids(self) -> None:
+        """Scanner falls back to midpoint when order book has no bids."""
+        scanner = _make_scanner()
+        # Return empty order books (no bids)
+        scanner.client.get_order_book = AsyncMock(  # type: ignore[attr-defined]
+            return_value=OrderBook(
+                token_id="tok",
+                bids=(),
+                asks=(),
+                spread=Decimal(0),
+                midpoint=Decimal(0),
+            )
+        )
+        with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            mock_time.time.return_value = _NOW
+            opps = await scanner.scan(set())
+
+        assert len(opps) == 1
+        # Falls back to market midpoint prices
+        assert opps[0].up_price == _UP_PRICE
+        assert opps[0].down_price == _DOWN_PRICE
+
+    async def test_fetches_order_books_concurrently(self) -> None:
+        """Scanner fetches order books for both tokens."""
+        scanner = _make_scanner()
+        with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            mock_time.time.return_value = _NOW
+            await scanner.scan(set())
+
+        # Verify get_order_book was called for both tokens
+        calls = scanner.client.get_order_book.call_args_list  # type: ignore[attr-defined]
+        token_ids: set[str] = {c.args[0] for c in calls}
+        assert token_ids == {"up_tok", "down_tok"}
 
     async def test_skips_open_positions(self) -> None:
         """Markets with open positions are skipped."""
@@ -93,6 +166,10 @@ class TestMarketScanner:
         scanner = _make_scanner()
         scanner.client.get_market = AsyncMock(  # type: ignore[attr-defined]
             return_value=_mock_market(up_price=Decimal("0.50"), down_price=Decimal("0.50"))
+        )
+        # High bid prices too
+        scanner.client.get_order_book = AsyncMock(  # type: ignore[attr-defined]
+            return_value=_mock_order_book(best_bid=Decimal("0.50"))
         )
         with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
             mock_time.monotonic.return_value = 100.0
@@ -160,11 +237,32 @@ class TestMarketScanner:
     async def test_sorts_by_margin_descending(self) -> None:
         """Opportunities are sorted by margin, highest first."""
         scanner = _make_scanner()
-        market_a = _mock_market(
-            condition_id="cond_a", up_price=Decimal("0.48"), down_price=Decimal("0.47")
+        # Use different token IDs per market so order books differ
+        market_a = Market(
+            condition_id="cond_a",
+            question="Bitcoin Up or Down - Mar 10, 6PM ET",
+            description="",
+            tokens=(
+                MarketToken(token_id="up_tok_a", outcome="Up", price=Decimal("0.48")),
+                MarketToken(token_id="down_tok_a", outcome="Down", price=Decimal("0.47")),
+            ),
+            end_date="2025-03-10T23:05:00Z",
+            volume=Decimal(0),
+            liquidity=Decimal(0),
+            active=True,
         )
-        market_b = _mock_market(
-            condition_id="cond_b", up_price=Decimal("0.45"), down_price=Decimal("0.44")
+        market_b = Market(
+            condition_id="cond_b",
+            question="Bitcoin Up or Down - Mar 10, 6PM ET",
+            description="",
+            tokens=(
+                MarketToken(token_id="up_tok_b", outcome="Up", price=Decimal("0.45")),
+                MarketToken(token_id="down_tok_b", outcome="Down", price=Decimal("0.44")),
+            ),
+            end_date="2025-03-10T23:05:00Z",
+            volume=Decimal(0),
+            liquidity=Decimal(0),
+            active=True,
         )
         scanner.client.discover_series_markets = AsyncMock(  # type: ignore[attr-defined]
             return_value=[
@@ -172,14 +270,25 @@ class TestMarketScanner:
                 ("cond_b", "2025-03-10T23:05:00Z"),
             ]
         )
-        call_count = 0
 
         async def _get_market(cid: str) -> Market:
-            nonlocal call_count
-            call_count += 1
             return market_a if cid == "cond_a" else market_b
 
         scanner.client.get_market = _get_market  # type: ignore[attr-defined]
+
+        # Market A: higher bids (less margin), Market B: lower bids (more margin)
+        bid_map: dict[str, Decimal] = {
+            "up_tok_a": Decimal("0.46"),
+            "down_tok_a": Decimal("0.45"),
+            "up_tok_b": Decimal("0.40"),
+            "down_tok_b": Decimal("0.39"),
+        }
+
+        async def _get_order_book(token_id: str) -> OrderBook:
+            bid = bid_map[token_id]
+            return _mock_order_book(token_id=token_id, best_bid=bid)
+
+        scanner.client.get_order_book = _get_order_book  # type: ignore[attr-defined]
 
         with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
             mock_time.monotonic.return_value = 100.0
@@ -187,6 +296,7 @@ class TestMarketScanner:
             opps = await scanner.scan(set())
 
         assert len(opps) == _EXPECTED_TWO_OPPS
-        # cond_b has higher margin (1 - 0.89 = 0.11 > 1 - 0.95 = 0.05)
+        # cond_b has higher margin (lower bids: 0.40 + 0.39 = 0.79 vs 0.46 + 0.45 = 0.91)
         assert opps[0].condition_id == "cond_b"
         assert opps[1].condition_id == "cond_a"
+        assert opps[0].margin > opps[1].margin

@@ -106,7 +106,7 @@ class SpreadCaptureConfig:
     max_position_pct: Decimal = Decimal("0.10")
     max_window_seconds: int = 0
     max_entry_age_pct: Decimal = Decimal("0.60")
-    use_market_orders: bool = True
+    use_market_orders: bool = False
     clob_fee_rate: Decimal = Decimal("0.0")
     compound_profits: bool = True
     circuit_breaker_losses: int = 3

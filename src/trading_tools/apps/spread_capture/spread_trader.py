@@ -244,6 +244,9 @@ class SpreadTrader:
         ):
             await self._balance_manager.refresh()
 
+        # Manage pending GTC limit orders before scanning for new opportunities
+        await self._manage_pending_orders()
+
         opportunities = await self._scanner.scan(set(self._positions.keys()))
 
         for opp in opportunities:
@@ -319,16 +322,46 @@ class SpreadTrader:
 
         # Place live orders or record paper fills
         if self.live:
-            up_leg, down_leg = await self._place_spread_orders(opp, up_leg, down_leg)
-            if up_leg is None:
+            result = await self._place_spread_orders(opp, up_leg, down_leg)
+            up_leg_result, down_leg_result = result
+            if up_leg_result is None and down_leg_result is None:
+                logger.warning("Both leg orders failed for %s", opp.condition_id[:12])
+                return
+
+            # With GTC limit orders, create PENDING position and track order IDs
+            if not self.config.use_market_orders:
+                pos = PairedPosition(
+                    opportunity=opp,
+                    state=PositionState.PENDING,
+                    up_leg=up_leg_result if up_leg_result is not None else up_leg,
+                    down_leg=down_leg_result if down_leg_result is not None else down_leg,
+                    entry_time=now,
+                    is_paper=False,
+                    pending_up_order_id=(up_leg_result.order_ids[-1] if up_leg_result else None),
+                    pending_down_order_id=(
+                        down_leg_result.order_ids[-1] if down_leg_result else None
+                    ),
+                )
+                self._positions[opp.condition_id] = pos
+                logger.info(
+                    "LIVE PENDING %s up_oid=%s down_oid=%s qty=%.2f asset=%s",
+                    opp.condition_id[:12],
+                    pos.pending_up_order_id,
+                    pos.pending_down_order_id,
+                    qty,
+                    opp.asset,
+                )
+                return
+
+            # FOK market order path: immediate fill or fail
+            if up_leg_result is None:
                 logger.warning("Up leg order failed for %s", opp.condition_id[:12])
                 return
-            if down_leg is None:
-                # Single-leg scenario: only Up filled
+            if down_leg_result is None:
                 pos = PairedPosition(
                     opportunity=opp,
                     state=PositionState.SINGLE_LEG,
-                    up_leg=up_leg,
+                    up_leg=up_leg_result,
                     down_leg=None,
                     entry_time=now,
                     is_paper=False,
@@ -337,9 +370,11 @@ class SpreadTrader:
                 logger.warning(
                     "LIVE SINGLE-LEG %s: only Up filled, qty=%.2f",
                     opp.condition_id[:12],
-                    up_leg.quantity,
+                    up_leg_result.quantity,
                 )
                 return
+            up_leg = up_leg_result
+            down_leg = down_leg_result
 
         pos = PairedPosition(
             opportunity=opp,
@@ -399,19 +434,153 @@ class SpreadTrader:
         result_up: SideLeg | None = None
         result_down: SideLeg | None = None
 
-        if up_resp is not None and up_resp.filled > ZERO:
-            up_leg.quantity = up_resp.filled
-            up_leg.cost_basis = up_resp.price * up_resp.filled
+        if up_resp is not None:
+            if up_resp.filled > ZERO:
+                up_leg.quantity = up_resp.filled
+                up_leg.cost_basis = up_resp.price * up_resp.filled
             up_leg.order_ids.append(up_resp.order_id)
             result_up = up_leg
 
-        if down_resp is not None and down_resp.filled > ZERO:
-            down_leg.quantity = down_resp.filled
-            down_leg.cost_basis = down_resp.price * down_resp.filled
+        if down_resp is not None:
+            if down_resp.filled > ZERO:
+                down_leg.quantity = down_resp.filled
+                down_leg.cost_basis = down_resp.price * down_resp.filled
             down_leg.order_ids.append(down_resp.order_id)
             result_down = down_leg
 
         return result_up, result_down
+
+    async def _manage_pending_orders(self) -> None:
+        """Check fill status of pending GTC limit orders and transition states.
+
+        For each PENDING position:
+        - If both orders are no longer open (filled) -> transition to PAIRED.
+        - If ``single_leg_timeout`` elapsed with one side unfilled -> cancel
+          unfilled order and mark SINGLE_LEG.
+        - If neither filled and market is about to expire -> cancel both
+          and remove position.
+        """
+        if self.client is None:
+            return
+
+        pending = [
+            (cid, pos) for cid, pos in self._positions.items() if pos.state == PositionState.PENDING
+        ]
+        if not pending:
+            return
+
+        try:
+            open_orders = await self.client.get_open_orders()
+        except (httpx.HTTPError, Exception):
+            logger.debug("Failed to fetch open orders for pending management")
+            return
+
+        open_order_ids = {o.order_id for o in open_orders}
+        now = int(time.time())
+
+        for cid, pos in pending:
+            up_still_open = (
+                pos.pending_up_order_id is not None and pos.pending_up_order_id in open_order_ids
+            )
+            down_still_open = (
+                pos.pending_down_order_id is not None
+                and pos.pending_down_order_id in open_order_ids
+            )
+
+            # Market about to expire — cancel everything
+            if pos.opportunity.window_end_ts <= now:
+                await self._cancel_pending_orders(
+                    pos, up_open=up_still_open, down_open=down_still_open
+                )
+                del self._positions[cid]
+                logger.info(
+                    "LIVE CANCELLED %s: market expired while pending",
+                    cid[:12],
+                )
+                continue
+
+            # Both filled — transition to PAIRED
+            if not up_still_open and not down_still_open:
+                pos.state = PositionState.PAIRED
+                pos.pending_up_order_id = None
+                pos.pending_down_order_id = None
+                logger.info(
+                    "LIVE PAIRED %s: both GTC orders filled, margin=%.4f asset=%s",
+                    cid[:12],
+                    pos.opportunity.margin,
+                    pos.opportunity.asset,
+                )
+                continue
+
+            # Timeout — one side filled, cancel the other
+            elapsed = now - pos.entry_time
+            if elapsed >= self.config.single_leg_timeout:
+                if up_still_open and not down_still_open:
+                    # Down filled, Up unfilled — cancel Up
+                    await self._cancel_order_safe(pos.pending_up_order_id)
+                    pos.state = PositionState.SINGLE_LEG
+                    # The filled side is Down; swap so up_leg holds the filled leg
+                    # Actually keep as-is: SINGLE_LEG with down_leg filled
+                    logger.warning(
+                        "LIVE SINGLE-LEG %s: Up order timed out, Down filled",
+                        cid[:12],
+                    )
+                elif down_still_open and not up_still_open:
+                    # Up filled, Down unfilled — cancel Down
+                    await self._cancel_order_safe(pos.pending_down_order_id)
+                    pos.state = PositionState.SINGLE_LEG
+                    pos.down_leg = None
+                    logger.warning(
+                        "LIVE SINGLE-LEG %s: Down order timed out, Up filled",
+                        cid[:12],
+                    )
+                else:
+                    # Both still open after timeout — cancel both, remove
+                    await self._cancel_pending_orders(
+                        pos, up_open=up_still_open, down_open=down_still_open
+                    )
+                    del self._positions[cid]
+                    logger.warning(
+                        "LIVE CANCELLED %s: both orders timed out",
+                        cid[:12],
+                    )
+
+                pos.pending_up_order_id = None
+                pos.pending_down_order_id = None
+
+    async def _cancel_pending_orders(
+        self,
+        pos: PairedPosition,
+        *,
+        up_open: bool,
+        down_open: bool,
+    ) -> None:
+        """Cancel any still-open pending orders on a position.
+
+        Args:
+            pos: The position whose orders to cancel.
+            up_open: Whether the Up order is still open.
+            down_open: Whether the Down order is still open.
+
+        """
+        if up_open and pos.pending_up_order_id is not None:
+            await self._cancel_order_safe(pos.pending_up_order_id)
+        if down_open and pos.pending_down_order_id is not None:
+            await self._cancel_order_safe(pos.pending_down_order_id)
+
+    async def _cancel_order_safe(self, order_id: str | None) -> None:
+        """Cancel an order, swallowing errors.
+
+        Args:
+            order_id: CLOB order ID to cancel, or ``None`` to skip.
+
+        """
+        if order_id is None or self.client is None:
+            return
+        try:
+            await self.client.cancel_order(order_id)
+        except (httpx.HTTPError, Exception):
+            logger.debug("Failed to cancel order %s", order_id)
 
     async def _settle_expired_positions(self) -> None:
         """Settle positions whose market windows have expired.
@@ -421,7 +590,9 @@ class SpreadTrader:
         """
         now = int(time.time())
         expired = [
-            cid for cid, pos in self._positions.items() if pos.opportunity.window_end_ts <= now
+            cid
+            for cid, pos in self._positions.items()
+            if pos.opportunity.window_end_ts <= now and pos.state != PositionState.PENDING
         ]
 
         for cid in expired:

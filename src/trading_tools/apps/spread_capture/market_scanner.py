@@ -7,6 +7,7 @@ both sides is below the configured threshold.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -22,7 +23,7 @@ from trading_tools.core.models import ZERO
 
 if TYPE_CHECKING:
     from trading_tools.clients.polymarket.client import PolymarketClient
-    from trading_tools.clients.polymarket.models import Market
+    from trading_tools.clients.polymarket.models import Market, OrderBook
 
 logger = logging.getLogger(__name__)
 
@@ -113,8 +114,10 @@ class MarketScanner:
     async def _evaluate_market(self, cid: str, now: int) -> SpreadOpportunity | None:
         """Evaluate a single market for spread opportunity.
 
-        Fetch CLOB prices, parse asset and time window, and check
-        if the combined cost is below the threshold.
+        Fetch the market metadata (for title, active status, and token IDs),
+        then fetch order books for both tokens concurrently and use the best
+        bid prices.  Best bids represent the price at which we can place GTC
+        limit buy orders that match existing resting liquidity.
 
         Args:
             cid: Market condition identifier.
@@ -142,7 +145,29 @@ class MarketScanner:
         if window is None:
             return None
 
-        return self._check_spread(market, cid, asset, window[0], window[1], now)
+        # Fetch order books for both tokens to get best bid prices
+        tokens_by_outcome = {t.outcome: t for t in market.tokens}
+        up_token = tokens_by_outcome.get("Up")
+        down_token = tokens_by_outcome.get("Down")
+        if up_token is None or down_token is None:
+            return None
+
+        up_book, down_book = await self._fetch_order_books(up_token.token_id, down_token.token_id)
+
+        # Use best bid price; fall back to midpoint if no bids
+        up_bid = up_book.bids[0].price if up_book.bids else up_token.price
+        down_bid = down_book.bids[0].price if down_book.bids else down_token.price
+
+        return self._check_spread(
+            market,
+            cid,
+            asset,
+            window[0],
+            window[1],
+            now,
+            up_bid_price=up_bid,
+            down_bid_price=down_bid,
+        )
 
     def _check_spread(
         self,
@@ -152,10 +177,15 @@ class MarketScanner:
         window_start_ts: int,
         window_end_ts: int,
         now: int,
+        *,
+        up_bid_price: Decimal | None = None,
+        down_bid_price: Decimal | None = None,
     ) -> SpreadOpportunity | None:
         """Check whether a market has a viable spread opportunity.
 
         Apply window duration, entry age, price, and margin filters.
+        When ``up_bid_price`` / ``down_bid_price`` are provided (from
+        order book best bids), use those instead of midpoint prices.
 
         Args:
             market: The fetched market with token prices.
@@ -164,6 +194,8 @@ class MarketScanner:
             window_start_ts: Window start epoch seconds.
             window_end_ts: Window end epoch seconds.
             now: Current epoch seconds.
+            up_bid_price: Best bid price for Up token (order book).
+            down_bid_price: Best bid price for Down token (order book).
 
         Returns:
             A ``SpreadOpportunity`` if viable, else ``None``.
@@ -187,10 +219,15 @@ class MarketScanner:
 
         if up_token is None or down_token is None:
             return None
-        if up_token.price <= ZERO or down_token.price <= ZERO:
+
+        # Use order book best bid prices when available, else midpoint
+        up_price = up_bid_price if up_bid_price is not None else up_token.price
+        down_price = down_bid_price if down_bid_price is not None else down_token.price
+
+        if up_price <= ZERO or down_price <= ZERO:
             return None
 
-        combined = up_token.price + down_token.price
+        combined = up_price + down_price
         margin = _ONE - combined
 
         if combined >= self.max_combined_cost:
@@ -204,13 +241,32 @@ class MarketScanner:
             asset=asset,
             up_token_id=up_token.token_id,
             down_token_id=down_token.token_id,
-            up_price=up_token.price,
-            down_price=down_token.price,
+            up_price=up_price,
+            down_price=down_price,
             combined=combined,
             margin=margin,
             window_start_ts=window_start_ts,
             window_end_ts=window_end_ts,
         )
+
+    async def _fetch_order_books(
+        self, up_token_id: str, down_token_id: str
+    ) -> tuple[OrderBook, OrderBook]:
+        """Fetch order books for both tokens concurrently.
+
+        Args:
+            up_token_id: CLOB token ID for the Up outcome.
+            down_token_id: CLOB token ID for the Down outcome.
+
+        Returns:
+            Tuple of (up_order_book, down_order_book).
+
+        """
+        up_book, down_book = await asyncio.gather(
+            self.client.get_order_book(up_token_id),
+            self.client.get_order_book(down_token_id),
+        )
+        return up_book, down_book
 
     async def _maybe_rediscover(self) -> None:
         """Refresh the known markets set if the rediscovery interval has elapsed."""

@@ -291,6 +291,196 @@ class TestSpreadTraderSettlement:
         assert result.pnl > Decimal(0)
         assert result.outcome_known is False
 
+    async def test_settle_skips_pending_positions(self) -> None:
+        """PENDING positions are not settled — they are managed separately."""
+        trader = _make_trader()
+        opp = _make_opportunity(window_end_ts=_NOW - 1)
+        up_leg = SideLeg(
+            side="Up", entry_price=_UP_PRICE, quantity=_QTY, cost_basis=_UP_PRICE * _QTY
+        )
+        down_leg = SideLeg(
+            side="Down", entry_price=_DOWN_PRICE, quantity=_QTY, cost_basis=_DOWN_PRICE * _QTY
+        )
+        trader._positions["cond_a"] = PairedPosition(
+            opportunity=opp,
+            state=PositionState.PENDING,
+            up_leg=up_leg,
+            down_leg=down_leg,
+            entry_time=_PAST_TS,
+            pending_up_order_id="order_up",
+            pending_down_order_id="order_down",
+        )
+
+        with patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time:
+            mock_time.time.return_value = _NOW
+            await trader._settle_expired_positions()
+
+        # Position should still be there — not settled
+        assert "cond_a" in trader._positions
+        assert len(trader._results) == 0
+
+
+@pytest.mark.asyncio
+class TestPendingOrderManagement:
+    """Test GTC limit order pending state management."""
+
+    async def test_both_filled_transitions_to_paired(self) -> None:
+        """When both GTC orders are filled, position transitions to PAIRED."""
+        client = AsyncMock()
+        # No open orders — both filled
+        client.get_open_orders = AsyncMock(return_value=[])
+        trader = _make_trader(client=client)
+
+        opp = _make_opportunity()
+        up_leg = SideLeg(
+            side="Up", entry_price=_UP_PRICE, quantity=_QTY, cost_basis=_UP_PRICE * _QTY
+        )
+        down_leg = SideLeg(
+            side="Down", entry_price=_DOWN_PRICE, quantity=_QTY, cost_basis=_DOWN_PRICE * _QTY
+        )
+        trader._positions["cond_a"] = PairedPosition(
+            opportunity=opp,
+            state=PositionState.PENDING,
+            up_leg=up_leg,
+            down_leg=down_leg,
+            entry_time=_NOW,
+            is_paper=False,
+            pending_up_order_id="order_up_1",
+            pending_down_order_id="order_down_1",
+        )
+
+        with patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time:
+            mock_time.time.return_value = _NOW
+            await trader._manage_pending_orders()
+
+        pos = trader._positions["cond_a"]
+        assert pos.state == PositionState.PAIRED
+        assert pos.pending_up_order_id is None
+        assert pos.pending_down_order_id is None
+
+    async def test_timeout_one_side_unfilled_becomes_single_leg(self) -> None:
+        """When one side times out, cancel unfilled and mark SINGLE_LEG."""
+        client = AsyncMock()
+        # Down order still open (unfilled)
+        open_order = MagicMock()
+        open_order.order_id = "order_down_1"
+        client.get_open_orders = AsyncMock(return_value=[open_order])
+        client.cancel_order = AsyncMock()
+        config = _make_config(single_leg_timeout=10)
+        trader = _make_trader(config=config, client=client)
+
+        opp = _make_opportunity()
+        up_leg = SideLeg(
+            side="Up", entry_price=_UP_PRICE, quantity=_QTY, cost_basis=_UP_PRICE * _QTY
+        )
+        down_leg = SideLeg(
+            side="Down", entry_price=_DOWN_PRICE, quantity=_QTY, cost_basis=_DOWN_PRICE * _QTY
+        )
+        # entry_time is 15 seconds ago (> 10s timeout)
+        trader._positions["cond_a"] = PairedPosition(
+            opportunity=opp,
+            state=PositionState.PENDING,
+            up_leg=up_leg,
+            down_leg=down_leg,
+            entry_time=_NOW - 15,
+            is_paper=False,
+            pending_up_order_id="order_up_1",
+            pending_down_order_id="order_down_1",
+        )
+
+        with patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time:
+            mock_time.time.return_value = _NOW
+            await trader._manage_pending_orders()
+
+        pos = trader._positions["cond_a"]
+        assert pos.state == PositionState.SINGLE_LEG
+        assert pos.down_leg is None
+        # Down order should have been cancelled
+        client.cancel_order.assert_called_once_with("order_down_1")
+
+    async def test_timeout_both_unfilled_removes_position(self) -> None:
+        """When both sides time out, cancel both and remove position."""
+        client = AsyncMock()
+        # Both orders still open
+        open_up = MagicMock()
+        open_up.order_id = "order_up_1"
+        open_down = MagicMock()
+        open_down.order_id = "order_down_1"
+        client.get_open_orders = AsyncMock(return_value=[open_up, open_down])
+        client.cancel_order = AsyncMock()
+        config = _make_config(single_leg_timeout=10)
+        trader = _make_trader(config=config, client=client)
+
+        opp = _make_opportunity()
+        up_leg = SideLeg(
+            side="Up", entry_price=_UP_PRICE, quantity=_QTY, cost_basis=_UP_PRICE * _QTY
+        )
+        down_leg = SideLeg(
+            side="Down", entry_price=_DOWN_PRICE, quantity=_QTY, cost_basis=_DOWN_PRICE * _QTY
+        )
+        trader._positions["cond_a"] = PairedPosition(
+            opportunity=opp,
+            state=PositionState.PENDING,
+            up_leg=up_leg,
+            down_leg=down_leg,
+            entry_time=_NOW - 15,
+            is_paper=False,
+            pending_up_order_id="order_up_1",
+            pending_down_order_id="order_down_1",
+        )
+
+        with patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time:
+            mock_time.time.return_value = _NOW
+            await trader._manage_pending_orders()
+
+        assert "cond_a" not in trader._positions
+
+    async def test_expired_market_cancels_pending(self) -> None:
+        """Pending orders are cancelled when market expires."""
+        client = AsyncMock()
+        open_up = MagicMock()
+        open_up.order_id = "order_up_1"
+        open_down = MagicMock()
+        open_down.order_id = "order_down_1"
+        client.get_open_orders = AsyncMock(return_value=[open_up, open_down])
+        client.cancel_order = AsyncMock()
+        trader = _make_trader(client=client)
+
+        # Market already expired
+        opp = _make_opportunity(window_end_ts=_NOW - 1)
+        up_leg = SideLeg(
+            side="Up", entry_price=_UP_PRICE, quantity=_QTY, cost_basis=_UP_PRICE * _QTY
+        )
+        down_leg = SideLeg(
+            side="Down", entry_price=_DOWN_PRICE, quantity=_QTY, cost_basis=_DOWN_PRICE * _QTY
+        )
+        trader._positions["cond_a"] = PairedPosition(
+            opportunity=opp,
+            state=PositionState.PENDING,
+            up_leg=up_leg,
+            down_leg=down_leg,
+            entry_time=_PAST_TS,
+            is_paper=False,
+            pending_up_order_id="order_up_1",
+            pending_down_order_id="order_down_1",
+        )
+
+        with patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time:
+            mock_time.time.return_value = _NOW
+            await trader._manage_pending_orders()
+
+        assert "cond_a" not in trader._positions
+
+    async def test_no_pending_positions_is_noop(self) -> None:
+        """No-op when there are no PENDING positions."""
+        client = AsyncMock()
+        trader = _make_trader(client=client)
+
+        await trader._manage_pending_orders()
+
+        # get_open_orders should not have been called
+        client.get_open_orders.assert_not_called()
+
 
 @pytest.mark.asyncio
 class TestCapitalManagement:
