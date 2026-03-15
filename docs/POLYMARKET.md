@@ -345,6 +345,8 @@ The bot uses a multi-phase approach:
 
 If no hedge opportunity arises before expiry, the position resolves as a pure directional bet (profitable when the whale is correct ~80% of the time).
 
+6. **Flip trading (optional):** when `--enable-flipping` is set, take-profit sell exits are replaced with immediate re-entry on the opposite side. Instead of selling Up tokens at a profit and sitting idle, the bot buys Down tokens with the same dollar amount. If Down then rises to the flip take-profit threshold, it flips back to Up. This captures multiple spread swings per market window. Flips are capped by `--max-flips-per-market` and stop when fewer than `--min-flip-buffer-seconds` remain before expiry. If a take-profit hedge (combined < $1.00) is available, the hedge is preferred over a flip.
+
 The service uses **incremental polling** for minimal latency: only new trades since the last poll are fetched, and a rolling window of trades is maintained in memory.
 
 ```bash
@@ -387,6 +389,10 @@ adaptive_kelly: true
 compound_profits: true
 circuit_breaker_losses: 5
 circuit_breaker_cooldown: 600
+enable_flipping: true
+max_flips_per_market: 4
+min_flip_buffer_seconds: 30
+flip_take_profit_pct: "0.10"
 ```
 
 | Flag | Default | Description |
@@ -424,6 +430,10 @@ circuit_breaker_cooldown: 600
 | `--signal-strength-sizing/--no-signal-strength-sizing` | `true` | Scale position size by signal strength (bias ratio × trade count) |
 | `--max-entry-age-pct` | `0.60` | Max fraction of window elapsed before skipping entry (e.g. 0.60 = first 60% only) |
 | `--halt-win-rate` | `0.55` | Halt entries when adaptive win rate drops below this threshold |
+| `--enable-flipping/--no-flipping` | `false` | Flip to opposite side on take-profit instead of selling (active spread capture) |
+| `--max-flips-per-market` | `4` | Max flips per market window |
+| `--min-flip-buffer-seconds` | `30` | Stop flipping with fewer than this many seconds to expiry |
+| `--flip-take-profit-pct` | `0.10` | Tighter take-profit % for flip legs (e.g. 0.10 = 10% vs 15% initial) |
 | `--confirm-live` | `false` | **Required flag** for live trading |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
@@ -436,7 +446,7 @@ circuit_breaker_cooldown: 600
 4. Fetch current CLOB prices; skip if favoured side > `max_entry_price`
 5. Open directional leg 1 (buy whale's favoured side, Kelly-sized with optional signal strength scaling)
 6. Each poll cycle checks (in order): take-profit → defensive hedge → profit hedge → expiry
-7. Take-profit: prefer hedging opposite side when combined < $1.00; sell as fallback if hedge too expensive
+7. Take-profit: prefer hedging opposite side when combined < $1.00; if flipping enabled, flip to opposite side; sell as fallback
 8. Defensive hedge: buy opposite side if leg 1 price drops below `entry × (1 - defensive_hedge_pct)`
 9. Hedge: if `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee`, buy matching token quantity on opposite side (FOK by default)
 10. Close remaining positions when the market window expires; P&L depends on state

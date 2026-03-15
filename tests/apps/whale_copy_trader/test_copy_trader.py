@@ -2430,3 +2430,285 @@ class TestPaperSlippage:
         pos = trader.positions["cond_a"]
         # Live mode: price comes from order response, not slippage-adjusted
         assert pos.leg1.entry_price == Decimal("0.55")
+
+
+class TestFlipTrading:
+    """Tests for the flip trading feature (active spread capture within market windows)."""
+
+    def _make_flip_config(self, **overrides: object) -> WhaleCopyConfig:
+        """Create a config with flipping enabled and sensible test defaults.
+
+        Args:
+            **overrides: Fields to override on the config.
+
+        Returns:
+            A WhaleCopyConfig with flipping enabled.
+
+        """
+        defaults: dict[str, object] = {
+            "enable_flipping": True,
+            "max_flips_per_market": 4,
+            "min_flip_buffer_seconds": 30,
+            "flip_take_profit_pct": Decimal("0.10"),
+            "take_profit_pct": Decimal("0.50"),
+            "max_spread_cost": Decimal("0.80"),
+            "max_entry_price": Decimal("0.65"),
+        }
+        defaults.update(overrides)
+        return _make_config(**defaults)
+
+    @pytest.mark.asyncio
+    async def test_flip_disabled_by_default(self) -> None:
+        """When flipping is disabled, take-profit exits normally (sell, no flip)."""
+        config = _make_config(
+            max_spread_cost=Decimal("0.80"),
+            max_entry_price=Decimal("0.65"),
+            take_profit_pct=Decimal("0.50"),
+        )
+        market_open = _mock_market("0.55", "0.45")
+        # Down=0.50 → combined 0.55+0.50=1.05 ≥ 1.0 → sell fallback
+        market_up = _mock_market("0.90", "0.50")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+
+        # Price rises → take-profit sell (no flip since disabled)
+        client.get_market = AsyncMock(return_value=market_up)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" not in trader.positions
+        assert len(trader.results) == 1
+        result = trader.results[0]
+        assert result.state == PositionState.EXITED
+        assert result.flip_number is None
+
+    @pytest.mark.asyncio
+    async def test_flip_basic_round_trip(self) -> None:
+        """Execute Up→Down flip on take-profit trigger."""
+        config = self._make_flip_config()
+        market_open = _mock_market("0.55", "0.45")
+        # Down=0.50 → combined 0.55+0.50=1.05 ≥ 1.0 → no profit hedge
+        market_up = _mock_market("0.90", "0.50")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+        assert trader.positions["cond_a"].leg1.side == "Up"
+
+        # Price rises → flip to Down
+        client.get_market = AsyncMock(return_value=market_up)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Position should now be on the Down side
+        assert "cond_a" in trader.positions
+        pos = trader.positions["cond_a"]
+        assert pos.leg1.side == "Down"
+        assert pos.state == PositionState.UNHEDGED
+
+        # Should have one closed result (the Up sell) with flip_number=1
+        assert len(trader.results) == 1
+        assert trader.results[0].flip_number == 1
+        assert trader.results[0].pnl > Decimal(0)
+
+    @pytest.mark.asyncio
+    async def test_flip_respects_max_flips(self) -> None:
+        """Block flip when max_flips_per_market reached."""
+        _max_flips = 2
+        config = self._make_flip_config(max_flips_per_market=_max_flips)
+        market_open = _mock_market("0.55", "0.45")
+        market_up = _mock_market("0.90", "0.50")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+        signal = _make_signal(favoured_side="Up")
+
+        # Open position
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Manually set flip_count to max so next flip is blocked
+        trader._flip_states["cond_a"].flip_count = _max_flips
+
+        # Price rises → should NOT flip (max reached), should sell instead
+        client.get_market = AsyncMock(return_value=market_up)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Position closed via sell, not flipped
+        assert "cond_a" not in trader.positions
+        assert len(trader.results) == 1
+        assert trader.results[0].state == PositionState.EXITED
+        assert trader.results[0].flip_number is None
+
+    @pytest.mark.asyncio
+    async def test_flip_respects_time_buffer(self) -> None:
+        """No flip when close to market expiry."""
+        config = self._make_flip_config(min_flip_buffer_seconds=9999)
+        market_open = _mock_market("0.55", "0.45")
+        market_up = _mock_market("0.90", "0.50")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+        # Future but within buffer
+        _buffer_margin = 100
+        window_end = int(time.time()) + _buffer_margin
+        signal = _make_signal(favoured_side="Up", window_end_ts=window_end)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" in trader.positions
+
+        # Price rises → should NOT flip (too close to expiry)
+        client.get_market = AsyncMock(return_value=market_up)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Should have sold normally
+        assert "cond_a" not in trader.positions
+        assert len(trader.results) == 1
+        assert trader.results[0].flip_number is None
+
+    @pytest.mark.asyncio
+    async def test_flip_uses_fixed_position_size(self) -> None:
+        """Each flip uses the same dollar amount as the first entry."""
+        config = self._make_flip_config()
+        market_open = _mock_market("0.55", "0.45")
+        market_up = _mock_market("0.90", "0.50")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        original_cost = trader.positions["cond_a"].leg1.cost_basis
+        flip_state = trader._flip_states["cond_a"]
+        assert flip_state.entry_amount == original_cost
+
+        # Flip
+        client.get_market = AsyncMock(return_value=market_up)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # The new position cost should be based on fixed entry_amount
+        new_pos = trader.positions["cond_a"]
+        expected_qty = (original_cost / Decimal("0.50")).quantize(Decimal("0.01"))
+        assert new_pos.leg1.quantity == expected_qty
+
+    @pytest.mark.asyncio
+    async def test_flip_state_cleaned_on_expiry(self) -> None:
+        """Clean up flip state when market expires."""
+        config = self._make_flip_config()
+        market_open = _mock_market("0.55", "0.45")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+        signal = _make_signal(favoured_side="Up", window_end_ts=_PAST_TS)
+
+        with (
+            patch.object(trader, "_detector") as mock_detector,
+            patch.object(trader, "_resolve_outcome", new_callable=AsyncMock, return_value="Up"),
+        ):
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        assert "cond_a" not in trader.positions
+        assert "cond_a" not in trader._flip_states
+
+    @pytest.mark.asyncio
+    async def test_flip_prefers_hedge_over_flip(self) -> None:
+        """When take-profit hedge succeeds (combined < $1), keep hedge instead of flipping."""
+        config = self._make_flip_config(
+            max_spread_cost=Decimal("0.95"),
+            take_profit_pct=Decimal("0.10"),
+        )
+        # Initial: Up=0.55, Down=0.45
+        market_open = _mock_market("0.55", "0.45")
+        # TP price: 0.55 * 1.10 = 0.605
+        # Up=0.65, Down=0.30 → combined 0.55+0.30=0.85 < 1.0 → profit hedge
+        market_up = _mock_market("0.65", "0.30")
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
+        client.close = AsyncMock()
+
+        trader = WhaleCopyTrader(config=config, client=client)
+        signal = _make_signal(favoured_side="Up")
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[signal])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Trigger take-profit with cheap hedge available
+        client.get_market = AsyncMock(return_value=market_up)
+
+        with patch.object(trader, "_detector") as mock_detector:
+            mock_detector.detect_signals = AsyncMock(return_value=[])
+            trader._detector = mock_detector
+            await trader._poll_cycle()
+
+        # Should be hedged, NOT flipped
+        pos = trader.positions["cond_a"]
+        assert pos.state == PositionState.HEDGED
+        assert pos.hedge_leg is not None
+        assert len(trader.results) == 0  # no closed results yet
