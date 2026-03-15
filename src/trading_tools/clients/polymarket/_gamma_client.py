@@ -128,10 +128,11 @@ class GammaClient:
         self,
         *,
         slug: str = "",
+        title_contains: str = "",
         active: bool = True,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Fetch events from the Gamma API, optionally filtered by slug.
+        """Fetch events from the Gamma API, optionally filtered by slug or title.
 
         Events group related markets (e.g. a 5-minute crypto Up/Down series).
         Each event contains one or more markets with their condition IDs and
@@ -139,6 +140,7 @@ class GammaClient:
 
         Args:
             slug: Event slug to filter by (e.g. ``btc-updown-5m``).
+            title_contains: Substring to match in event title.
             active: Include only active events.
             limit: Maximum number of events to return.
 
@@ -155,6 +157,8 @@ class GammaClient:
         }
         if slug:
             params["slug"] = slug
+        if title_contains:
+            params["title_contains"] = title_contains
         return await self._get("/events", params=params)
 
     async def _get(

@@ -7,6 +7,7 @@ import pytest
 import typer
 
 from trading_tools.apps.polymarket.cli._helpers import (
+    CRYPTO_1H_SERIES,
     CRYPTO_5M_SERIES,
     CRYPTO_15M_SERIES,
     StrategyParams,
@@ -61,6 +62,11 @@ class TestParseSeriesSlugs:
         result = parse_series_slugs("crypto-15m")
         assert result == CRYPTO_15M_SERIES
 
+    def test_crypto_1h_shortcut_expands(self) -> None:
+        """Expand the crypto-1h shortcut to all four hourly crypto series."""
+        result = parse_series_slugs("crypto-1h")
+        assert result == CRYPTO_1H_SERIES
+
     def test_both_shortcuts_combined(self) -> None:
         """Expand both crypto-5m and crypto-15m shortcuts together."""
         result = parse_series_slugs("crypto-5m,crypto-15m")
@@ -68,6 +74,12 @@ class TestParseSeriesSlugs:
         assert len(result) == expected_len
         assert result[: len(CRYPTO_5M_SERIES)] == CRYPTO_5M_SERIES
         assert result[len(CRYPTO_5M_SERIES) :] == CRYPTO_15M_SERIES
+
+    def test_all_three_shortcuts_combined(self) -> None:
+        """Expand all three shortcuts together."""
+        result = parse_series_slugs("crypto-5m,crypto-15m,crypto-1h")
+        expected_len = len(CRYPTO_5M_SERIES) + len(CRYPTO_15M_SERIES) + len(CRYPTO_1H_SERIES)
+        assert len(result) == expected_len
 
 
 class TestConfigureLogging:

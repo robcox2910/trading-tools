@@ -392,6 +392,7 @@ class TestPolymarketClient:
         async def mock_events(
             *,
             slug: str = "",
+            title_contains: str = "",  # noqa: ARG001
             active: bool = True,  # noqa: ARG001
             limit: int = 5,  # noqa: ARG001
         ) -> list[dict[str, Any]]:
@@ -416,7 +417,7 @@ class TestPolymarketClient:
         with (
             patch(
                 "trading_tools.clients.polymarket.client._resolve_timestamped_slugs",
-                return_value=["btc-updown-5m-100"],
+                return_value=(["btc-updown-5m-100"], []),
             ) as mock_resolve,
             patch.object(client._gamma, "get_events", new=AsyncMock(return_value=[])),
         ):
@@ -455,9 +456,10 @@ class TestResolveTimestampedSlugs:
 
     def test_5m_slug_gets_epoch_suffix(self) -> None:
         """Test that slugs ending in -5m get a timestamp appended."""
-        result = _resolve_timestamped_slugs(["btc-updown-5m"])
+        result, hourly = _resolve_timestamped_slugs(["btc-updown-5m"])
         assert len(result) == 1
         assert result[0].startswith("btc-updown-5m-")
+        assert hourly == []
         # Suffix should be a valid epoch
         epoch_str = result[0].split("-")[-1]
         epoch = int(epoch_str)
@@ -466,19 +468,20 @@ class TestResolveTimestampedSlugs:
 
     def test_non_5m_slug_passes_through(self) -> None:
         """Test that slugs not ending in -5m pass through unchanged."""
-        result = _resolve_timestamped_slugs(["some-other-event"])
+        result, hourly = _resolve_timestamped_slugs(["some-other-event"])
         assert result == ["some-other-event"]
+        assert hourly == []
 
     def test_mixed_slugs(self) -> None:
         """Test a mix of 5m and non-5m slugs."""
-        result = _resolve_timestamped_slugs(["btc-updown-5m", "custom-slug"])
+        result, _ = _resolve_timestamped_slugs(["btc-updown-5m", "custom-slug"])
         assert len(result) == _EXPECTED_TOKEN_COUNT
         assert result[0].startswith("btc-updown-5m-")
         assert result[1] == "custom-slug"
 
     def test_5m_slug_include_next(self) -> None:
         """Produce two slugs (current + next window) when include_next is True."""
-        result = _resolve_timestamped_slugs(["btc-updown-5m"], include_next=True)
+        result, _ = _resolve_timestamped_slugs(["btc-updown-5m"], include_next=True)
         assert len(result) == _EXPECTED_TOKEN_COUNT
         epochs = [int(s.split("-")[-1]) for s in result]
         five_minutes = 300
@@ -487,17 +490,17 @@ class TestResolveTimestampedSlugs:
 
     def test_non_5m_slug_not_duplicated_with_include_next(self) -> None:
         """Non-5m slugs appear once even when include_next is True."""
-        result = _resolve_timestamped_slugs(["some-other-event"], include_next=True)
+        result, _ = _resolve_timestamped_slugs(["some-other-event"], include_next=True)
         assert result == ["some-other-event"]
 
     def test_include_next_default_false(self) -> None:
         """Verify include_next defaults to False for backward compatibility."""
-        result = _resolve_timestamped_slugs(["btc-updown-5m"])
+        result, _ = _resolve_timestamped_slugs(["btc-updown-5m"])
         assert len(result) == 1
 
     def test_15m_slug_gets_epoch_suffix(self) -> None:
         """Test that slugs ending in -15m get a 900s-aligned timestamp appended."""
-        result = _resolve_timestamped_slugs(["btc-updown-15m"])
+        result, _ = _resolve_timestamped_slugs(["btc-updown-15m"])
         assert len(result) == 1
         assert result[0].startswith("btc-updown-15m-")
         epoch_str = result[0].split("-")[-1]
@@ -507,7 +510,7 @@ class TestResolveTimestampedSlugs:
 
     def test_15m_slug_include_next(self) -> None:
         """Produce two slugs (current + next window) when include_next is True."""
-        result = _resolve_timestamped_slugs(["btc-updown-15m"], include_next=True)
+        result, _ = _resolve_timestamped_slugs(["btc-updown-15m"], include_next=True)
         assert len(result) == _EXPECTED_TOKEN_COUNT
         epochs = [int(s.split("-")[-1]) for s in result]
         fifteen_minutes = 900
@@ -516,7 +519,7 @@ class TestResolveTimestampedSlugs:
 
     def test_mixed_5m_and_15m_slugs(self) -> None:
         """Resolve both 5m and 15m slugs correctly in a single call."""
-        result = _resolve_timestamped_slugs(["btc-updown-5m", "btc-updown-15m"])
+        result, _ = _resolve_timestamped_slugs(["btc-updown-5m", "btc-updown-15m"])
         assert len(result) == _EXPECTED_TOKEN_COUNT
         five_minutes = 300
         fifteen_minutes = 900
@@ -524,6 +527,19 @@ class TestResolveTimestampedSlugs:
         epoch_15m = int(result[1].split("-")[-1])
         assert epoch_5m % five_minutes == 0
         assert epoch_15m % fifteen_minutes == 0
+
+    def test_1h_slug_returns_hourly_title(self) -> None:
+        """Hourly slugs return title search strings instead of timestamped slugs."""
+        result, hourly = _resolve_timestamped_slugs(["btc-updown-1h"])
+        assert result == []
+        assert hourly == ["Bitcoin Up or Down"]
+
+    def test_mixed_5m_and_1h_slugs(self) -> None:
+        """Mix of 5m and 1h slugs produces both timestamped and hourly results."""
+        result, hourly = _resolve_timestamped_slugs(["btc-updown-5m", "eth-updown-1h"])
+        assert len(result) == 1
+        assert result[0].startswith("btc-updown-5m-")
+        assert hourly == ["Ethereum Up or Down"]
 
 
 class TestGetMarketTokens:
