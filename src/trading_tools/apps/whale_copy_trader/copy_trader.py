@@ -141,7 +141,9 @@ class WhaleCopyTrader:
             "whale-copy started mode=%s address=%s poll=%ds"
             " lookback=%ds min_bias=%.1f min_trades=%d"
             " min_time_to_start=%ds capital=$%s max_pos=%s%%"
-            " max_spread_cost=%.2f max_entry_price=%.2f",
+            " max_spread_cost=%.2f max_entry_price=%.2f"
+            " hedge_market=%s stop_loss=%.0f%% kelly=%.0f%%x%.1f"
+            " take_profit=%.2f fee_rate=%.4f",
             mode,
             self.config.whale_address,
             self.config.poll_interval,
@@ -153,6 +155,12 @@ class WhaleCopyTrader:
             self.config.max_position_pct * 100,
             self.config.max_spread_cost,
             self.config.max_entry_price,
+            self.config.hedge_with_market_orders,
+            self.config.stop_loss_pct * 100,
+            self.config.win_rate * 100,
+            self.config.kelly_fraction,
+            self.config.take_profit_price,
+            self.config.clob_fee_rate,
         )
 
         try:
@@ -207,6 +215,8 @@ class WhaleCopyTrader:
         for signal in signals:
             await self._process_signal(signal)
 
+        await self._check_take_profits()
+        await self._check_stop_losses()
         await self._check_hedge_opportunities()
         await self._close_expired_positions()
 
@@ -225,6 +235,35 @@ class WhaleCopyTrader:
             return
 
         await self._open_position(signal)
+
+    def _kelly_position_pct(self, entry_price: Decimal) -> Decimal:
+        """Compute the Kelly-optimal position fraction for a binary market.
+
+        For a binary outcome token bought at ``entry_price``, the win payoff
+        is ``1 - entry_price`` per token and the loss is ``entry_price``.
+        Apply fractional Kelly (``kelly_fraction``) for safety and clamp to
+        ``max_position_pct`` as an upper bound.
+
+        Args:
+            entry_price: Price of the favoured-side token (0 < p < 1).
+
+        Returns:
+            Fraction of capital to allocate (0 to ``max_position_pct``).
+
+        """
+        if entry_price <= ZERO or entry_price >= _ONE:
+            return self.config.max_position_pct
+
+        b = (_ONE - entry_price) / entry_price  # win/loss ratio
+        p = self.config.win_rate
+        q = _ONE - p
+        kelly = (b * p - q) / b
+
+        if kelly <= ZERO:
+            return ZERO
+
+        sized = kelly * self.config.kelly_fraction
+        return min(sized, self.config.max_position_pct)
 
     async def _open_position(self, signal: CopySignal) -> None:
         """Open a directional leg 1 position copying the whale.
@@ -260,7 +299,8 @@ class WhaleCopyTrader:
             )
             return
 
-        spend = self._get_capital() * self.config.max_position_pct
+        position_pct = self._kelly_position_pct(favoured_price)
+        spend = self._get_capital() * position_pct
         qty = (spend / favoured_price).quantize(Decimal("0.01"))
 
         if qty < _MIN_TOKEN_QTY:
@@ -313,6 +353,161 @@ class WhaleCopyTrader:
             signal.bias_ratio,
         )
 
+    async def _check_take_profits(self) -> None:
+        """Sell unhedged leg 1 tokens when the price reaches take-profit level.
+
+        For each UNHEDGED position, fetch the current price of the favoured
+        side.  If the price has risen to ``take_profit_price`` or above,
+        exit early to lock in known profit rather than waiting for settlement.
+
+        Only applies to UNHEDGED positions — HEDGED positions already have
+        guaranteed profit and should always hold to settlement.
+        """
+        unhedged = [
+            (cid, pos)
+            for cid, pos in self._positions.items()
+            if pos.state == PositionState.UNHEDGED
+        ]
+
+        for cid, pos in unhedged:
+            prices = await self._fetch_clob_prices(cid)
+            if prices is None:
+                continue
+
+            current_price = prices.get(pos.leg1.side, ZERO)
+            if current_price < self.config.take_profit_price:
+                continue
+
+            # Take profit — sell at current price
+            pnl = current_price * pos.leg1.quantity - pos.leg1.cost_basis
+
+            if self.live:
+                tokens_by_side = await self._fetch_clob_tokens(cid)
+                if tokens_by_side is None:
+                    continue
+                token = tokens_by_side.get(pos.leg1.side)
+                if token is None or self._executor is None:
+                    continue
+                response = await self._executor.place_order(
+                    token.token_id,
+                    "SELL",
+                    current_price,
+                    pos.leg1.quantity,
+                    order_type="market",
+                )
+                if response is None:
+                    continue
+                pnl = response.price * response.filled - pos.leg1.cost_basis
+                pos.leg1.order_ids.append(response.order_id)
+
+            pos.state = PositionState.EXITED
+            self._positions.pop(cid)
+
+            result = CopyResult(
+                signal=pos.signal,
+                state=PositionState.EXITED,
+                leg1_side=pos.leg1.side,
+                leg1_entry=pos.leg1.entry_price,
+                leg1_qty=pos.leg1.quantity,
+                hedge_entry=None,
+                hedge_qty=None,
+                total_cost_basis=pos.leg1.cost_basis,
+                entry_time=pos.entry_time,
+                exit_time=int(time.time()),
+                winning_side=pos.leg1.side,
+                pnl=pnl,
+                is_paper=pos.is_paper,
+                order_ids=tuple(pos.all_order_ids),
+            )
+            self._results.append(result)
+
+            mode = "LIVE" if self.live else "PAPER"
+            logger.info(
+                "%s TAKE-PROFIT %s price=%.4f pnl=%.4f cost=$%.4f",
+                mode,
+                cid[:12],
+                current_price,
+                pnl,
+                pos.leg1.cost_basis,
+            )
+
+    async def _check_stop_losses(self) -> None:
+        """Cut losses on unhedged positions where leg 1 price has dropped.
+
+        For each UNHEDGED position, fetch the current price of the favoured
+        side.  If it has fallen below ``entry_price * (1 - stop_loss_pct)``,
+        exit the position to limit further downside.
+        """
+        unhedged = [
+            (cid, pos)
+            for cid, pos in self._positions.items()
+            if pos.state == PositionState.UNHEDGED
+        ]
+
+        for cid, pos in unhedged:
+            prices = await self._fetch_clob_prices(cid)
+            if prices is None:
+                continue
+
+            current_price = prices.get(pos.leg1.side, ZERO)
+            stop_price = pos.leg1.entry_price * (_ONE - self.config.stop_loss_pct)
+            if current_price >= stop_price:
+                continue
+
+            # Stop-loss triggered — exit at current price
+            pnl = current_price * pos.leg1.quantity - pos.leg1.cost_basis
+
+            if self.live:
+                tokens_by_side = await self._fetch_clob_tokens(cid)
+                if tokens_by_side is None:
+                    continue
+                token = tokens_by_side.get(pos.leg1.side)
+                if token is None or self._executor is None:
+                    continue
+                response = await self._executor.place_order(
+                    token.token_id,
+                    "SELL",
+                    current_price,
+                    pos.leg1.quantity,
+                    order_type="market",
+                )
+                if response is None:
+                    continue
+                pnl = response.price * response.filled - pos.leg1.cost_basis
+                pos.leg1.order_ids.append(response.order_id)
+
+            pos.state = PositionState.STOPPED
+            self._positions.pop(cid)
+
+            result = CopyResult(
+                signal=pos.signal,
+                state=PositionState.STOPPED,
+                leg1_side=pos.leg1.side,
+                leg1_entry=pos.leg1.entry_price,
+                leg1_qty=pos.leg1.quantity,
+                hedge_entry=None,
+                hedge_qty=None,
+                total_cost_basis=pos.leg1.cost_basis,
+                entry_time=pos.entry_time,
+                exit_time=int(time.time()),
+                winning_side=None,
+                pnl=pnl,
+                is_paper=pos.is_paper,
+                order_ids=tuple(pos.all_order_ids),
+            )
+            self._results.append(result)
+
+            mode = "LIVE" if self.live else "PAPER"
+            logger.info(
+                "%s STOP-LOSS %s price=%.4f stop=%.4f pnl=%.4f cost=$%.4f",
+                mode,
+                cid[:12],
+                current_price,
+                stop_price,
+                pnl,
+                pos.leg1.cost_basis,
+            )
+
     async def _check_hedge_opportunities(self) -> None:
         """Scan unhedged positions and place opportunistic hedge legs.
 
@@ -338,13 +533,16 @@ class WhaleCopyTrader:
             if hedge_price <= ZERO:
                 continue
 
-            combined = pos.leg1.entry_price + hedge_price
-            if combined > self.config.max_spread_cost:
+            effective_leg1_price = pos.leg1.cost_basis / pos.leg1.quantity
+            fee_cost = 2 * self.config.clob_fee_rate
+            effective_max_spread = self.config.max_spread_cost - fee_cost
+            combined = effective_leg1_price + hedge_price
+            if combined > effective_max_spread:
                 logger.debug(
                     "  HEDGE-WAIT %s: combined=%.4f > target=%.4f",
                     cid[:12],
                     combined,
-                    self.config.max_spread_cost,
+                    effective_max_spread,
                 )
                 continue
 
@@ -370,7 +568,7 @@ class WhaleCopyTrader:
                 if tokens_by_side is None:
                     continue
                 token = tokens_by_side.get(pos.hedge_side)
-                hedge_leg = await self._place_leg_order(hedge_leg, token)
+                hedge_leg = await self._place_leg_order(hedge_leg, token, is_hedge=True)
                 if hedge_leg is None:
                     continue
 
@@ -394,26 +592,53 @@ class WhaleCopyTrader:
         self,
         leg: SideLeg | None,
         token: MarketToken | None,
+        *,
+        is_hedge: bool = False,
     ) -> SideLeg | None:
-        """Place a live order for a single leg and attach the order ID.
+        """Place a live order for a single leg and adjust from the response.
+
+        After placement, update the leg's quantity and cost basis to reflect
+        the actual fill reported by the CLOB API.  If the order fills zero
+        tokens (e.g. FOK rejected), return ``None``.
 
         Args:
             leg: The side leg to place, or ``None`` to skip.
             token: The CLOB token for this side.
+            is_hedge: When ``True`` and ``config.hedge_with_market_orders``
+                is enabled, force the order to use FOK market execution.
 
         Returns:
-            The leg with order ID attached, or ``None`` if skipped or failed.
+            The leg with fill-adjusted fields, or ``None`` if skipped/failed.
 
         """
         if leg is None or token is None or self._executor is None:
             return None
 
+        order_type: str | None = None
+        if is_hedge and self.config.hedge_with_market_orders:
+            order_type = "market"
+
         response = await self._executor.place_order(
-            token.token_id, "BUY", leg.entry_price, leg.quantity
+            token.token_id, "BUY", leg.entry_price, leg.quantity, order_type=order_type
         )
         if response is None:
             return None
 
+        # Track actual fills from the order response (A)
+        if response.filled == ZERO:
+            logger.warning("Order %s filled 0 tokens — treating as failure", response.order_id)
+            return None
+
+        if response.filled < leg.quantity:
+            logger.warning(
+                "Partial fill on %s: requested=%.2f filled=%.2f",
+                response.order_id,
+                leg.quantity,
+                response.filled,
+            )
+
+        leg.quantity = response.filled
+        leg.cost_basis = response.price * response.filled
         leg.order_ids.append(response.order_id)
         return leg
 
@@ -562,12 +787,16 @@ class WhaleCopyTrader:
         """Emit a heartbeat via the shared HeartbeatLogger."""
         assert self._detector is not None  # noqa: S101
         total_pnl = sum(r.pnl for r in self._results)
+        stopped = sum(1 for r in self._results if r.state == PositionState.STOPPED)
+        exited = sum(1 for r in self._results if r.state == PositionState.EXITED)
         self._heartbeat.maybe_log(
             polls=self._poll_count,
             window_trades=self._detector.window_size,
             unhedged=sum(1 for p in self._positions.values() if p.state == PositionState.UNHEDGED),
             hedged=sum(1 for p in self._positions.values() if p.state == PositionState.HEDGED),
             closed=len(self._results),
+            stopped=stopped,
+            exited=exited,
             pnl=float(total_pnl),
         )
 
@@ -609,6 +838,9 @@ def compute_pnl(pos: OpenPosition, winning_side: str) -> Decimal:
     For UNHEDGED positions (directional only):
     - If leg1 wins: leg1.quantity * $1.00 - leg1.cost_basis
     - If leg1 loses: $0 - leg1.cost_basis
+
+    STOPPED and EXITED positions have P&L pre-computed at exit time and
+    should not be passed to this function (they are closed inline).
 
     Args:
         pos: The open position to evaluate.

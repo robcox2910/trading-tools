@@ -51,7 +51,7 @@ _SORT_METRICS = (
 _ASCENDING_METRICS = frozenset({"max_drawdown", "total_fees"})
 
 
-async def run_comparison(  # noqa: PLR0913
+async def run_comparison(
     *,
     provider: CandleProvider,
     symbol: str,

@@ -335,12 +335,15 @@ trading-tools-polymarket whale-correlate --address 0x1234... --days 1 --min-trad
 
 Run a polling service that detects a whale's directional bias on BTC/ETH 5-minute markets and copies them with **temporal spread arbitrage**. Paper mode by default; pass `--confirm-live` for real orders.
 
-The bot uses a two-phase approach:
+The bot uses a multi-phase approach:
 
-1. **Directional entry (leg 1):** detect the whale's favoured side and buy it immediately at current CLOB prices.
-2. **Hedge (leg 2):** monitor the opposite side each poll cycle. When `leg1_price + hedge_price ≤ max_spread_cost`, the opposite side is cheap enough to be worth buying. Place an opportunistic hedge with the same dollar allocation — this reduces directional risk and provides large upside if the hedge side wins.
+1. **Directional entry (leg 1):** detect the whale's favoured side and buy it immediately at current CLOB prices. Position size is determined by the Kelly criterion based on estimated win rate.
+2. **Take-profit:** each poll cycle, check if the leg 1 token price has risen above `--take-profit-price`. If so, sell early to lock in known profit.
+3. **Stop-loss:** if the leg 1 token price drops below `entry * (1 - stop_loss_pct)`, exit to limit losses on unhedged positions.
+4. **Hedge (leg 2):** monitor the opposite side each poll cycle. When `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee_rate`, the opposite side is cheap enough to lock in guaranteed profit. Hedge uses FOK market orders by default for fast execution.
+5. **Settlement:** if no take-profit, stop-loss, or hedge fires, the position resolves at market expiry.
 
-If no hedge opportunity arises before market expiry, the position resolves as a pure directional bet (profitable when the whale is correct ~80% of the time).
+If no hedge opportunity arises before expiry, the position resolves as a pure directional bet (profitable when the whale is correct ~80% of the time).
 
 The service uses **incremental polling** for minimal latency: only new trades since the last poll are fetched, and a rolling window of trades is maintained in memory.
 
@@ -376,6 +379,12 @@ trading-tools-polymarket whale-copy \
 | `--max-spread-cost` | `0.95` | Max combined cost of both legs to trigger hedge (e.g. 0.95 = min 5% return) |
 | `--max-entry-price` | `0.65` | Max price for directional entry (skip if favoured side already above this) |
 | `--max-window` | `0` | Max market window in seconds (e.g. 300 for 5-min only, 0=all) |
+| `--no-hedge-market-orders` | `false` | Use GTC limit orders for hedge leg instead of FOK market |
+| `--stop-loss-pct` | `0.50` | Stop-loss threshold as fraction (e.g. 0.50 = cut at 50% drop) |
+| `--win-rate` | `0.80` | Estimated whale win rate for Kelly criterion sizing |
+| `--kelly-fraction` | `0.5` | Fractional Kelly multiplier (e.g. 0.5 = half-Kelly for safety) |
+| `--clob-fee-rate` | `0.0` | Per-leg CLOB fee rate for hedge profitability check |
+| `--take-profit-price` | `0.85` | Sell unhedged tokens when price reaches this level |
 | `--confirm-live` | `false` | **Required flag** for live trading |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
@@ -386,10 +395,12 @@ trading-tools-polymarket whale-copy \
 2. Group by `condition_id`, compute bias via `analyse_markets()`
 3. Filter: BTC/ETH asset only, future time window, bias > threshold, trades >= min
 4. Fetch current CLOB prices; skip if favoured side > `max_entry_price`
-5. Open directional leg 1 (buy whale's favoured side)
-6. Each poll: check unhedged positions for hedge opportunity (combined spread ≤ `max_spread_cost`)
-7. If hedge found: buy matching token quantity on opposite side, lock in profit
-8. Close positions when the market window expires; P&L depends on state (hedged = guaranteed, unhedged = directional)
+5. Open directional leg 1 (buy whale's favoured side, Kelly-sized)
+6. Each poll cycle checks (in order): take-profit → stop-loss → hedge → expiry
+7. Take-profit: sell if leg 1 price ≥ `take_profit_price`
+8. Stop-loss: sell if leg 1 price drops below `entry × (1 - stop_loss_pct)`
+9. Hedge: if `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee`, buy matching token quantity on opposite side (FOK by default)
+10. Close remaining positions when the market window expires; P&L depends on state
 
 **Heartbeat:** Logs status every 60 seconds (poll count, unhedged/hedged positions, P&L) for CloudWatch monitoring.
 

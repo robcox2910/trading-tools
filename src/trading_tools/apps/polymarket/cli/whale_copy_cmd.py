@@ -30,6 +30,11 @@ _DEFAULT_MAX_POSITION_PCT = "0.10"
 _DEFAULT_MAX_WINDOW = 0
 _DEFAULT_MAX_SPREAD_COST = "0.95"
 _DEFAULT_MAX_ENTRY_PRICE = "0.65"
+_DEFAULT_STOP_LOSS_PCT = "0.50"
+_DEFAULT_WIN_RATE = "0.80"
+_DEFAULT_KELLY_FRACTION = "0.5"
+_DEFAULT_CLOB_FEE_RATE = "0.0"
+_DEFAULT_TAKE_PROFIT_PRICE = "0.85"
 _LIVE_WARNING_DELAY = 2
 
 
@@ -65,6 +70,28 @@ def whale_copy(
     max_entry_price: Annotated[
         str, typer.Option(help="Max price for directional entry (skip if above, e.g. 0.65)")
     ] = _DEFAULT_MAX_ENTRY_PRICE,
+    no_hedge_market_orders: Annotated[  # noqa: FBT002
+        bool,
+        typer.Option(
+            "--no-hedge-market-orders",
+            help="Use GTC limit orders for hedge leg instead of FOK market",
+        ),
+    ] = False,
+    stop_loss_pct: Annotated[
+        str, typer.Option(help="Stop-loss threshold as fraction (e.g. 0.50 = cut at 50%% drop)")
+    ] = _DEFAULT_STOP_LOSS_PCT,
+    win_rate: Annotated[
+        str, typer.Option(help="Estimated whale win rate for Kelly sizing (e.g. 0.80)")
+    ] = _DEFAULT_WIN_RATE,
+    kelly_fraction: Annotated[
+        str, typer.Option(help="Fractional Kelly multiplier (e.g. 0.5 = half-Kelly)")
+    ] = _DEFAULT_KELLY_FRACTION,
+    clob_fee_rate: Annotated[
+        str, typer.Option(help="Per-leg CLOB fee rate for hedge profitability (e.g. 0.0)")
+    ] = _DEFAULT_CLOB_FEE_RATE,
+    take_profit_price: Annotated[
+        str, typer.Option(help="Sell unhedged tokens when price reaches this level (e.g. 0.85)")
+    ] = _DEFAULT_TAKE_PROFIT_PRICE,
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
@@ -93,6 +120,12 @@ def whale_copy(
         max_window_seconds=max_window,
         max_spread_cost=Decimal(max_spread_cost),
         max_entry_price=Decimal(max_entry_price),
+        hedge_with_market_orders=not no_hedge_market_orders,
+        stop_loss_pct=Decimal(stop_loss_pct),
+        win_rate=Decimal(win_rate),
+        kelly_fraction=Decimal(kelly_fraction),
+        clob_fee_rate=Decimal(clob_fee_rate),
+        take_profit_price=Decimal(take_profit_price),
     )
 
     if confirm_live:
