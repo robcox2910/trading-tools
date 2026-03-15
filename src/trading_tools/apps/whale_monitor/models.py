@@ -84,3 +84,19 @@ class WhaleTrade(Base):
         Index("ix_whale_trades_address_timestamp", "whale_address", "timestamp"),
         Index("ix_whale_trades_condition_timestamp", "condition_id", "timestamp"),
     )
+
+    def __str__(self) -> str:
+        """Return a concise human-readable summary of this trade.
+
+        Format: ``<SIDE> <size> @ <price> | <outcome> | <title> | <timestamp>``
+
+        Returns:
+            Single-line string representation.
+
+        """
+        return (
+            f"{self.side} {self.size:.2f} @ {self.price:.4f}"
+            f" | {self.outcome}"
+            f" | {self.title}"
+            f" | ts={self.timestamp}"
+        )

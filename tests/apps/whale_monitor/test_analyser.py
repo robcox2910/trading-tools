@@ -81,7 +81,8 @@ class TestAnalyseTrades:
         assert analysis.sell_count == 0
         assert analysis.total_volume == _EXPECTED_VOLUME_36
         assert analysis.avg_size == _EXPECTED_AVG_SIZE
-        assert analysis.avg_price == _EXPECTED_AVG_PRICE
+        assert analysis.avg_buy_price == _EXPECTED_AVG_PRICE
+        assert analysis.avg_sell_price == 0.0
 
     def test_mixed_sides(self) -> None:
         """Count BUY and SELL trades separately."""
