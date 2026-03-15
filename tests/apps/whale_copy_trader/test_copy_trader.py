@@ -714,24 +714,23 @@ class TestDynamicHedgeSizing:
         assert pos.state == PositionState.HEDGED
 
 
-class TestStopLoss:
-    """Tests for stop-loss on unhedged positions (C)."""
+class TestDefensiveHedge:
+    """Tests for defensive hedging when leg1 price drops (C)."""
 
     @pytest.mark.asyncio
-    async def test_stop_loss_triggers_on_price_drop(self) -> None:
-        """Close position when leg1 price drops below stop threshold."""
+    async def test_defensive_hedge_triggers_on_price_drop(self) -> None:
+        """Buy opposite side when leg1 price drops below threshold."""
         config = _make_config(
-            max_spread_cost=Decimal("0.80"),  # prevent hedge
+            max_spread_cost=Decimal("0.80"),  # prevent profit hedge
             max_entry_price=Decimal("0.65"),
-            stop_loss_pct=Decimal("0.50"),
+            defensive_hedge_pct=Decimal("0.50"),
         )
         # Entry at 0.55, then price drops to 0.20 (< 0.55 * 0.50 = 0.275)
-        client = AsyncMock()
-        # First call: open position at 0.55
-        # Second call: stop-loss check sees 0.20
         market_open = _mock_market("0.55", "0.45")
         market_drop = _mock_market("0.20", "0.80")
-        client.get_market = AsyncMock(side_effect=[market_open, market_drop])
+
+        client = AsyncMock()
+        client.get_market = AsyncMock(return_value=market_open)
         client.close = AsyncMock()
 
         trader = WhaleCopyTrader(config=config, client=client)
@@ -739,7 +738,6 @@ class TestStopLoss:
         signal = _make_signal(favoured_side="Up")
 
         with patch.object(trader, "_detector") as mock_detector:
-            # First cycle: open position
             mock_detector.detect_signals = AsyncMock(return_value=[signal])
             trader._detector = mock_detector
             await trader._poll_cycle()
@@ -747,7 +745,7 @@ class TestStopLoss:
         assert "cond_a" in trader.positions
         assert trader.positions["cond_a"].state == PositionState.UNHEDGED
 
-        # Second cycle: price dropped, stop-loss should trigger
+        # Second cycle: price dropped, defensive hedge should trigger
         client.get_market = AsyncMock(return_value=market_drop)
 
         with patch.object(trader, "_detector") as mock_detector:
@@ -755,18 +753,20 @@ class TestStopLoss:
             trader._detector = mock_detector
             await trader._poll_cycle()
 
-        assert "cond_a" not in trader.positions
-        assert len(trader.results) == 1
-        assert trader.results[0].state == PositionState.STOPPED
-        assert trader.results[0].pnl < Decimal(0)
+        # Position is now HEDGED (not removed), with capped loss at settlement
+        assert "cond_a" in trader.positions
+        pos = trader.positions["cond_a"]
+        assert pos.state == PositionState.HEDGED
+        assert pos.hedge_leg is not None
+        assert pos.hedge_leg.side == "Down"
 
     @pytest.mark.asyncio
-    async def test_stop_loss_does_not_trigger_above_threshold(self) -> None:
-        """Keep position open when price is above stop threshold."""
+    async def test_defensive_hedge_does_not_trigger_above_threshold(self) -> None:
+        """Keep position unhedged when price is above defensive threshold."""
         config = _make_config(
             max_spread_cost=Decimal("0.80"),
             max_entry_price=Decimal("0.65"),
-            stop_loss_pct=Decimal("0.50"),
+            defensive_hedge_pct=Decimal("0.50"),
         )
         # Entry at 0.55, price drops to 0.40 (> 0.275 threshold)
         client = _mock_client("0.55", "0.45")
@@ -779,7 +779,7 @@ class TestStopLoss:
             trader._detector = mock_detector
             await trader._poll_cycle()
 
-        # Change prices for second cycle but still above stop
+        # Change prices for second cycle but still above trigger
         client = _mock_client("0.40", "0.60")
         trader.client = client
 
@@ -1065,42 +1065,26 @@ class TestDatabasePersistence:
         assert record.state == "exited"
 
     @pytest.mark.asyncio
-    async def test_persist_on_stop_loss(self) -> None:
-        """Verify save_result is called on stop-loss exit."""
-        config = _make_config(
-            max_spread_cost=Decimal("0.80"),
-            max_entry_price=Decimal("0.65"),
-            stop_loss_pct=Decimal("0.50"),
-        )
-        market_open = _mock_market("0.55", "0.45")
-        market_drop = _mock_market("0.20", "0.80")
-
-        client = AsyncMock()
-        client.get_market = AsyncMock(return_value=market_open)
-        client.close = AsyncMock()
-
-        trader = WhaleCopyTrader(config=config, client=client)
+    async def test_persist_on_expired_unhedged_close(self) -> None:
+        """Verify save_result is called when an unhedged position expires."""
+        config = _make_config(max_spread_cost=Decimal("0.80"))
+        trader = WhaleCopyTrader(config=config, client=_mock_client("0.55", "0.45"))
         mock_repo = AsyncMock()
         trader.set_repo(mock_repo)
 
-        signal = _make_signal(favoured_side="Up")
+        signal = _make_signal(favoured_side="Up", window_end_ts=_PAST_TS)
 
-        with patch.object(trader, "_detector") as mock_detector:
+        with (
+            patch.object(trader, "_detector") as mock_detector,
+            patch.object(trader, "_resolve_outcome", new_callable=AsyncMock, return_value="Up"),
+        ):
             mock_detector.detect_signals = AsyncMock(return_value=[signal])
-            trader._detector = mock_detector
-            await trader._poll_cycle()
-
-        # Second cycle: stop-loss
-        client.get_market = AsyncMock(return_value=market_drop)
-
-        with patch.object(trader, "_detector") as mock_detector:
-            mock_detector.detect_signals = AsyncMock(return_value=[])
             trader._detector = mock_detector
             await trader._poll_cycle()
 
         mock_repo.save_result.assert_called_once()
         record = mock_repo.save_result.call_args[0][0]
-        assert record.state == "stopped"
+        assert record.state == "unhedged"
 
     @pytest.mark.asyncio
     async def test_no_repo_does_not_error(self) -> None:

@@ -146,7 +146,7 @@ class WhaleCopyTrader:
             " lookback=%ds min_bias=%.1f min_trades=%d"
             " min_time_to_start=%ds capital=$%s max_pos=%s%%"
             " max_spread_cost=%.2f max_entry_price=%.2f"
-            " hedge_market=%s stop_loss=%.0f%% kelly=%.0f%%x%.1f"
+            " hedge_market=%s def_hedge=%.0f%% kelly=%.0f%%x%.1f"
             " take_profit=%.0f%% fee_rate=%.4f max_unhedged=%.0f%%",
             mode,
             self.config.whale_address,
@@ -160,7 +160,7 @@ class WhaleCopyTrader:
             self.config.max_spread_cost,
             self.config.max_entry_price,
             self.config.hedge_with_market_orders,
-            self.config.stop_loss_pct * 100,
+            self.config.defensive_hedge_pct * 100,
             self.config.win_rate * 100,
             self.config.kelly_fraction,
             self.config.take_profit_pct * 100,
@@ -270,7 +270,7 @@ class WhaleCopyTrader:
             await self._process_signal(signal)
 
         await self._check_take_profits()
-        await self._check_stop_losses()
+        await self._check_defensive_hedges()
         await self._check_hedge_opportunities()
         await self._close_expired_positions()
 
@@ -569,12 +569,15 @@ class WhaleCopyTrader:
                 pos.leg1.cost_basis,
             )
 
-    async def _check_stop_losses(self) -> None:
-        """Cut losses on unhedged positions where leg 1 price has dropped.
+    async def _check_defensive_hedges(self) -> None:
+        """Buy the opposite side when leg 1 price drops, capping loss at settlement.
 
         For each UNHEDGED position, fetch the current price of the favoured
-        side.  If it has fallen below ``entry_price * (1 - stop_loss_pct)``,
-        exit the position to limit further downside.
+        side.  If it has fallen below ``entry_price * (1 - defensive_hedge_pct)``,
+        buy the opposite side with equal token quantity instead of selling
+        into a thin book.  This caps the maximum loss at
+        ``(combined - 1.0) * qty`` at settlement, and still profits if the
+        market reverses back in our favour.
         """
         unhedged = [
             (cid, pos)
@@ -588,64 +591,55 @@ class WhaleCopyTrader:
                 continue
 
             current_price = prices.get(pos.leg1.side, ZERO)
-            stop_price = pos.leg1.entry_price * (_ONE - self.config.stop_loss_pct)
-            if current_price >= stop_price:
+            trigger_price = pos.leg1.entry_price * (_ONE - self.config.defensive_hedge_pct)
+            if current_price >= trigger_price:
                 continue
 
-            # Stop-loss triggered — exit at current price
-            pnl = current_price * pos.leg1.quantity - pos.leg1.cost_basis
+            # Defensive hedge — buy the opposite side to cap loss
+            hedge_price = prices.get(pos.hedge_side, ZERO)
+            if hedge_price <= ZERO:
+                continue
+
+            hedge_qty = pos.leg1.quantity
+            if hedge_qty < _MIN_TOKEN_QTY:
+                continue
+
+            hedge_cost = hedge_price * hedge_qty
+            hedge_leg = SideLeg(
+                side=pos.hedge_side,
+                entry_price=hedge_price,
+                quantity=hedge_qty,
+                cost_basis=hedge_cost,
+            )
 
             if self.live:
                 tokens_by_side = await self._fetch_clob_tokens(cid)
                 if tokens_by_side is None:
                     continue
-                token = tokens_by_side.get(pos.leg1.side)
-                if token is None or self._executor is None:
+                token = tokens_by_side.get(pos.hedge_side)
+                hedge_leg = await self._place_leg_order(hedge_leg, token, is_hedge=True)
+                if hedge_leg is None:
                     continue
-                response = await self._executor.place_order(
-                    token.token_id,
-                    "SELL",
-                    current_price,
-                    pos.leg1.quantity,
-                    order_type="market",
-                )
-                if response is None:
-                    continue
-                pnl = response.price * response.filled - pos.leg1.cost_basis
-                pos.leg1.order_ids.append(response.order_id)
 
-            pos.state = PositionState.STOPPED
-            self._positions.pop(cid)
+            pos.hedge_leg = hedge_leg
+            pos.state = PositionState.HEDGED
 
-            result = CopyResult(
-                signal=pos.signal,
-                state=PositionState.STOPPED,
-                leg1_side=pos.leg1.side,
-                leg1_entry=pos.leg1.entry_price,
-                leg1_qty=pos.leg1.quantity,
-                hedge_entry=None,
-                hedge_qty=None,
-                total_cost_basis=pos.leg1.cost_basis,
-                entry_time=pos.entry_time,
-                exit_time=int(time.time()),
-                winning_side=None,
-                pnl=pnl,
-                is_paper=pos.is_paper,
-                order_ids=tuple(pos.all_order_ids),
-            )
-            self._results.append(result)
-            self._record_loss()
-            await self._persist_result(result)
+            effective_leg1_price = pos.leg1.cost_basis / pos.leg1.quantity
+            combined = effective_leg1_price + hedge_price
+            max_loss_per_token = combined - _ONE if combined > _ONE else ZERO
 
             mode = "LIVE" if self.live else "PAPER"
             logger.info(
-                "%s STOP-LOSS %s price=%.4f stop=%.4f pnl=%.4f cost=$%.4f",
+                "%s DEFENSIVE-HEDGE %s leg1_price=%.4f trigger=%.4f"
+                " hedge_side=%s hedge_price=%.4f combined=%.4f max_loss_per_token=%.4f",
                 mode,
                 cid[:12],
                 current_price,
-                stop_price,
-                pnl,
-                pos.leg1.cost_basis,
+                trigger_price,
+                pos.hedge_side,
+                hedge_price,
+                combined,
+                max_loss_per_token,
             )
 
     async def _check_hedge_opportunities(self) -> None:

@@ -49,14 +49,14 @@ class TestFromYaml:
 
     def test_converts_numeric_strings_to_decimal(self, tmp_path: Path) -> None:
         """Ensure string values for Decimal fields are converted."""
-        data = {"whale_address": "0xABC", "min_bias": "2.5", "stop_loss_pct": "0.30"}
+        data = {"whale_address": "0xABC", "min_bias": "2.5", "defensive_hedge_pct": "0.30"}
         path = tmp_path / "config.yaml"
         path.write_text(yaml.dump(data))
 
         cfg = WhaleCopyConfig.from_yaml(path)
 
         assert cfg.min_bias == Decimal("2.5")
-        assert cfg.stop_loss_pct == Decimal("0.30")
+        assert cfg.defensive_hedge_pct == Decimal("0.30")
 
     def test_converts_bare_numeric_to_decimal(self, tmp_path: Path) -> None:
         """Ensure bare YAML numbers (float/int) are converted to Decimal."""

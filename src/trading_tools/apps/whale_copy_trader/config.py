@@ -90,9 +90,11 @@ class WhaleCopyConfig:
         hedge_with_market_orders: Use FOK market orders for the hedge leg
             regardless of ``use_market_orders``. The hedge is time-critical;
             a GTC limit sitting unfilled defeats the purpose.
-        stop_loss_pct: Maximum fractional price drop on an unhedged leg 1
-            before the position is force-closed. 0.50 means cut the loss
-            when the token drops 50 %% from the entry price.
+        defensive_hedge_pct: Maximum fractional price drop on an unhedged
+            leg 1 before a defensive hedge is placed. Instead of selling
+            tokens into a thin book, buy the opposite side to cap the
+            maximum loss at settlement. 0.20 means hedge when the token
+            drops 20 %% from the entry price.
         win_rate: Estimated whale win rate for Kelly criterion sizing.
         kelly_fraction: Fractional Kelly multiplier (0.5 = half-Kelly).
         clob_fee_rate: Per-leg CLOB fee rate for hedge profitability check.
@@ -141,7 +143,7 @@ class WhaleCopyConfig:
     max_spread_cost: Decimal = Decimal("0.95")
     max_entry_price: Decimal = Decimal("0.65")
     hedge_with_market_orders: bool = True
-    stop_loss_pct: Decimal = Decimal("0.50")
+    defensive_hedge_pct: Decimal = Decimal("0.20")
     win_rate: Decimal = Decimal("0.80")
     kelly_fraction: Decimal = Decimal("0.5")
     clob_fee_rate: Decimal = Decimal("0.0")
