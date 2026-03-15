@@ -139,6 +139,8 @@ class PairedPosition:
         down_leg: The Down side leg, or ``None`` if not yet filled.
         entry_time: UTC epoch seconds when the position was opened.
         is_paper: ``True`` for simulated trades, ``False`` for live.
+        pending_up_order_id: CLOB order ID for unfilled Up GTC order.
+        pending_down_order_id: CLOB order ID for unfilled Down GTC order.
 
     """
 
@@ -148,6 +150,8 @@ class PairedPosition:
     down_leg: SideLeg | None
     entry_time: int
     is_paper: bool = True
+    pending_up_order_id: str | None = None
+    pending_down_order_id: str | None = None
 
     @property
     def total_cost_basis(self) -> Decimal:
