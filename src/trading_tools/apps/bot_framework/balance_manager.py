@@ -1,7 +1,7 @@
 """USDC balance management service for live trading bots.
 
 Fetch and cache the live USDC balance from the Polymarket CLOB API.
-Both the snipe trading bot and the whale copy-trader compose this
+Both the snipe trading bot and the spread capture bot compose this
 service to avoid duplicating balance refresh logic.
 """
 

@@ -45,12 +45,12 @@ trading-tools/
 │   │   │   ├── leaderboard.py       # Discover profitable traders via leaderboard or market enumeration
 │   │   │   ├── collector.py         # Shared trade-fetching utilities
 │   │   │   └── config.py            # Whale monitor configuration dataclasses
-│   │   └── whale_copy_trader/       # Real-time whale copy-trading service
-│   │       ├── config.py            # WhaleCopyConfig (frozen dataclass)
+│   │   └── spread_capture/          # Real-time spread capture bot
+│   │       ├── config.py            # SpreadCaptureConfig (frozen dataclass)
 │   │       ├── models.py            # CopySignal, SideLeg, OpenPosition, CopyResult, CopyResultRecord (ORM)
 │   │       ├── repository.py        # Async SQLAlchemy repository for persisting closed trade results
 │   │       ├── signal_detector.py   # Incremental polling and signal detection
-│   │       └── copy_trader.py       # Temporal spread arbitrage copy-trading engine
+│   │       └── copy_trader.py       # Temporal spread arbitrage engine
 │   ├── clients/                     # External API clients
 │   │   ├── revolut_x/               # Revolut X API client
 │   │   │   ├── auth/                # Ed25519 authentication
@@ -129,7 +129,7 @@ Runnable applications and long-lived services. Each application has:
 | `polymarket_bot` | Paper and live trading engines with fee/slippage modelling and loss limits (consumed by `polymarket` CLI) |
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
 | `whale_monitor` | Polling service that tracks whale trades, with analysis, per-market breakdown, trade enrichment, and Binance spot correlation |
-| `whale_copy_trader` | Temporal spread arbitrage whale copy-trading (paper and live) with adaptive Kelly sizing, compound capital, per-asset concentration limits, circuit breaker, and hedge urgency |
+| `spread_capture` | Spread capture bot (paper and live) with adaptive Kelly sizing, compound capital, per-asset concentration limits, circuit breaker, and hedge urgency |
 
 ### `/clients` — API Clients
 
@@ -298,7 +298,7 @@ cd /opt/trading-tools && sudo git pull origin main
 sudo /root/.local/bin/uv sync --all-extras
 
 # Restart services (pick relevant ones)
-sudo systemctl restart tick-collector whale-monitor trading-bot-paper whale-copy-paper
+sudo systemctl restart tick-collector whale-monitor trading-bot-paper spread-capture-paper
 ```
 
 ### Systemd Services
@@ -309,17 +309,17 @@ sudo systemctl restart tick-collector whale-monitor trading-bot-paper whale-copy
 | `whale-monitor` | Polymarket whale trade monitor (→ PostgreSQL) |
 | `trading-bot-paper` | Paper trading bot (late snipe strategy) |
 | `trading-bot-live` | Live trading bot (late snipe strategy, disabled by default) |
-| `whale-copy-paper` | Whale copy-trader paper bot (dual-side spread capture) |
-| `whale-copy-live` | Whale copy-trader live bot (dual-side spread capture, real orders) |
+| `spread-capture-paper` | Spread capture paper bot (dual-side spread capture) |
+| `spread-capture-live` | Spread capture live bot (dual-side spread capture, real orders) |
 
 **Useful commands:**
 
 ```bash
 # Quick health check
-sudo systemctl is-active tick-collector whale-monitor trading-bot-paper whale-copy-paper
+sudo systemctl is-active tick-collector whale-monitor trading-bot-paper spread-capture-paper
 
 # Service status details
-sudo systemctl status whale-copy-paper
+sudo systemctl status spread-capture-paper
 
 # If a service is stuck in deactivating
 sudo systemctl kill <service> && sudo systemctl start <service>
@@ -335,16 +335,16 @@ All services log to `/var/log/trading-tools/`. Logs are **not** in journald — 
 | `whale-monitor` | `/var/log/trading-tools/whale-monitor.log` |
 | `trading-bot-paper` | `/var/log/trading-tools/trading-bot-paper.log` |
 | `trading-bot-live` | `/var/log/trading-tools/trading-bot-live.log` |
-| `whale-copy-paper` | `/var/log/trading-tools/whale-copy-paper.log` |
-| `whale-copy-live` | `/var/log/trading-tools/whale-copy-live.log` |
+| `spread-capture-paper` | `/var/log/trading-tools/spread-capture-paper.log` |
+| `spread-capture-live` | `/var/log/trading-tools/spread-capture-live.log` |
 
 ```bash
 # Follow a log
-sudo tail -f /var/log/trading-tools/whale-copy-paper.log
+sudo tail -f /var/log/trading-tools/spread-capture-paper.log
 
 # Filter out noisy third-party debug output
 sudo grep -v 'Encoding\|Decoded\|Decoding\|Adding.*header table\|Encoded header\|Resizing header' \
-  /var/log/trading-tools/whale-copy-paper.log | tail -50
+  /var/log/trading-tools/spread-capture-paper.log | tail -50
 ```
 
 **Log rotation:** configured via `/etc/logrotate.d/trading-tools` — daily rotation, 7 days retained, compressed.
@@ -366,7 +366,7 @@ tests/
 │   ├── polymarket_bot/
 │   ├── tick_collector/
 │   ├── whale_monitor/
-│   └── whale_copy_trader/
+│   └── spread_capture/
 ├── clients/
 │   ├── revolut_x/
 │   ├── polymarket/

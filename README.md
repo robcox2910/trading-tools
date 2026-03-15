@@ -119,11 +119,11 @@ trading-tools-polymarket whale-monitor --verbose
 trading-tools-polymarket whale-analyse --address 0x... --days 7
 trading-tools-polymarket whale-correlate --address 0x... --days 1
 
-# Copy whale bets in real-time (paper mode)
-trading-tools-polymarket whale-copy --address 0x... -v
+# Spread capture bot (paper mode)
+trading-tools-polymarket spread-capture --series-slugs btc-updown-5m -v
 
-# Copy whale bets with real orders
-trading-tools-polymarket whale-copy --address 0x... --confirm-live
+# Spread capture bot with real orders
+trading-tools-polymarket spread-capture --series-slugs btc-updown-5m --confirm-live
 ```
 
 See [Polymarket](docs/POLYMARKET.md) for all commands, options, and setup instructions.

@@ -2,7 +2,7 @@
 
 Install OS signal handlers (SIGINT, SIGTERM) and expose a simple
 boolean flag that polling loops and event streams can check to exit
-cleanly. Used by the whale copy-trader, live trading engine, and
+cleanly. Used by the spread capture bot, live trading engine, and
 whale monitor to avoid duplicating signal-handling boilerplate.
 """
 

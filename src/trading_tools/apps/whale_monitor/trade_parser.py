@@ -1,7 +1,7 @@
 """Shared parser for raw Polymarket trade dicts into WhaleTrade ORM instances.
 
-Both the whale monitor collector and the whale copy-trader signal detector
-need to convert raw API trade dictionaries into ``WhaleTrade`` objects.
+The whale monitor collector needs to convert raw API trade dictionaries
+into ``WhaleTrade`` objects.
 This module centralises that logic so field-name fallbacks and error
 handling are defined in exactly one place.
 """

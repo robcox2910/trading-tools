@@ -16,8 +16,8 @@ Some commands require no authentication (market queries), while trading and bot 
 | Live trading bot | Yes |
 | Tick collection | No |
 | Whale monitoring | No |
-| Whale copy-trading (paper) | No |
-| Whale copy-trading (live) | Yes |
+| Spread capture bot (paper) | No |
+| Spread capture bot (live) | Yes |
 
 ## Market Queries
 
@@ -329,15 +329,15 @@ trading-tools-polymarket whale-correlate --address 0x1234... --days 1 --min-trad
 | `--min-trades` | `10` | Minimum trades per market to include |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 
-## Whale Copy-Trading
+## Spread Capture Bot
 
-### `whale-copy` — Copy Whale Bets in Real-Time
+### `spread-capture` — Buy Both Sides When Combined < $1.00
 
-Run a polling service that detects a whale's directional bias on BTC/ETH 5-minute markets and copies them with **temporal spread arbitrage**. Paper mode by default; pass `--confirm-live` for real orders.
+Run a polling service that monitors BTC/ETH 5-minute prediction markets and captures the spread when the combined price of both sides drops below $1.00. Paper mode by default; pass `--confirm-live` for real orders.
 
 The bot uses a multi-phase approach:
 
-1. **Directional entry (leg 1):** detect the whale's favoured side and buy it immediately at current CLOB prices. Position size is determined by the Kelly criterion based on estimated win rate.
+1. **Directional entry (leg 1):** detect the favoured side (via whale bias signals or series slug discovery) and buy it immediately at current CLOB prices. Position size is determined by the Kelly criterion based on estimated win rate.
 2. **Take-profit:** each poll cycle, check if the leg 1 token price has risen above the take-profit threshold (`entry × (1 + take_profit_pct)`). If so, sell early to lock in known profit.
 3. **Defensive hedge:** if the leg 1 token price drops below `entry × (1 - defensive_hedge_pct)`, buy the opposite side to cap loss at settlement instead of selling into a thin book. The position becomes hedged with a bounded max loss. If the combined cost (leg1 + hedge) would exceed `max_defensive_hedge_cost`, sell the tokens instead to avoid locking in a large guaranteed loss.
 4. **Profit hedge (leg 2):** monitor the opposite side each poll cycle. When `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee_rate`, the opposite side is cheap enough to lock in guaranteed profit. Hedge uses FOK market orders by default for fast execution.
@@ -345,14 +345,14 @@ The bot uses a multi-phase approach:
 
 If no hedge opportunity arises before expiry, the position resolves as a pure directional bet (profitable when the whale is correct ~80% of the time).
 
-6. **Flip trading (optional):** when `--enable-flipping` is set, take-profit exits are followed by immediate re-entry on the opposite side, matching the whale's pattern of playing both sides of price swings within a market window. On take-profit, the bot sells leg 1 tokens and immediately buys the opposite side with the same dollar amount. If that side then rises to the flip take-profit threshold, it flips back. This captures multiple spread swings per market window. Flips take priority over take-profit hedging when enabled. Flips are capped by `--max-flips-per-market` and stop when fewer than `--min-flip-buffer-seconds` remain before expiry. When flip limits are reached, the bot falls back to take-profit hedging (combined < $1.00) or selling.
+6. **Flip trading (optional):** when `--enable-flipping` is set, take-profit exits are followed by immediate re-entry on the opposite side, capturing multiple spread swings per market window. On take-profit, the bot sells leg 1 tokens and immediately buys the opposite side with the same dollar amount. If that side then rises to the flip take-profit threshold, it flips back. Flips take priority over take-profit hedging when enabled. Flips are capped by `--max-flips-per-market` and stop when fewer than `--min-flip-buffer-seconds` remain before expiry. When flip limits are reached, the bot falls back to take-profit hedging (combined < $1.00) or selling.
 
 The service uses **incremental polling** for minimal latency: only new trades since the last poll are fetched, and a rolling window of trades is maintained in memory.
 
 ```bash
 # Paper mode (default) — log signals, track virtual P&L
-trading-tools-polymarket whale-copy \
-  --address 0xa45f... \
+trading-tools-polymarket spread-capture \
+  --series-slugs btc-updown-5m \
   --poll-interval 5 \
   --min-bias 1.5 \
   --min-trades 3 \
@@ -362,25 +362,25 @@ trading-tools-polymarket whale-copy \
   -v
 
 # Live mode — place real limit orders on Polymarket
-trading-tools-polymarket whale-copy \
-  --address 0xa45f... \
+trading-tools-polymarket spread-capture \
+  --series-slugs btc-updown-5m \
   --capital 100 \
   --max-position-pct 0.10 \
   --confirm-live
 
 # Load settings from a YAML config file (CLI flags override YAML values)
-trading-tools-polymarket whale-copy \
-  --config whale-copy.yaml \
-  --address 0xa45f... \
+trading-tools-polymarket spread-capture \
+  --config spread-capture.yaml \
+  --series-slugs btc-updown-5m \
   --capital 200 \
   -v
 ```
 
-**YAML config file** — all fields are optional (dataclass defaults fill omitted values). CLI flags override YAML values; YAML overrides defaults. Keys match ``WhaleCopyConfig`` field names:
+**YAML config file** — all fields are optional (dataclass defaults fill omitted values). CLI flags override YAML values; YAML overrides defaults. Keys match ``SpreadCaptureConfig`` field names:
 
 ```yaml
-# whale-copy.yaml
-whale_address: "0xa45f..."
+# spread-capture.yaml
+series_slugs: "btc-updown-5m"
 capital: "200"
 max_position_pct: "0.15"
 max_spread_cost: "0.95"
@@ -397,7 +397,7 @@ flip_take_profit_pct: "0.10"
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--address` | *(required)* | Whale proxy wallet address to copy |
+| `--series-slugs` | *(required)* | Comma-separated series slugs for market discovery (e.g. `btc-updown-5m`) |
 | `--config` | *none* | Path to YAML config file (CLI flags override YAML values) |
 | `--poll-interval` | `5` | Seconds between DB polls (lower = faster) |
 | `--lookback` | `900` | Rolling window in seconds for trade accumulation |
@@ -436,7 +436,7 @@ flip_take_profit_pct: "0.10"
 | `--min-flip-buffer-seconds` | `30` | Stop flipping with fewer than this many seconds to expiry |
 | `--flip-take-profit-pct` | `0.10` | Tighter take-profit % for flip legs (e.g. 0.10 = 10% vs 15% initial) |
 | `--confirm-live` | `false` | **Required flag** for live trading |
-| `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
+| `--db-url` | env `SPREAD_DB_URL`, `WHALE_DB_URL`, or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
 
 **Signal detection pipeline:**
@@ -445,7 +445,7 @@ flip_take_profit_pct: "0.10"
 2. Group by `condition_id`, compute bias via `analyse_markets()`
 3. Filter: BTC/ETH asset only, future time window, bias > threshold, trades >= min
 4. Fetch current CLOB prices; skip if favoured side > `max_entry_price`
-5. Open directional leg 1 (buy whale's favoured side, Kelly-sized with optional signal strength scaling)
+5. Open directional leg 1 (buy favoured side, Kelly-sized with optional signal strength scaling)
 6. Each poll cycle checks (in order): take-profit → defensive hedge → profit hedge → expiry
 7. Take-profit: if flipping enabled, sell + flip to opposite side (priority); otherwise hedge opposite side when combined < $1.00; sell as fallback
 8. Defensive hedge: buy opposite side if leg 1 price drops below `entry × (1 - defensive_hedge_pct)`. If combined cost > `max_defensive_hedge_cost`, sell leg 1 instead
@@ -454,7 +454,7 @@ flip_take_profit_pct: "0.10"
 
 **Heartbeat:** Logs status every 60 seconds (poll count, unhedged/hedged positions, P&L) for CloudWatch monitoring.
 
-**Database persistence:** When `WHALE_DB_URL` is set, closed trade results are automatically persisted to the `copy_results` table in the same database as whale trades. Each result is written immediately at close time (not batched) so data survives crashes. The table stores denormalized signal fields (condition_id, asset, bias_ratio, window timestamps) alongside execution details (entry/hedge prices, quantities, P&L, state) for direct querying without joins.
+**Database persistence:** When `SPREAD_DB_URL` (or `WHALE_DB_URL`) is set, closed trade results are automatically persisted to the `copy_results` table. Each result is written immediately at close time (not batched) so data survives crashes. The table stores denormalized signal fields (condition_id, asset, bias_ratio, window timestamps) alongside execution details (entry/hedge prices, quantities, P&L, state) for direct querying without joins.
 
 This enables post-hoc analysis such as backtesting different `max_spread_cost` thresholds:
 
@@ -549,4 +549,4 @@ Both tick collection and whale monitoring support SQLite (default) and PostgreSQ
 --db-url "postgresql+asyncpg://user:pass@host:5432/trading_tools"
 ```
 
-Set the `TICK_DB_URL` or `WHALE_DB_URL` environment variable to avoid passing `--db-url` on every command.
+Set the `TICK_DB_URL`, `WHALE_DB_URL`, or `SPREAD_DB_URL` environment variable to avoid passing `--db-url` on every command.
