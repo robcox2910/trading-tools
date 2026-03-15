@@ -35,16 +35,29 @@ CRYPTO_15M_SERIES: tuple[str, ...] = (
     "xrp-updown-15m",
 )
 
+CRYPTO_1H_SERIES: tuple[str, ...] = (
+    "btc-updown-1h",
+    "eth-updown-1h",
+    "sol-updown-1h",
+    "xrp-updown-1h",
+)
+
+_SHORTCUT_MAP: dict[str, tuple[str, ...]] = {
+    "crypto-5m": CRYPTO_5M_SERIES,
+    "crypto-15m": CRYPTO_15M_SERIES,
+    "crypto-1h": CRYPTO_1H_SERIES,
+}
+
 
 def parse_series_slugs(series: str) -> tuple[str, ...]:
     """Parse a comma-separated series string into expanded slug tuples.
 
-    Expand the shortcuts ``"crypto-5m"`` and ``"crypto-15m"`` into
-    all four crypto Up/Down series slugs for the respective timeframe.
+    Expand the shortcuts ``"crypto-5m"``, ``"crypto-15m"``, and
+    ``"crypto-1h"`` into all four crypto Up/Down series slugs for the
+    respective timeframe.
 
     Args:
-        series: Comma-separated series slugs, or the ``"crypto-5m"`` /
-            ``"crypto-15m"`` shortcuts.
+        series: Comma-separated series slugs, or shortcut names.
 
     Returns:
         Tuple of expanded series slug strings.
@@ -55,10 +68,8 @@ def parse_series_slugs(series: str) -> tuple[str, ...]:
         slug = raw.strip()
         if not slug:
             continue
-        if slug == "crypto-5m":
-            slugs.extend(CRYPTO_5M_SERIES)
-        elif slug == "crypto-15m":
-            slugs.extend(CRYPTO_15M_SERIES)
+        if slug in _SHORTCUT_MAP:
+            slugs.extend(_SHORTCUT_MAP[slug])
         else:
             slugs.append(slug)
     return tuple(slugs)

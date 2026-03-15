@@ -116,9 +116,17 @@ class TestParseAsset:
         """Return ETH-USD for Ethereum titles."""
         assert parse_asset("Ethereum Up or Down - March 13, 6PM ET") == "ETH-USD"
 
+    def test_solana_title(self) -> None:
+        """Return SOL-USD for Solana titles."""
+        assert parse_asset("Solana Up or Down - March 13, 6PM ET") == "SOL-USD"
+
+    def test_xrp_title(self) -> None:
+        """Return XRP-USD for XRP titles."""
+        assert parse_asset("XRP Up or Down - March 13, 6PM ET") == "XRP-USD"
+
     def test_unknown_asset(self) -> None:
         """Return None for unrecognised assets."""
-        assert parse_asset("Solana Up or Down - March 13, 6PM ET") is None
+        assert parse_asset("Litecoin Up or Down - March 13, 6PM ET") is None
 
     def test_case_insensitive(self) -> None:
         """Handle case-insensitive matching."""
