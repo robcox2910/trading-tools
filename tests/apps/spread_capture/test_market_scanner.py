@@ -147,8 +147,8 @@ class TestMarketScanner:
             await scanner.scan(set())
 
         # Verify get_order_book was called for both tokens
-        calls = scanner.client.get_order_book.call_args_list  # type: ignore[attr-defined]
-        token_ids: set[str] = {c.args[0] for c in calls}
+        calls: list[object] = scanner.client.get_order_book.call_args_list  # type: ignore[attr-defined]
+        token_ids: set[str] = {c.args[0] for c in calls}  # type: ignore[union-attr]
         assert token_ids == {"up_tok", "down_tok"}
 
     async def test_skips_open_positions(self) -> None:
