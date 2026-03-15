@@ -4,9 +4,14 @@ Run a polling service that monitors a whale's trades via the Polymarket
 Data API directly, detects directional bias signals on BTC/ETH markets,
 and copies them using temporal spread arbitrage. Defaults to paper mode;
 pass ``--confirm-live`` for real orders.
+
+When ``WHALE_DB_URL`` is set, closed trade results are persisted to the
+``copy_results`` table in the same database as whale trades.
 """
 
 import asyncio
+import logging
+import os
 import time
 from decimal import Decimal
 from typing import Annotated
@@ -19,6 +24,9 @@ from trading_tools.apps.polymarket.cli._helpers import (
 )
 from trading_tools.apps.whale_copy_trader.config import WhaleCopyConfig
 from trading_tools.apps.whale_copy_trader.copy_trader import WhaleCopyTrader
+from trading_tools.apps.whale_copy_trader.repository import CopyResultRepository
+
+_logger = logging.getLogger(__name__)
 
 _DEFAULT_POLL_INTERVAL = 5
 _DEFAULT_LOOKBACK = 900
@@ -35,6 +43,7 @@ _DEFAULT_WIN_RATE = "0.80"
 _DEFAULT_KELLY_FRACTION = "0.5"
 _DEFAULT_CLOB_FEE_RATE = "0.0"
 _DEFAULT_TAKE_PROFIT_PRICE = "0.85"
+_DEFAULT_MAX_UNHEDGED_EXPOSURE_PCT = "0.50"
 _LIVE_WARNING_DELAY = 2
 
 
@@ -92,6 +101,10 @@ def whale_copy(
     take_profit_price: Annotated[
         str, typer.Option(help="Sell unhedged tokens when price reaches this level (e.g. 0.85)")
     ] = _DEFAULT_TAKE_PROFIT_PRICE,
+    max_unhedged_exposure_pct: Annotated[
+        str,
+        typer.Option(help="Max fraction of capital in unhedged positions (e.g. 0.50)"),
+    ] = _DEFAULT_MAX_UNHEDGED_EXPOSURE_PCT,
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
@@ -126,6 +139,7 @@ def whale_copy(
         kelly_fraction=Decimal(kelly_fraction),
         clob_fee_rate=Decimal(clob_fee_rate),
         take_profit_price=Decimal(take_profit_price),
+        max_unhedged_exposure_pct=Decimal(max_unhedged_exposure_pct),
     )
 
     if confirm_live:
@@ -139,16 +153,28 @@ def whale_copy(
     async def _run() -> None:
         # Both paper and live modes need a client for CLOB price data
         client = build_authenticated_client()
+        repo: CopyResultRepository | None = None
+
+        # Persist closed trade results when WHALE_DB_URL is configured
+        whale_db_url = os.environ.get("WHALE_DB_URL", "")
+        if whale_db_url:
+            repo = CopyResultRepository(whale_db_url)
+            await repo.init_db()
+            _logger.info("Copy result persistence enabled (WHALE_DB_URL)")
 
         trader = WhaleCopyTrader(
             config=config,
             live=confirm_live,
             client=client,
         )
+        if repo is not None:
+            trader.set_repo(repo)
 
         try:
             await trader.run()
         finally:
             await client.close()
+            if repo is not None:
+                await repo.close()
 
     asyncio.run(_run())

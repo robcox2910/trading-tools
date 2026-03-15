@@ -47,7 +47,8 @@ trading-tools/
 │   │   │   └── config.py            # Whale monitor configuration dataclasses
 │   │   └── whale_copy_trader/       # Real-time whale copy-trading service
 │   │       ├── config.py            # WhaleCopyConfig (frozen dataclass)
-│   │       ├── models.py            # CopySignal, SideLeg, OpenPosition, CopyResult
+│   │       ├── models.py            # CopySignal, SideLeg, OpenPosition, CopyResult, CopyResultRecord (ORM)
+│   │       ├── repository.py        # Async SQLAlchemy repository for persisting closed trade results
 │   │       ├── signal_detector.py   # Incremental polling and signal detection
 │   │       └── copy_trader.py       # Temporal spread arbitrage copy-trading engine
 │   ├── clients/                     # External API clients

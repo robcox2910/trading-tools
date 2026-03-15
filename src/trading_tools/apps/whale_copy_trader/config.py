@@ -44,6 +44,10 @@ class WhaleCopyConfig:
             Polymarket currently charges 0 maker fee, but this is configurable.
         take_profit_price: Sell unhedged leg 1 tokens when the price reaches
             this level, locking in profit without waiting for settlement.
+        max_unhedged_exposure_pct: Maximum fraction of capital that may be
+            committed to unhedged (non-guaranteed) positions at any time.
+            Once reached, no new positions are opened until existing ones
+            are hedged, stopped, exited, or settled.
 
     """
 
@@ -65,3 +69,4 @@ class WhaleCopyConfig:
     kelly_fraction: Decimal = Decimal("0.5")
     clob_fee_rate: Decimal = Decimal("0.0")
     take_profit_price: Decimal = Decimal("0.85")
+    max_unhedged_exposure_pct: Decimal = Decimal("0.50")
