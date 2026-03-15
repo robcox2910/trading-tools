@@ -40,7 +40,7 @@ _DECIMAL_PARAMS: dict[str, str] = {
     "max_position_pct": "max_position_pct",
     "max_spread_cost": "max_spread_cost",
     "max_entry_price": "max_entry_price",
-    "stop_loss_pct": "stop_loss_pct",
+    "defensive_hedge_pct": "defensive_hedge_pct",
     "win_rate": "win_rate",
     "kelly_fraction": "kelly_fraction",
     "clob_fee_rate": "clob_fee_rate",
@@ -172,9 +172,9 @@ def whale_copy(  # noqa: PLR0913
             help="Use GTC limit orders for hedge leg instead of FOK market",
         ),
     ] = False,
-    stop_loss_pct: Annotated[
+    defensive_hedge_pct: Annotated[
         str | None,
-        typer.Option(help="Stop-loss threshold as fraction (e.g. 0.50 = cut at 50%% drop)"),
+        typer.Option(help="Defensive hedge trigger as fraction (e.g. 0.20 = hedge at 20%% drop)"),
     ] = None,
     win_rate: Annotated[
         str | None, typer.Option(help="Estimated whale win rate for Kelly sizing (e.g. 0.80)")
@@ -277,7 +277,7 @@ def whale_copy(  # noqa: PLR0913
         max_window=max_window,
         max_spread_cost=max_spread_cost,
         max_entry_price=max_entry_price,
-        stop_loss_pct=stop_loss_pct,
+        defensive_hedge_pct=defensive_hedge_pct,
         win_rate=win_rate,
         kelly_fraction=kelly_fraction,
         clob_fee_rate=clob_fee_rate,
