@@ -7,6 +7,7 @@ from a YAML file and applying CLI overrides on top.
 """
 
 import dataclasses
+import functools
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -14,18 +15,15 @@ from typing import Any
 import yaml
 
 
+@functools.lru_cache(maxsize=1)
 def _decimal_field_names() -> frozenset[str]:
     """Return field names on WhaleCopyConfig that have type ``Decimal``.
 
-    Called once at module level after the dataclass is defined and cached
-    in ``_DECIMAL_FIELDS``.  The result is used by ``_parse_config_dict``
-    to decide which YAML values need ``Decimal`` conversion.
+    Cached after first call since the set of Decimal fields is immutable.
+    The result is used by ``_parse_config_dict`` to decide which YAML
+    values need ``Decimal`` conversion.
     """
-    return frozenset(
-        f.name
-        for f in dataclasses.fields(WhaleCopyConfig)
-        if f.type is Decimal or f.type == "Decimal"
-    )
+    return frozenset(f.name for f in dataclasses.fields(WhaleCopyConfig) if f.type is Decimal)
 
 
 def _parse_config_dict(data: dict[str, Any]) -> dict[str, Any]:

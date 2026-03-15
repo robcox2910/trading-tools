@@ -4,9 +4,8 @@ from typing import Any
 
 import httpx
 
+from trading_tools.clients._http_status import HTTP_BAD_REQUEST
 from trading_tools.clients.binance.exceptions import BinanceAPIError
-
-_HTTP_BAD_REQUEST = 400
 
 
 class BinanceClient:
@@ -52,7 +51,7 @@ class BinanceClient:
         url = f"{self.base_url}{path}"
         response = await self._http_client.request("GET", url, params=params)
 
-        if response.status_code >= _HTTP_BAD_REQUEST:
+        if response.status_code >= HTTP_BAD_REQUEST:
             self._handle_error(response)
 
         result: Any = response.json()
@@ -73,7 +72,7 @@ class BinanceClient:
             data = response.json()
             code: int = data.get("code", response.status_code)
             msg: str = data.get("msg", f"HTTP {response.status_code}")
-        except Exception:
+        except (ValueError, KeyError):
             code = response.status_code
             msg = f"HTTP {response.status_code}"
         raise BinanceAPIError(code=code, msg=msg)

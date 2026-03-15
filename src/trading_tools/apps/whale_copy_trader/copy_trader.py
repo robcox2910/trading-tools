@@ -288,7 +288,9 @@ class WhaleCopyTrader:
         leg 1 for new markets, check hedge opportunities for unhedged
         positions, and close expired ones.
         """
-        assert self._detector is not None  # noqa: S101
+        if self._detector is None:
+            msg = "SignalDetector not initialised — call run() first"
+            raise RuntimeError(msg)
         self._poll_count += 1
 
         if (
@@ -805,10 +807,11 @@ class WhaleCopyTrader:
             take_target: The take-profit trigger price.
 
         """
+        sell_price = current_price
         if not self.live and self.config.paper_slippage_pct > ZERO:
-            current_price = current_price * (_ONE - self.config.paper_slippage_pct)
+            sell_price = current_price * (_ONE - self.config.paper_slippage_pct)
 
-        pnl = current_price * pos.leg1.quantity - pos.leg1.cost_basis
+        pnl = sell_price * pos.leg1.quantity - pos.leg1.cost_basis
 
         if self.live:
             tokens_by_side = await self._fetch_clob_tokens(cid)
@@ -849,7 +852,10 @@ class WhaleCopyTrader:
             order_ids=tuple(pos.all_order_ids),
         )
         self._results.append(result)
-        self._consecutive_losses = 0
+        if pnl > ZERO:
+            self._consecutive_losses = 0
+        else:
+            self._record_loss()
         await self._persist_result(result)
 
         mode = "LIVE" if self.live else "PAPER"
@@ -857,7 +863,7 @@ class WhaleCopyTrader:
             "%s TAKE-PROFIT-SELL %s price=%.4f target=%.4f entry=%.4f pnl=%.4f cost=$%.4f",
             mode,
             cid[:12],
-            current_price,
+            sell_price,
             take_target,
             pos.leg1.entry_price,
             pnl,
@@ -1017,7 +1023,10 @@ class WhaleCopyTrader:
             flip_number=flip_number,
         )
         self._results.append(close_result)
-        self._consecutive_losses = 0
+        if sell_pnl > ZERO:
+            self._consecutive_losses = 0
+        else:
+            self._record_loss()
         await self._persist_result(close_result)
         self._positions.pop(cid)
         return sell_pnl
@@ -1052,8 +1061,7 @@ class WhaleCopyTrader:
         qty = (spend / new_price).quantize(Decimal("0.01"))
         if qty < _MIN_TOKEN_QTY:
             logger.info("  FLIP-SKIP %s: qty %.2f below minimum", cid[:12], qty)
-            flip_state.flip_count += 1
-            self._flip_count += 1
+            self._increment_flip_count(flip_state)
             return
 
         new_cost = new_price * qty
@@ -1068,14 +1076,12 @@ class WhaleCopyTrader:
         if self.live:
             tokens_by_side = await self._fetch_clob_tokens(cid)
             if tokens_by_side is None:
-                flip_state.flip_count += 1
-                self._flip_count += 1
+                self._increment_flip_count(flip_state)
                 return
             token = tokens_by_side.get(new_side)
             new_leg_result = await self._place_leg_order(new_leg, token)
             if new_leg_result is None:
-                flip_state.flip_count += 1
-                self._flip_count += 1
+                self._increment_flip_count(flip_state)
                 return
             new_leg = new_leg_result
 
@@ -1090,8 +1096,12 @@ class WhaleCopyTrader:
         )
         self._positions[cid] = new_pos
 
-        flip_state.flip_count += 1
+        self._increment_flip_count(flip_state)
         flip_state.last_flip_side = new_side
+
+    def _increment_flip_count(self, flip_state: FlipState) -> None:
+        """Increment both per-market and global flip counters."""
+        flip_state.flip_count += 1
         self._flip_count += 1
 
     async def _check_defensive_hedges(
@@ -1132,7 +1142,7 @@ class WhaleCopyTrader:
             if hedge_price <= ZERO:
                 continue
 
-            effective_leg1_price = pos.leg1.cost_basis / pos.leg1.quantity
+            effective_leg1_price = pos.leg1_effective_price
             combined = effective_leg1_price + hedge_price
 
             # If the defensive hedge would be too expensive, sell leg1 instead
@@ -1336,7 +1346,7 @@ class WhaleCopyTrader:
             if hedge_price <= ZERO:
                 continue
 
-            effective_leg1_price = pos.leg1.cost_basis / pos.leg1.quantity
+            effective_leg1_price = pos.leg1_effective_price
             effective_max_spread = self._effective_hedge_spread(pos.signal)
 
             combined = effective_leg1_price + hedge_price
@@ -1596,7 +1606,9 @@ class WhaleCopyTrader:
             ``None`` if candle data was unavailable.
 
         """
-        assert self._binance is not None  # noqa: S101
+        if self._binance is None:
+            logger.warning("Binance client not initialised, cannot resolve outcome")
+            return None
         signal = pos.signal
 
         try:
@@ -1633,7 +1645,8 @@ class WhaleCopyTrader:
 
     def _log_heartbeat(self) -> None:
         """Emit a heartbeat via the shared HeartbeatLogger."""
-        assert self._detector is not None  # noqa: S101
+        if self._detector is None:
+            return
         total_pnl = sum(r.pnl for r in self._results)
         stopped = sum(1 for r in self._results if r.state == PositionState.STOPPED)
         exited = sum(1 for r in self._results if r.state == PositionState.EXITED)
@@ -1658,7 +1671,7 @@ class WhaleCopyTrader:
         """
         total_pnl = sum(r.pnl for r in self._results)
         wins = sum(1 for r in self._results if r.pnl > ZERO)
-        losses = sum(1 for r in self._results if r.pnl <= ZERO)
+        losses = sum(1 for r in self._results if r.pnl < ZERO)
         win_rate = (wins / len(self._results) * 100) if self._results else 0.0
         unhedged = [p for p in self._positions.values() if p.state == PositionState.UNHEDGED]
         hedged = [p for p in self._positions.values() if p.state == PositionState.HEDGED]
@@ -1685,8 +1698,7 @@ class WhaleCopyTrader:
         for cid, pos in self._positions.items():
             combined = "n/a"
             if pos.hedge_leg is not None:
-                eff = pos.leg1.cost_basis / pos.leg1.quantity
-                comb = eff + pos.hedge_leg.entry_price
+                comb = pos.leg1_effective_price + pos.hedge_leg.entry_price
                 combined = f"{comb:.4f}"
             logger.info(
                 "SUMMARY |   %s %s %s %s entry=%.4f qty=%.2f cost=$%.2f combined=%s",

@@ -12,7 +12,6 @@ from trading_tools.apps.whale_monitor.correlator import parse_time_window
 from trading_tools.apps.whale_monitor.models import WhaleTrade
 
 _ADDRESS = "0xwhale"
-_COLLECTED_AT = 1700000000000
 _SECONDS_BEFORE_START = 30
 _EXPECTED_TRADE_COUNT = 4
 
@@ -30,7 +29,7 @@ def _make_trade(
     title: str = "Bitcoin Up or Down - March 13, 6PM ET",
     timestamp: int = _FUTURE_TS,
 ) -> WhaleTrade:
-    """Create a WhaleTrade instance for testing.
+    """Create a WhaleTrade for signal detector testing.
 
     Args:
         outcome: Outcome label.
@@ -58,7 +57,7 @@ def _make_trade(
         slug="btc-up-down",
         outcome=outcome,
         outcome_index=0,
-        collected_at=_COLLECTED_AT,
+        collected_at=1700000000000,
     )
 
 

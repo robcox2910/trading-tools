@@ -323,6 +323,8 @@ def adx(candles: Sequence[Candle], period: int = 14) -> Decimal:
 
     # ADX = Wilder's smoothed average of DX values
     # First ADX = average of first `period` DX values
+    if not dx_values:
+        return ZERO
     if len(dx_values) < period:
         return sum(dx_values) / Decimal(len(dx_values))
 

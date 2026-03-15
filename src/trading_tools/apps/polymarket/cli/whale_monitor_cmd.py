@@ -5,12 +5,11 @@ from tracked whale addresses and persists them to a database.
 """
 
 import asyncio
-import logging
 from typing import Annotated
 
 import typer
 
-from trading_tools.apps.polymarket.cli._helpers import require_whale_db_url
+from trading_tools.apps.polymarket.cli._helpers import configure_logging, require_whale_db_url
 from trading_tools.apps.whale_monitor.collector import WhaleMonitor
 from trading_tools.apps.whale_monitor.config import WhaleMonitorConfig
 
@@ -34,13 +33,7 @@ def whale_monitor(
     ``--whales`` or pre-loaded in the database with ``whale-add``.
     """
     resolved_db_url = db_url or require_whale_db_url()
-
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    configure_logging(verbose=verbose)
 
     whale_addrs = tuple(w.strip().lower() for w in whales.split(",") if w.strip())
 

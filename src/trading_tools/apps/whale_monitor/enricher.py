@@ -280,17 +280,16 @@ def _infer_category_from_tags(tags: list[dict[str, object]]) -> str:
         Category label string, or empty string when no match is found.
 
     """
+    published_fallback = ""
     for tag in tags:
         slug = str(tag.get("slug") or "").lower()
         if slug in _CATEGORY_TAG_SLUGS:
             return _CATEGORY_TAG_SLUGS[slug]
+        # Track first tag with publishedAt as fallback (single pass)
+        if not published_fallback and tag.get("publishedAt"):
+            published_fallback = str(tag.get("label") or "")
 
-    # Fallback: first tag with a publishedAt timestamp is a curated content tag
-    for tag in tags:
-        if tag.get("publishedAt"):
-            return str(tag.get("label") or "")
-
-    return ""
+    return published_fallback
 
 
 def _extract_metadata(condition_id: str, data: dict[str, object]) -> MarketMetadata:

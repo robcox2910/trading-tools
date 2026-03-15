@@ -21,14 +21,16 @@ class PolymarketAPIError(PolymarketError):
 
     """
 
-    def __init__(self, msg: str, status_code: int) -> None:
+    def __init__(self, msg: str, status_code: int | None = None) -> None:
         """Initialize Polymarket API error.
 
         Args:
             msg: Human-readable description of the error.
-            status_code: HTTP status code from the API response.
+            status_code: HTTP status code from the API response, or ``None``
+                for non-HTTP errors (e.g. local validation failures).
 
         """
-        super().__init__(f"[{status_code}] {msg}")
+        prefix = f"[{status_code}] " if status_code is not None else ""
+        super().__init__(f"{prefix}{msg}")
         self.msg = msg
         self.status_code = status_code

@@ -91,7 +91,7 @@ def _encode_redeem_calldata(condition_id: str) -> bytes:
     except ValueError as exc:
         raise PolymarketAPIError(
             msg=f"Invalid hex condition ID: {condition_id}",
-            status_code=0,
+            status_code=None,
         ) from exc
 
     return ctf.encode_abi(  # type: ignore[no-any-return]
@@ -144,7 +144,7 @@ def redeem_positions(
     if not w3.is_connected():
         raise PolymarketAPIError(
             msg=f"Cannot connect to Polygon RPC at {rpc_url}",
-            status_code=0,
+            status_code=None,
         )
 
     try:
@@ -152,7 +152,7 @@ def redeem_positions(
     except Exception as exc:
         raise PolymarketAPIError(
             msg="Invalid private key for CTF redemption",
-            status_code=0,
+            status_code=None,
         ) from exc
     factory = w3.eth.contract(
         address=Web3.to_checksum_address(_PROXY_WALLET_FACTORY),
