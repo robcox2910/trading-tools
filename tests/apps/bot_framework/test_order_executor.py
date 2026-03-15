@@ -128,7 +128,7 @@ class TestOrderExecutorErrorHandling:
     async def test_generic_exception_returns_none(self) -> None:
         """Return None on unexpected exceptions."""
         client = AsyncMock()
-        client.place_order = AsyncMock(side_effect=RuntimeError("Network timeout"))
+        client.place_order = AsyncMock(side_effect=ValueError("Network timeout"))
         executor = OrderExecutor(client=client)
 
         result = await executor.place_order(_TOKEN_ID, "BUY", _PRICE, _QUANTITY)

@@ -53,7 +53,10 @@ class RevolutXClient:
         self._base_path = urlparse(self.base_url).path
         self.timeout = timeout
         self.signer = Ed25519Signer(private_key)
-        self._http_client = httpx.AsyncClient(timeout=timeout)
+        self._http_client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        )
 
     @classmethod
     def from_config(cls) -> "RevolutXClient":
@@ -222,7 +225,7 @@ class RevolutXClient:
         try:
             error_data = response.json()
             message = error_data.get("error", "Unknown error")
-        except Exception:
+        except (KeyError, ValueError, TypeError):
             message = f"HTTP {response.status_code}"
 
         if response.status_code == HTTP_UNAUTHORIZED:

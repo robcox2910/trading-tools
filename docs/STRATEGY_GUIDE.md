@@ -97,10 +97,11 @@ Edit `src/trading_tools/apps/polymarket_bot/strategies/strategy_factory.py`:
    PM_STRATEGY_NAMES = (..., "pm_my_strategy")
    ```
 
-2. Add a case in `build_pm_strategy()`:
+2. Add to the `builders` dict in `build_pm_strategy()`:
    ```python
-   if name == "pm_my_strategy":
-       return PMMyStrategy(threshold=threshold)
+   builders["pm_my_strategy"] = PMMyStrategy(
+       threshold=Decimal(str(kwargs.get("my_threshold", "0.10"))),
+   )
    ```
 
 ### 4. Add CLI flags (if needed)
@@ -114,6 +115,104 @@ Create `tests/apps/polymarket_bot/strategies/test_my_strategy.py`:
 - Test `on_snapshot()` returns `None` when conditions not met
 - Test `on_snapshot()` returns correct `Signal` when conditions met
 - Test edge cases (empty snapshots, extreme prices, etc.)
+
+## Adding a Backtester Strategy
+
+Backtester strategies operate on OHLCV candle data and are used by the `trading-tools-backtest` CLI.
+
+### 1. Create the strategy module
+
+Create `src/trading_tools/apps/backtester/strategies/my_strategy.py`:
+
+```python
+"""My custom candle-based trading strategy."""
+
+from decimal import Decimal
+
+from trading_tools.core.models import Candle, Signal, Side
+
+ONE = Decimal("1")
+
+
+class MyStrategy:
+    """Implement the strategy logic.
+
+    Args:
+        period: Lookback window for the indicator.
+
+    """
+
+    def __init__(self, period: int = 14) -> None:
+        if period < 2:  # noqa: PLR2004
+            msg = f"period must be >= 2, got {period}"
+            raise ValueError(msg)
+        self._period = period
+
+    @property
+    def name(self) -> str:
+        """Return the strategy identifier."""
+        return f"my_strategy_{self._period}"
+
+    def on_candle(self, candle: Candle, history: list[Candle]) -> Signal | None:
+        """Evaluate a candle and optionally emit a signal.
+
+        Args:
+            candle: The current OHLCV bar.
+            history: All previous candles (oldest first).
+
+        Returns:
+            A ``Signal`` if conditions are met, or ``None``.
+
+        """
+        if len(history) < self._period:
+            return None
+        # Your logic here
+        return None
+```
+
+### 2. Implement `TradingStrategy` protocol
+
+Your strategy must satisfy the protocol from `trading_tools.core.protocols`:
+- `name` property returning a string identifier
+- `on_candle(candle: Candle, history: list[Candle]) -> Signal | None`
+
+Reference `sma_crossover.py` for a minimal working example.
+
+### 3. Register in the factory
+
+Edit `src/trading_tools/apps/backtester/strategy_factory.py`:
+
+1. Import your strategy at the top of the file
+2. Add to `STRATEGY_NAMES`:
+   ```python
+   STRATEGY_NAMES = (..., "my_strategy")
+   ```
+3. Add to the `builders` dict in `build_strategy()`:
+   ```python
+   "my_strategy": lambda: MyStrategy(period=period),
+   ```
+
+### 4. Add CLI flags
+
+Add your strategy's parameters to **all four** backtester CLI commands:
+- `src/trading_tools/apps/backtester/cli/run_cmd.py`
+- `src/trading_tools/apps/backtester/cli/compare_cmd.py`
+- `src/trading_tools/apps/backtester/cli/monte_carlo_cmd.py`
+- `src/trading_tools/apps/backtester/cli/walk_forward_cmd.py`
+
+Each command needs matching `typer.Option()` parameters that are forwarded to `build_strategy()`.
+
+### 5. Write tests
+
+Create `tests/apps/backtester/strategies/test_my_strategy.py`:
+- Test `name` property returns correct string
+- Test `on_candle()` returns `None` when history is too short
+- Test `on_candle()` returns correct `Signal` when conditions are met
+- Test parameter validation (e.g. invalid period raises `ValueError`)
+
+### 6. Update documentation
+
+Add your strategy to the strategy table in `docs/BACKTESTER.md` and `docs/ARCHITECTURE.md`.
 
 ## Adding a Polling Strategy
 

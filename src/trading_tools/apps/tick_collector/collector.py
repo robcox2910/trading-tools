@@ -19,6 +19,7 @@ from trading_tools.apps.tick_collector.models import OrderBookSnapshot, Tick
 from trading_tools.apps.tick_collector.repository import TickRepository
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
+from trading_tools.clients.polymarket.exceptions import PolymarketError
 
 if TYPE_CHECKING:
     from trading_tools.apps.tick_collector.config import CollectorConfig
@@ -213,7 +214,7 @@ class TickCollector:
                         "Discovered %d markets from series slugs",
                         len(discovered),
                     )
-                except Exception:
+                except (PolymarketError, KeyError, ValueError):
                     logger.exception("Series discovery failed")
 
             async def _resolve_one(cid: str) -> list[tuple[str, str]]:
@@ -225,7 +226,7 @@ class TickCollector:
                         for token in market.tokens
                         if token.token_id not in self._condition_map
                     ]
-                except Exception:
+                except (PolymarketError, KeyError, ValueError):
                     logger.exception("Failed to resolve market %s", cid)
                     return []
 
@@ -391,7 +392,7 @@ class TickCollector:
                         book = await client.get_order_book(token_id)
                         snapshot = self._serialize_order_book(token_id, _now_ms(), book)
                         self._book_buffer.append(snapshot)
-                    except Exception:
+                    except (PolymarketError, KeyError, ValueError):
                         logger.debug("Failed to poll order book for %s", token_id)
                     if stagger_s > 0:
                         await asyncio.sleep(stagger_s)

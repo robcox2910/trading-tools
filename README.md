@@ -167,6 +167,7 @@ All code follows TDD (Red-Green-Refactor) and must adhere to DRY and SOLID princ
 - **[Architecture](docs/ARCHITECTURE.md)** — Project structure, design principles, and module responsibilities
 - **[Strategy Guide](docs/STRATEGY_GUIDE.md)** — How to implement and integrate a new trading strategy
 - **[HTTP Client Usage](docs/HTTP_CLIENT_USAGE.md)** — Revolut X HTTP client API reference
+- **[Clients](docs/CLIENTS.md)** — Client module reference for all external API integrations
 - **[Contributing](CONTRIBUTING.md)** — Developer workflow, code standards, and PR process
 
 ## License

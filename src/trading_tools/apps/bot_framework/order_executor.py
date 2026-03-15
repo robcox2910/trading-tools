@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from trading_tools.clients.polymarket.exceptions import PolymarketError
 from trading_tools.clients.polymarket.models import OrderRequest, OrderResponse
 
 if TYPE_CHECKING:
@@ -79,6 +80,6 @@ class OrderExecutor:
 
         try:
             return await self.client.place_order(request)
-        except Exception:
+        except (PolymarketError, KeyError, ValueError):
             logger.exception("Order failed for token %s", token_id[:12])
             return None

@@ -14,6 +14,10 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+import httpx
+
+from trading_tools.clients.polymarket.exceptions import PolymarketError
+
 if TYPE_CHECKING:
     from trading_tools.clients.polymarket.client import PolymarketClient
 
@@ -57,8 +61,8 @@ class PositionRedeemer:
 
         try:
             redeemable = await self.client.get_redeemable_positions()
-        except Exception:
-            logger.warning("Failed to discover redeemable positions", exc_info=True)
+        except (PolymarketError, httpx.HTTPError, KeyError, ValueError):
+            logger.warning("Failed to discover redeemable positions")
             return
 
         if not redeemable:
@@ -99,8 +103,8 @@ class PositionRedeemer:
                 redeemed,
                 len(condition_ids),
             )
-        except Exception:
-            logger.warning("CTF redemption failed", exc_info=True)
+        except (PolymarketError, httpx.HTTPError, OSError):
+            logger.warning("CTF redemption failed")
 
     @property
     def task(self) -> asyncio.Task[None] | None:

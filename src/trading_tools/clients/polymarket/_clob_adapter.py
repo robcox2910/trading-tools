@@ -87,7 +87,7 @@ def _safe_clob_call(
             msg=f"Failed to {action}: {exc}",
             status_code=HTTP_INTERNAL_ERROR,
         ) from exc
-    except Exception as exc:
+    except (KeyError, ValueError, TypeError, OSError) as exc:
         raise PolymarketAPIError(
             msg=f"Failed to {action}: {exc}",
             status_code=HTTP_INTERNAL_ERROR,
@@ -575,7 +575,7 @@ def get_onchain_usdc_balance(rpc_url: str, wallet_address: str) -> int:
         balance: int = usdc.functions.balanceOf(
             Web3.to_checksum_address(wallet_address),
         ).call()
-    except Exception as exc:
+    except (KeyError, ValueError, TypeError, OSError) as exc:
         raise PolymarketAPIError(
             msg=f"Failed to query on-chain USDC.e balance: {exc}",
             status_code=None,
