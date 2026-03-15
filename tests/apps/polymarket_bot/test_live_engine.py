@@ -335,7 +335,7 @@ class TestLiveTradingEngine:
         engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         # Set shutdown before running
-        engine._shutdown = True
+        engine._shutdown.request()
 
         result = await engine.run(max_ticks=100)
 

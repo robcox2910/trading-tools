@@ -36,8 +36,10 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from trading_tools.apps.bot_framework.balance_manager import BalanceManager
+from trading_tools.apps.bot_framework.heartbeat import HeartbeatLogger
 from trading_tools.apps.bot_framework.order_executor import OrderExecutor
 from trading_tools.apps.bot_framework.redeemer import PositionRedeemer
+from trading_tools.apps.bot_framework.shutdown import GracefulShutdown
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.core.models import ZERO, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
@@ -53,7 +55,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_HEARTBEAT_INTERVAL = 60
 _BALANCE_REFRESH_POLLS = 60
 _WIN_PRICE = Decimal("1.0")
 _MIN_TOKEN_QTY = Decimal(5)
@@ -97,8 +98,8 @@ class WhaleCopyTrader:
     _positions: dict[str, OpenPosition] = field(default_factory=_empty_position_dict, repr=False)
     _results: list[CopyResult] = field(default_factory=_empty_result_list, repr=False)
     _poll_count: int = field(default=0, repr=False)
-    _running: bool = field(default=False, repr=False)
-    _last_heartbeat: float = field(default=0.0, repr=False)
+    _shutdown: GracefulShutdown = field(default_factory=GracefulShutdown, init=False, repr=False)
+    _heartbeat: HeartbeatLogger = field(default_factory=HeartbeatLogger, init=False, repr=False)
     _redeemer: PositionRedeemer | None = field(default=None, init=False, repr=False)
     _executor: OrderExecutor | None = field(default=None, init=False, repr=False)
     _balance_manager: BalanceManager | None = field(default=None, init=False, repr=False)
@@ -129,7 +130,7 @@ class WhaleCopyTrader:
             max_window_seconds=self.config.max_window_seconds,
         )
         self._binance = BinanceClient()
-        self._running = True
+        self._shutdown.install()
 
         if self.live and self._balance_manager is not None:
             await self._balance_manager.refresh()
@@ -155,21 +156,20 @@ class WhaleCopyTrader:
         )
 
         try:
-            while self._running:
+            while not self._shutdown.should_stop:
                 await self._poll_cycle()
-                self._maybe_log_heartbeat()
+                self._log_heartbeat()
                 await asyncio.sleep(self.config.poll_interval)
         except (KeyboardInterrupt, asyncio.CancelledError):
-            logger.info("whale-copy shutting down gracefully")
+            pass
         finally:
-            self._running = False
             self._log_summary()
             await self._binance.close()
             await self._detector.close()
 
     def stop(self) -> None:
         """Signal the polling loop to stop after the current cycle."""
-        self._running = False
+        self._shutdown.request()
 
     def _get_capital(self) -> Decimal:
         """Return the current capital available for position sizing.
@@ -558,25 +558,18 @@ class WhaleCopyTrader:
 
         return winning_side
 
-    def _maybe_log_heartbeat(self) -> None:
-        """Log a heartbeat message if the interval has elapsed."""
-        now = time.monotonic()
-        if now - self._last_heartbeat >= _HEARTBEAT_INTERVAL:
-            self._last_heartbeat = now
-            total_pnl = sum(r.pnl for r in self._results)
-            assert self._detector is not None  # noqa: S101
-            window_trades = self._detector.window_size
-            unhedged = sum(1 for p in self._positions.values() if p.state == PositionState.UNHEDGED)
-            hedged = sum(1 for p in self._positions.values() if p.state == PositionState.HEDGED)
-            logger.info(
-                "HEARTBEAT polls=%d window_trades=%d unhedged=%d hedged=%d closed=%d pnl=$%.2f",
-                self._poll_count,
-                window_trades,
-                unhedged,
-                hedged,
-                len(self._results),
-                total_pnl,
-            )
+    def _log_heartbeat(self) -> None:
+        """Emit a heartbeat via the shared HeartbeatLogger."""
+        assert self._detector is not None  # noqa: S101
+        total_pnl = sum(r.pnl for r in self._results)
+        self._heartbeat.maybe_log(
+            polls=self._poll_count,
+            window_trades=self._detector.window_size,
+            unhedged=sum(1 for p in self._positions.values() if p.state == PositionState.UNHEDGED),
+            hedged=sum(1 for p in self._positions.values() if p.state == PositionState.HEDGED),
+            closed=len(self._results),
+            pnl=float(total_pnl),
+        )
 
     def _log_summary(self) -> None:
         """Log a final session summary on shutdown."""

@@ -354,9 +354,9 @@ class TestWhaleCopyTrader:
 
     @pytest.mark.asyncio
     async def test_stop_signals_shutdown(self, trader: WhaleCopyTrader) -> None:
-        """Calling stop() causes the run loop to exit."""
+        """Calling stop() sets the shutdown flag."""
         trader.stop()
-        assert not trader._running
+        assert trader._shutdown.should_stop
 
     @pytest.mark.asyncio
     async def test_multiple_signals_same_cycle(self, trader: WhaleCopyTrader) -> None:
