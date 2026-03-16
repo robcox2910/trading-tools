@@ -338,17 +338,34 @@ class PolymarketClient:
             in the specified series.
 
         """
-        resolved_slugs = _resolve_timestamped_slugs(series_slugs, include_next=include_next)
-        all_events = await asyncio.gather(
-            *(self._gamma.get_events(slug=slug, active=False, limit=5) for slug in resolved_slugs)
+        resolved_slugs, hourly_titles = _resolve_timestamped_slugs(
+            series_slugs, include_next=include_next
         )
+
+        tasks: list[Any] = [
+            self._gamma.get_events(slug=slug, active=False, limit=5) for slug in resolved_slugs
+        ]
+        # Hourly markets use title_contains search
+        tasks.extend(
+            self._gamma.get_events(title_contains=title, active=True, limit=5)
+            for title in hourly_titles
+        )
+
+        all_events = await asyncio.gather(*tasks)
         results: list[tuple[str, str]] = []
-        for events in all_events:
+        seen_cids: set[str] = set()
+        slug_result_count = len(resolved_slugs)
+        for idx, events in enumerate(all_events):
+            is_hourly_search = idx >= slug_result_count
             for event in events:
+                # Filter hourly title searches to actual Up/Down markets
+                if is_hourly_search and not _is_updown_event(event.get("title", "")):
+                    continue
                 for market_raw in event.get("markets", []):
                     cid = market_raw.get("conditionId", market_raw.get("condition_id", ""))
                     end_date = market_raw.get("endDate", market_raw.get("end_date", ""))
-                    if cid:
+                    if cid and cid not in seen_cids:
+                        seen_cids.add(cid)
                         results.append((cid, end_date))
         return results
 
@@ -1113,13 +1130,29 @@ _FIVE_MINUTES = 300
 _FIFTEEN_MINUTES = 900
 _FOUR_HOURS = 14400
 
+# Map hourly series base slugs to the asset name used in Gamma event titles
+_HOURLY_SLUG_TO_TITLE: dict[str, str] = {
+    "btc-updown-1h": "Bitcoin Up or Down",
+    "eth-updown-1h": "Ethereum Up or Down",
+    "sol-updown-1h": "Solana Up or Down",
+    "xrp-updown-1h": "XRP Up or Down",
+    "doge-updown-1h": "Dogecoin Up or Down",
+    "bnb-updown-1h": "BNB Up or Down",
+    "hype-updown-1h": "Hyperliquid Up or Down",
+}
+
+
+def _is_updown_event(title: str) -> bool:
+    """Return ``True`` if the event title is an Up/Down crypto market."""
+    return "up or down" in title.lower()
+
 
 def _resolve_timestamped_slugs(
     series_slugs: list[str],
     *,
     include_next: bool = False,
-) -> list[str]:
-    """Expand series slugs into timestamped or title-query slugs for rotating markets.
+) -> tuple[list[str], list[str]]:
+    """Expand series slugs into timestamped slugs and hourly title queries.
 
     Polymarket rotating markets use slugs like ``btc-updown-5m-1771758600``
     where the suffix is the Unix epoch of the current window start.  For
@@ -1137,11 +1170,12 @@ def _resolve_timestamped_slugs(
             slugs for timestamped series.  Other slugs are not duplicated.
 
     Returns:
-        Resolved slugs with epoch suffixes where applicable.
+        Tuple of (resolved_slugs, hourly_title_queries).
 
     """
     now = int(time.time())
     resolved: list[str] = []
+    hourly_titles: list[str] = []
     for slug in series_slugs:
         if slug.endswith("-5m"):
             window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
@@ -1153,6 +1187,8 @@ def _resolve_timestamped_slugs(
             resolved.append(f"{slug}-{window}")
             if include_next:
                 resolved.append(f"{slug}-{window + _FIFTEEN_MINUTES}")
+        elif slug in _HOURLY_SLUG_TO_TITLE:
+            hourly_titles.append(_HOURLY_SLUG_TO_TITLE[slug])
         elif slug.endswith("-4h"):
             window = (now // _FOUR_HOURS) * _FOUR_HOURS
             resolved.append(f"{slug}-{window}")
@@ -1160,7 +1196,7 @@ def _resolve_timestamped_slugs(
                 resolved.append(f"{slug}-{window + _FOUR_HOURS}")
         else:
             resolved.append(slug)
-    return resolved
+    return resolved, hourly_titles
 
 
 def _parse_order_response(raw: dict[str, Any], request: OrderRequest) -> OrderResponse:

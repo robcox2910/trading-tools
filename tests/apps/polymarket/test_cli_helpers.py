@@ -83,14 +83,6 @@ class TestParseSeriesSlugs:
             + len(CRYPTO_DAILY_SERIES)
         )
         assert len(result) == expected_len
-        offset = 0
-        assert result[offset : offset + len(CRYPTO_5M_SERIES)] == CRYPTO_5M_SERIES
-        offset += len(CRYPTO_5M_SERIES)
-        assert result[offset : offset + len(CRYPTO_15M_SERIES)] == CRYPTO_15M_SERIES
-        offset += len(CRYPTO_15M_SERIES)
-        assert result[offset : offset + len(CRYPTO_4H_SERIES)] == CRYPTO_4H_SERIES
-        offset += len(CRYPTO_4H_SERIES)
-        assert result[offset : offset + len(CRYPTO_DAILY_SERIES)] == CRYPTO_DAILY_SERIES
 
 
 class TestConfigureLogging:

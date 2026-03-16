@@ -10,7 +10,6 @@ Also provides ``get_onchain_usdc_balance()`` for querying the proxy
 wallet's on-chain USDC.e balance via a Polygon RPC endpoint.
 """
 
-import logging
 from typing import Any, cast
 
 from eth_account import Account  # type: ignore[import-untyped]
@@ -43,8 +42,6 @@ _ERC20_BALANCE_ABI: list[dict[str, Any]] = [
     },
 ]
 _POLYGON_PROXY_WALLET = 1
-
-_logger = logging.getLogger(__name__)
 
 
 def _safe_clob_call(
@@ -80,7 +77,6 @@ def _safe_clob_call(
         return fn(*args)
     except PolyApiException as exc:
         if allow_404 and getattr(exc, "status_code", None) == HTTP_NOT_FOUND:
-            _logger.debug("404 for %s, returning None", action)
             return None
         raise PolymarketAPIError(
             msg=f"Failed to {action}: {exc}",
