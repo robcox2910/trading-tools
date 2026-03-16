@@ -49,6 +49,7 @@ _PARAM_MAP: tuple[tuple[str, str, bool], ...] = (
     ("max_imbalance_ratio", "max_imbalance_ratio", True),
     ("fill_size_tokens", "fill_size_tokens", True),
     ("max_single_side_pct", "max_single_side_pct", True),
+    ("max_fill_age_pct", "max_fill_age_pct", True),
     # Direct params (int, passed through unchanged)
     ("poll_interval", "poll_interval", False),
     ("max_window", "max_window_seconds", False),
@@ -224,6 +225,10 @@ def spread_capture(
         str | None,
         typer.Option(help="Max fraction of budget on one side before other has fills (e.g. 0.50)"),
     ] = None,
+    max_fill_age_pct: Annotated[
+        str | None,
+        typer.Option(help="Stop filling when market window is past this fraction (e.g. 0.70)"),
+    ] = None,
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
@@ -271,6 +276,7 @@ def spread_capture(
         max_imbalance_ratio=max_imbalance_ratio,
         fill_size_tokens=fill_size_tokens,
         max_single_side_pct=max_single_side_pct,
+        max_fill_age_pct=max_fill_age_pct,
     )
 
     if confirm_live:

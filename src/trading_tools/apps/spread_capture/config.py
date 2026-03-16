@@ -118,6 +118,10 @@ class SpreadCaptureConfig:
             that may be spent on one side before the other side has any
             fills.  Prevents dumping the entire budget into a single
             directional bet.
+        max_fill_age_pct: Maximum fraction of the market window elapsed
+            before fills are stopped on existing positions.  Prevents
+            chasing near-expiry prices where the outcome is already
+            determined and one side has collapsed to near-zero.
 
     """
 
@@ -147,6 +151,7 @@ class SpreadCaptureConfig:
     max_imbalance_ratio: Decimal = Decimal("3.0")
     fill_size_tokens: Decimal = Decimal(5)
     max_single_side_pct: Decimal = Decimal("0.50")
+    max_fill_age_pct: Decimal = Decimal("0.70")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "SpreadCaptureConfig":
