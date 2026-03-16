@@ -54,6 +54,8 @@ class SpreadOpportunity:
         margin: Guaranteed profit per token pair (``1.0 - combined``).
         window_start_ts: UTC epoch seconds when the market window opens.
         window_end_ts: UTC epoch seconds when the market window closes.
+        up_bid_depth: Best bid size (tokens) for Up outcome order book.
+        down_bid_depth: Best bid size (tokens) for Down outcome order book.
 
     """
 
@@ -68,6 +70,19 @@ class SpreadOpportunity:
     margin: Decimal
     window_start_ts: int
     window_end_ts: int
+    up_bid_depth: Decimal = Decimal(0)
+    down_bid_depth: Decimal = Decimal(0)
+
+    @property
+    def fill_score(self) -> Decimal:
+        """Return margin weighted by minimum bid-side liquidity.
+
+        Use the minimum depth across both legs since the spread only
+        works when both fill.  Multiplicative scoring ensures zero-depth
+        markets score zero regardless of margin.
+        """
+        min_depth = min(self.up_bid_depth, self.down_bid_depth)
+        return self.margin * min_depth
 
 
 class SideLeg:
