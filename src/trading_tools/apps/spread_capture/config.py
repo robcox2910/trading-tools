@@ -114,6 +114,10 @@ class SpreadCaptureConfig:
             catches up.
         fill_size_tokens: Base token quantity per individual fill in
             the ``"accumulate"`` strategy.
+        max_single_side_pct: Maximum fraction of the per-market budget
+            that may be spent on one side before the other side has any
+            fills.  Prevents dumping the entire budget into a single
+            directional bet.
 
     """
 
@@ -138,10 +142,11 @@ class SpreadCaptureConfig:
     single_leg_timeout: int = 10
     rediscovery_interval: int = 30
     strategy: str = "simultaneous"
-    per_side_ask_threshold: Decimal = Decimal("0.52")
-    max_combined_vwap: Decimal = Decimal("0.995")
+    per_side_ask_threshold: Decimal = Decimal("0.48")
+    max_combined_vwap: Decimal = Decimal("0.98")
     max_imbalance_ratio: Decimal = Decimal("2.0")
     fill_size_tokens: Decimal = Decimal(10)
+    max_single_side_pct: Decimal = Decimal("0.50")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "SpreadCaptureConfig":

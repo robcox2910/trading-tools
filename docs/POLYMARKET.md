@@ -416,10 +416,11 @@ circuit_breaker_cooldown: 600
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--per-side-ask-threshold` | `0.52` | Maximum ask price to accept for a single side when accumulating independently |
-| `--max-combined-vwap` | `0.995` | Maximum VWAP-weighted combined cost across accumulated fills (must be < 1.0) |
+| `--per-side-ask-threshold` | `0.48` | Maximum ask price to accept for a single side when accumulating independently |
+| `--max-combined-vwap` | `0.98` | Maximum VWAP-weighted combined cost across accumulated fills (must be < 1.0) |
 | `--max-imbalance-ratio` | `2.0` | Maximum ratio of tokens held on one side vs the other before new fills on that side are paused |
 | `--fill-size-tokens` | `10` | Number of tokens to buy per individual fill when accumulating |
+| `--max-single-side-pct` | `0.50` | Max fraction of budget on one side before the other side has any fills (prevents directional bets) |
 
 **Spread detection pipeline:**
 
