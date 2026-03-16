@@ -421,7 +421,7 @@ circuit_breaker_cooldown: 600
 | `--max-imbalance-ratio` | `3.0` | Maximum ratio of tokens held on one side vs the other before new fills on that side are paused |
 | `--fill-size-tokens` | `5` | Number of tokens to buy per individual fill (matches whale median) |
 | `--max-single-side-pct` | `0.50` | Max fraction of budget on one side before the other side has any fills (prevents directional bets) |
-| `--max-fill-age-pct` | `0.70` | Stop filling when market window is past this fraction (prevents chasing near-expiry prices) |
+| `--max-fill-age-pct` | `0.80` | Stop filling when market window is past this fraction (whale median fill is at 60%) |
 
 **Spread detection pipeline:**
 
