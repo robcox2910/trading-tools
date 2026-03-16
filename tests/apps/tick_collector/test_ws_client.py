@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from websockets import ConnectionClosed, frames
+from websockets.exceptions import ConnectionClosed
+from websockets.frames import Close as CloseFrame
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -293,7 +294,7 @@ class TestStreamErrorHandling:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                raise ConnectionClosed(frames.Close(1000, "normal"), None)
+                raise ConnectionClosed(CloseFrame(1000, "normal"), None)
             feed._closed = True
             return
             yield  # type: ignore[misc]
@@ -370,7 +371,7 @@ class TestStreamErrorHandling:
             asset_ids: list[str],  # noqa: ARG001
         ) -> AsyncIterator[dict[str, Any]]:
             feed._closed = True
-            raise ConnectionClosed(frames.Close(1000, "normal"), None)
+            raise ConnectionClosed(CloseFrame(1000, "normal"), None)
             yield  # type: ignore[misc]
 
         event_count = 0
