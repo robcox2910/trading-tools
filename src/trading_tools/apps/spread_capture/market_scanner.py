@@ -134,6 +134,160 @@ class MarketScanner:
         opportunities.sort(key=lambda o: o.margin, reverse=True)
         return opportunities
 
+    async def scan_per_side(
+        self,
+        open_cids: set[str],
+        per_side_ask_threshold: Decimal,
+    ) -> list[SpreadOpportunity]:
+        """Scan for markets where at least one side has a cheap ask price.
+
+        Unlike ``scan()`` which requires a profitable combined spread, this
+        method returns all active markets that pass basic validity checks
+        (not expired, within entry age window) and have at least one side
+        with ``best_ask < per_side_ask_threshold``.  Used by the
+        accumulating strategy to find individual per-side fill opportunities.
+
+        Args:
+            open_cids: Condition IDs of currently open positions (skipped).
+            per_side_ask_threshold: Maximum ask price for a side to be
+                considered fillable.
+
+        Returns:
+            List of ``SpreadOpportunity`` instances sorted by lowest
+            ``min(up_ask, down_ask)``, cheapest first.
+
+        """
+        await self._maybe_rediscover()
+
+        now = int(time.time())
+
+        cids_to_scan = [cid for cid in self._known_markets if cid not in open_cids]
+        results = await asyncio.gather(
+            *(self._evaluate_per_side(cid, now, per_side_ask_threshold) for cid in cids_to_scan),
+            return_exceptions=True,
+        )
+        opportunities = [r for r in results if isinstance(r, SpreadOpportunity)]
+
+        opportunities.sort(key=lambda o: min(o.up_price, o.down_price))
+        return opportunities
+
+    async def _evaluate_per_side(
+        self,
+        cid: str,
+        now: int,
+        threshold: Decimal,
+    ) -> SpreadOpportunity | None:
+        """Evaluate a market for per-side fill suitability.
+
+        Apply only basic validity checks (not expired, entry age) without
+        the combined-cost or margin filters used by ``_evaluate_market()``.
+
+        Args:
+            cid: Market condition identifier.
+            now: Current epoch seconds.
+            threshold: Maximum ask price for a side to be fillable.
+
+        Returns:
+            A ``SpreadOpportunity`` if the market has at least one side
+            with ask below threshold, else ``None``.
+
+        """
+        data = await self._fetch_market_data(cid, now)
+        if data is None:
+            return None
+
+        market, asset, window_start, window_end, up_ask, down_ask, up_depth, down_depth = data
+
+        if window_end <= now:
+            return None
+
+        window_duration = window_end - window_start
+        if self.max_window_seconds > 0 and window_duration > self.max_window_seconds:
+            return None
+
+        if self.max_entry_age_pct > ZERO and window_duration > 0:
+            elapsed_pct = Decimal(str(now - window_start)) / Decimal(str(window_duration))
+            if elapsed_pct > self.max_entry_age_pct:
+                return None
+
+        # At least one side must be below the per-side threshold
+        if up_ask >= threshold and down_ask >= threshold:
+            return None
+
+        tokens_by_outcome = {t.outcome: t for t in market.tokens}
+        up_token = tokens_by_outcome["Up"]
+        down_token = tokens_by_outcome["Down"]
+
+        combined = up_ask + down_ask
+        margin = ONE - combined
+
+        return SpreadOpportunity(
+            condition_id=cid,
+            title=market.question,
+            asset=asset,
+            up_token_id=up_token.token_id,
+            down_token_id=down_token.token_id,
+            up_price=up_ask,
+            down_price=down_ask,
+            combined=combined,
+            margin=margin,
+            window_start_ts=window_start,
+            window_end_ts=window_end,
+            up_ask_depth=up_depth,
+            down_ask_depth=down_depth,
+        )
+
+    async def _fetch_market_data(
+        self, cid: str, now: int
+    ) -> tuple[Market, str, int, int, Decimal, Decimal, Decimal, Decimal] | None:
+        """Fetch and parse market data for a given condition ID.
+
+        Retrieve the market metadata, parse asset and time window from the
+        title, fetch order books for both tokens, and return all data needed
+        for further evaluation.
+
+        Args:
+            cid: Market condition identifier.
+            now: Current epoch seconds.
+
+        Returns:
+            Tuple of ``(market, asset, window_start, window_end, up_ask,
+            down_ask, up_depth, down_depth)`` or ``None`` if any step fails.
+
+        """
+        try:
+            market = await self.client.get_market(cid)
+        except (PolymarketError, httpx.HTTPError, KeyError, ValueError):
+            logger.debug("Failed to fetch market %s", cid[:12])
+            return None
+
+        if not market.active:
+            return None
+
+        asset = parse_asset(market.question)
+        if asset is None:
+            return None
+
+        window = parse_time_window(market.question, now)
+        if window is None:
+            return None
+
+        tokens_by_outcome = {t.outcome: t for t in market.tokens}
+        up_token = tokens_by_outcome.get("Up")
+        down_token = tokens_by_outcome.get("Down")
+        if up_token is None or down_token is None:
+            return None
+
+        up_book, down_book = await self._fetch_order_books(up_token.token_id, down_token.token_id)
+
+        up_ask = up_book.asks[0].price if up_book.asks else up_token.price
+        down_ask = down_book.asks[0].price if down_book.asks else down_token.price
+
+        up_ask_depth = sum((level.size for level in up_book.asks), start=ZERO)
+        down_ask_depth = sum((level.size for level in down_book.asks), start=ZERO)
+
+        return market, asset, window[0], window[1], up_ask, down_ask, up_ask_depth, down_ask_depth
+
     async def _evaluate_market(self, cid: str, now: int) -> SpreadOpportunity | None:
         """Evaluate a single market for spread opportunity.
 
@@ -149,52 +303,23 @@ class MarketScanner:
             A ``SpreadOpportunity`` if the market is tradeable, else ``None``.
 
         """
-        try:
-            market = await self.client.get_market(cid)
-        except (PolymarketError, httpx.HTTPError, KeyError, ValueError):
-            logger.debug("Failed to fetch market %s", cid[:12])
+        data = await self._fetch_market_data(cid, now)
+        if data is None:
             return None
 
-        if not market.active:
-            return None
-
-        # Parse asset and time window from the market title
-        asset = parse_asset(market.question)
-        if asset is None:
-            return None
-
-        window = parse_time_window(market.question, now)
-        if window is None:
-            return None
-
-        # Fetch order books for both tokens to get best ask prices
-        tokens_by_outcome = {t.outcome: t for t in market.tokens}
-        up_token = tokens_by_outcome.get("Up")
-        down_token = tokens_by_outcome.get("Down")
-        if up_token is None or down_token is None:
-            return None
-
-        up_book, down_book = await self._fetch_order_books(up_token.token_id, down_token.token_id)
-
-        # Use best ask price (actual buy cost); fall back to midpoint if no asks
-        up_ask = up_book.asks[0].price if up_book.asks else up_token.price
-        down_ask = down_book.asks[0].price if down_book.asks else down_token.price
-
-        # Compute total visible ask-side depth for market impact cap
-        up_ask_depth = sum((level.size for level in up_book.asks), start=ZERO)
-        down_ask_depth = sum((level.size for level in down_book.asks), start=ZERO)
+        market, asset, window_start, window_end, up_ask, down_ask, up_depth, down_depth = data
 
         return self._check_spread(
             market,
             cid,
             asset,
-            window[0],
-            window[1],
+            window_start,
+            window_end,
             now,
             up_ask_price=up_ask,
             down_ask_price=down_ask,
-            up_ask_depth=up_ask_depth,
-            down_ask_depth=down_ask_depth,
+            up_ask_depth=up_depth,
+            down_ask_depth=down_depth,
         )
 
     def _check_spread(

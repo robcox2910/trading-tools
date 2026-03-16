@@ -62,7 +62,8 @@ trading-tools/
 │   │       ├── models.py            # SpreadOpportunity, SideLeg, PairedPosition, SpreadResult, SpreadResultRecord (ORM)
 │   │       ├── repository.py        # Async SQLAlchemy repository for persisting closed trade results
 │   │       ├── market_scanner.py    # Incremental polling and signal detection
-│   │       └── spread_trader.py     # Temporal spread arbitrage engine
+│   │       ├── spread_trader.py     # Temporal spread arbitrage engine
+│   │       └── accumulating_trader.py # Accumulating spread capture engine — independent per-side fills over time
 │   ├── clients/                     # External API clients
 │   │   ├── revolut_x/               # Revolut X API client
 │   │   │   ├── auth/                # Ed25519 authentication

@@ -102,6 +102,18 @@ class SpreadCaptureConfig:
         single_leg_timeout: Seconds to wait for unfilled side before
             cancelling (live mode only).
         rediscovery_interval: Seconds between market rediscovery calls.
+        strategy: Trading strategy — ``"simultaneous"`` for the original
+            both-sides-at-once approach, ``"accumulate"`` for independent
+            per-side fills over time.
+        per_side_ask_threshold: Buy a side when its best ask is below
+            this price.  Only used by the ``"accumulate"`` strategy.
+        max_combined_vwap: Stop accumulating if the combined VWAP of
+            both legs would exceed this value.
+        max_imbalance_ratio: Maximum quantity ratio between the heavier
+            and lighter legs.  Pause the heavier side until the other
+            catches up.
+        fill_size_tokens: Base token quantity per individual fill in
+            the ``"accumulate"`` strategy.
 
     """
 
@@ -125,6 +137,11 @@ class SpreadCaptureConfig:
     max_open_positions: int = 10
     single_leg_timeout: int = 10
     rediscovery_interval: int = 30
+    strategy: str = "simultaneous"
+    per_side_ask_threshold: Decimal = Decimal("0.52")
+    max_combined_vwap: Decimal = Decimal("0.995")
+    max_imbalance_ratio: Decimal = Decimal("2.0")
+    fill_size_tokens: Decimal = Decimal(10)
 
     @classmethod
     def from_yaml(cls, path: Path) -> "SpreadCaptureConfig":
