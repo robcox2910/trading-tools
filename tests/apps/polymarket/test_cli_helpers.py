@@ -7,7 +7,6 @@ import pytest
 import typer
 
 from trading_tools.apps.polymarket.cli._helpers import (
-    CRYPTO_1H_SERIES,
     CRYPTO_4H_SERIES,
     CRYPTO_5M_SERIES,
     CRYPTO_15M_SERIES,
@@ -64,11 +63,6 @@ class TestParseSeriesSlugs:
         result = parse_series_slugs("crypto-15m")
         assert result == CRYPTO_15M_SERIES
 
-    def test_crypto_1h_shortcut_expands(self) -> None:
-        """Expand the crypto-1h shortcut to all hourly crypto series."""
-        result = parse_series_slugs("crypto-1h")
-        assert result == CRYPTO_1H_SERIES
-
     def test_crypto_4h_shortcut_expands(self) -> None:
         """Expand the crypto-4h shortcut to all crypto 4-hour series."""
         result = parse_series_slugs("crypto-4h")
@@ -80,26 +74,15 @@ class TestParseSeriesSlugs:
         assert result == CRYPTO_DAILY_SERIES
 
     def test_all_shortcuts_combined(self) -> None:
-        """Expand all five crypto shortcuts together."""
-        result = parse_series_slugs("crypto-5m,crypto-15m,crypto-1h,crypto-4h,crypto-daily")
+        """Expand all four crypto shortcuts together."""
+        result = parse_series_slugs("crypto-5m,crypto-15m,crypto-4h,crypto-daily")
         expected_len = (
             len(CRYPTO_5M_SERIES)
             + len(CRYPTO_15M_SERIES)
-            + len(CRYPTO_1H_SERIES)
             + len(CRYPTO_4H_SERIES)
             + len(CRYPTO_DAILY_SERIES)
         )
         assert len(result) == expected_len
-        offset = 0
-        assert result[offset : offset + len(CRYPTO_5M_SERIES)] == CRYPTO_5M_SERIES
-        offset += len(CRYPTO_5M_SERIES)
-        assert result[offset : offset + len(CRYPTO_15M_SERIES)] == CRYPTO_15M_SERIES
-        offset += len(CRYPTO_15M_SERIES)
-        assert result[offset : offset + len(CRYPTO_1H_SERIES)] == CRYPTO_1H_SERIES
-        offset += len(CRYPTO_1H_SERIES)
-        assert result[offset : offset + len(CRYPTO_4H_SERIES)] == CRYPTO_4H_SERIES
-        offset += len(CRYPTO_4H_SERIES)
-        assert result[offset : offset + len(CRYPTO_DAILY_SERIES)] == CRYPTO_DAILY_SERIES
 
 
 class TestConfigureLogging:
