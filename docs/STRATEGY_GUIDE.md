@@ -28,7 +28,7 @@ For strategies that react to real-time price feeds. Used by:
 - Liquidity imbalance (`pm_liquidity_imbalance`)
 - Cross-market arbitrage (`pm_cross_market_arb`)
 
-### Polling-Driven (`SpreadCaptureBot`)
+### Polling-Driven (`SpreadTrader` + `MarketScanner`)
 
 For strategies that react to external data sources (e.g. whale trades in a database). Used by:
 - Spread capture (`spread_capture`)
@@ -66,11 +66,18 @@ class PMMyStrategy:
         """Return the strategy identifier."""
         return "pm_my_strategy"
 
-    def on_snapshot(self, snapshot: MarketSnapshot) -> Signal | None:
+    def on_snapshot(
+        self,
+        snapshot: MarketSnapshot,
+        history: list[MarketSnapshot],
+        related: list[MarketSnapshot] | None = None,
+    ) -> Signal | None:
         """Evaluate a market snapshot and optionally emit a signal.
 
         Args:
             snapshot: Current market state.
+            history: Previous snapshots for this market (oldest first).
+            related: Snapshots for correlated markets, if available.
 
         Returns:
             A ``Signal`` if conditions are met, or ``None``.
@@ -84,7 +91,7 @@ class PMMyStrategy:
 
 Your strategy must have:
 - `name` property returning a string identifier
-- `on_snapshot(snapshot: MarketSnapshot) -> Signal | None`
+- `on_snapshot(snapshot: MarketSnapshot, history: list[MarketSnapshot], related: list[MarketSnapshot] | None = None) -> Signal | None`
 
 Reference `late_snipe.py` for a minimal working example.
 
