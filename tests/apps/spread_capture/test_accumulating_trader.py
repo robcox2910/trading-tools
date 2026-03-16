@@ -158,11 +158,11 @@ class TestFillDecisions:
         result = trader._should_fill_side(pos, "Up", Decimal("0.95"), _QTY)
         assert result is False
 
-    async def test_stops_when_combined_vwap_exceeds_max(self) -> None:
-        """Block fill when hypothetical combined VWAP exceeds max_combined_vwap."""
+    async def test_blocks_fill_that_worsens_vwap_above_target(self) -> None:
+        """Block fill when it would raise combined VWAP further above target."""
         config = _make_config(max_combined_vwap=Decimal("0.90"))
         trader = _make_trader(config=config)
-        # Position already has fills with high VWAPs
+        # Combined VWAP already at 0.95, above the 0.90 target
         pos = _make_accum_position(
             up_price=Decimal("0.50"),
             up_qty=Decimal(10),
@@ -171,9 +171,45 @@ class TestFillDecisions:
             budget=Decimal(50),
         )
 
-        # Adding more Up at 0.47 would make combined = ~0.485 + 0.45 = 0.935 > 0.90
-        result = trader._should_fill_side(pos, "Up", Decimal("0.47"), _QTY)
+        # Adding more Up at 0.55 would raise Up VWAP → worsens combined → BLOCK
+        result = trader._should_fill_side(pos, "Up", Decimal("0.55"), _QTY)
         assert result is False
+
+    async def test_allows_fill_that_improves_vwap_above_target(self) -> None:
+        """Allow fill when it lowers combined VWAP even if still above target."""
+        config = _make_config(max_combined_vwap=Decimal("0.90"))
+        trader = _make_trader(config=config)
+        # Combined VWAP at 0.95, above the 0.90 target
+        pos = _make_accum_position(
+            up_price=Decimal("0.50"),
+            up_qty=Decimal(10),
+            down_price=Decimal("0.45"),
+            down_qty=Decimal(10),
+            budget=Decimal(50),
+        )
+
+        # Adding more Up at 0.40 lowers Up VWAP → improves combined → ALLOW
+        result = trader._should_fill_side(pos, "Up", Decimal("0.40"), _QTY)
+        assert result is True
+
+    async def test_allows_second_side_first_fill(self) -> None:
+        """Allow the first fill on the second side even at market rate.
+
+        The whale edge comes from time-averaging dips, not from requiring
+        the second side to be below the VWAP target on the very first fill.
+        """
+        trader = _make_trader()
+        # Up side already filled at 0.50, Down side empty
+        pos = _make_accum_position(
+            up_price=Decimal("0.50"),
+            up_qty=Decimal(5),
+            budget=Decimal(20),
+        )
+
+        # Filling Down at 0.50 → hyp_vwap = 0.50 + 0.50 = 1.00 > 0.97 target
+        # But since Down has zero fills, hypothetical returns 0 → check skipped
+        result = trader._should_fill_side(pos, "Down", Decimal("0.50"), _QTY)
+        assert result is True
 
     async def test_imbalance_ratio_blocks_heavy_side(self) -> None:
         """Pause heavier side until other catches up."""
