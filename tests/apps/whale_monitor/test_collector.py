@@ -332,8 +332,7 @@ class TestWhaleMonitorEndToEnd:
         mock_repo.close = AsyncMock()
         monitor._repo = mock_repo
 
-        with patch("asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value = MagicMock()
+        with patch.object(monitor._shutdown, "install"):
             await monitor.run()
 
         mock_repo.close.assert_awaited_once()
@@ -369,11 +368,10 @@ class TestWhaleMonitorEndToEnd:
                 monitor._shutdown.request()
 
         with (
-            patch("asyncio.get_running_loop") as mock_loop,
+            patch.object(monitor._shutdown, "install"),
             patch("asyncio.sleep", side_effect=mock_sleep),
             patch("httpx.AsyncClient") as mock_http_cls,
         ):
-            mock_loop.return_value = MagicMock()
             mock_http = AsyncMock()
             mock_http.get = AsyncMock(return_value=mock_response)
             mock_http.__aenter__ = AsyncMock(return_value=mock_http)
@@ -415,4 +413,4 @@ class TestWhaleMonitorEndToEnd:
             await monitor._periodic_heartbeat()
 
         assert monitor._trades_since_heartbeat == 0
-        assert "WHALE-MONITOR" in caplog.text
+        assert "HEARTBEAT" in caplog.text
