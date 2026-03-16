@@ -359,13 +359,9 @@ class TestWhaleMonitorEndToEnd:
         mock_response.json.return_value = [make_raw_trade()]
         mock_response.raise_for_status = MagicMock()
 
-        call_count = 0
-
         async def mock_sleep(delay: float) -> None:  # noqa: ARG001
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 1:
-                monitor._shutdown.request()
+            # Request shutdown on every sleep call to ensure the loop exits
+            monitor._shutdown.request()
 
         with (
             patch.object(monitor._shutdown, "install"),

@@ -328,10 +328,6 @@ class PolymarketClient:
         ``include_next`` is ``True``, the next window slug is also resolved
         so the collector can subscribe before the window opens.
 
-        For hourly markets (slugs ending in ``-1h``), discovery uses
-        ``title_contains`` search on the Gamma API since these events use
-        date-based slugs rather than epoch timestamps.
-
         Args:
             series_slugs: Event slugs to search (e.g. ``["btc-updown-5m"]``).
             include_next: When ``True``, also resolve the next 5-minute window
@@ -342,34 +338,17 @@ class PolymarketClient:
             in the specified series.
 
         """
-        resolved_slugs, hourly_titles = _resolve_timestamped_slugs(
-            series_slugs, include_next=include_next
+        resolved_slugs = _resolve_timestamped_slugs(series_slugs, include_next=include_next)
+        all_events = await asyncio.gather(
+            *(self._gamma.get_events(slug=slug, active=False, limit=5) for slug in resolved_slugs)
         )
-
-        tasks: list[Any] = [
-            self._gamma.get_events(slug=slug, active=False, limit=5) for slug in resolved_slugs
-        ]
-        # Hourly markets use title_contains search
-        tasks.extend(
-            self._gamma.get_events(title_contains=title, active=True, limit=5)
-            for title in hourly_titles
-        )
-
-        all_events = await asyncio.gather(*tasks)
         results: list[tuple[str, str]] = []
-        seen_cids: set[str] = set()
-        slug_result_count = len(resolved_slugs)
-        for idx, events in enumerate(all_events):
-            is_hourly_search = idx >= slug_result_count
+        for events in all_events:
             for event in events:
-                # Filter hourly title searches to actual Up/Down markets
-                if is_hourly_search and not _is_updown_event(event.get("title", "")):
-                    continue
                 for market_raw in event.get("markets", []):
                     cid = market_raw.get("conditionId", market_raw.get("condition_id", ""))
                     end_date = market_raw.get("endDate", market_raw.get("end_date", ""))
-                    if cid and cid not in seen_cids:
-                        seen_cids.add(cid)
+                    if cid:
                         results.append((cid, end_date))
         return results
 
@@ -1132,40 +1111,24 @@ def _safe_decimal(value: Any) -> Decimal:
 
 _FIVE_MINUTES = 300
 _FIFTEEN_MINUTES = 900
-
-# Map hourly series base slugs to the asset name used in Gamma event titles
-_HOURLY_SLUG_TO_TITLE: dict[str, str] = {
-    "btc-updown-1h": "Bitcoin Up or Down",
-    "eth-updown-1h": "Ethereum Up or Down",
-    "sol-updown-1h": "Solana Up or Down",
-    "xrp-updown-1h": "XRP Up or Down",
-    "doge-updown-1h": "Dogecoin Up or Down",
-    "bnb-updown-1h": "BNB Up or Down",
-    "hype-updown-1h": "Hyperliquid Up or Down",
-}
-
-
-def _is_updown_event(title: str) -> bool:
-    """Return ``True`` if the event title is an Up/Down crypto market."""
-    return "up or down" in title.lower()
+_FOUR_HOURS = 14400
 
 
 def _resolve_timestamped_slugs(
     series_slugs: list[str],
     *,
     include_next: bool = False,
-) -> tuple[list[str], list[str]]:
-    """Expand series slugs into timestamped slugs and hourly title queries.
+) -> list[str]:
+    """Expand series slugs into timestamped or title-query slugs for rotating markets.
 
     Polymarket rotating markets use slugs like ``btc-updown-5m-1771758600``
     where the suffix is the Unix epoch of the current window start.  For
-    slugs ending in ``-5m`` or ``-15m``, compute the current window epoch
-    (aligned to 300s or 900s respectively) and append it.  When
+    slugs ending in ``-5m``, ``-15m``, or ``-4h``, compute the current
+    window epoch (aligned to 300s, 900s, or 14400s respectively) and append
+    it.  Slugs ending in ``-daily`` are passed through unchanged (they use
+    title-based discovery rather than epoch suffixes).  When
     ``include_next`` is ``True``, also emit the next window slug so the
     collector can discover upcoming markets before they open.
-
-    For hourly slugs (ending in ``-1h``), return title search strings
-    instead of timestamped slugs, since hourly events use date-based slugs.
     Other slugs are passed through unchanged.
 
     Args:
@@ -1174,12 +1137,11 @@ def _resolve_timestamped_slugs(
             slugs for timestamped series.  Other slugs are not duplicated.
 
     Returns:
-        Tuple of (resolved_slugs, hourly_title_queries).
+        Resolved slugs with epoch suffixes where applicable.
 
     """
     now = int(time.time())
     resolved: list[str] = []
-    hourly_titles: list[str] = []
     for slug in series_slugs:
         if slug.endswith("-5m"):
             window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
@@ -1191,11 +1153,14 @@ def _resolve_timestamped_slugs(
             resolved.append(f"{slug}-{window}")
             if include_next:
                 resolved.append(f"{slug}-{window + _FIFTEEN_MINUTES}")
-        elif slug in _HOURLY_SLUG_TO_TITLE:
-            hourly_titles.append(_HOURLY_SLUG_TO_TITLE[slug])
+        elif slug.endswith("-4h"):
+            window = (now // _FOUR_HOURS) * _FOUR_HOURS
+            resolved.append(f"{slug}-{window}")
+            if include_next:
+                resolved.append(f"{slug}-{window + _FOUR_HOURS}")
         else:
             resolved.append(slug)
-    return resolved, hourly_titles
+    return resolved
 
 
 def _parse_order_response(raw: dict[str, Any], request: OrderRequest) -> OrderResponse:

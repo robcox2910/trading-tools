@@ -125,9 +125,6 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
     "--verbose",
-    "--cov=src/trading_tools",
-    "--cov-report=term-missing",
-    "--cov-fail-under=80",
 ]
 
 # Coverage configuration

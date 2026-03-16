@@ -128,7 +128,7 @@ class WhaleMonitor:
                             whale.address[:10],
                         )
 
-            if not self._shutdown:
+            if not self._shutdown.should_stop:
                 await asyncio.sleep(self._config.poll_interval_seconds)
 
     async def _poll_whale(self, client: httpx.AsyncClient, address: str) -> int:
