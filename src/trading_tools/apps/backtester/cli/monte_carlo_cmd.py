@@ -22,7 +22,7 @@ from trading_tools.apps.backtester.cli.run_cmd import run_backtest
 from trading_tools.apps.backtester.monte_carlo import run_monte_carlo
 
 
-def monte_carlo_cmd(  # noqa: PLR0913
+def monte_carlo_cmd(
     source: Annotated[
         str,
         typer.Option(
@@ -121,7 +121,7 @@ def monte_carlo_cmd(  # noqa: PLR0913
     )
 
 
-async def _monte_carlo(  # noqa: PLR0913
+async def _monte_carlo(
     *,
     source: str,
     csv: Path | None,
