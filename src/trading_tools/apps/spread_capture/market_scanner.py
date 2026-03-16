@@ -11,6 +11,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -19,7 +20,7 @@ import httpx
 from trading_tools.apps.spread_capture.models import SpreadOpportunity
 from trading_tools.apps.whale_monitor.correlator import parse_asset, parse_time_window
 from trading_tools.clients.polymarket.exceptions import PolymarketError
-from trading_tools.core.models import ZERO
+from trading_tools.core.models import ONE, ZERO
 
 if TYPE_CHECKING:
     from trading_tools.clients.polymarket.client import PolymarketClient
@@ -27,7 +28,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_ONE = Decimal(1)
+
+def _is_expired(end_date: str, now_epoch: int) -> bool:
+    """Return True if the ISO-8601 end_date is in the past.
+
+    Args:
+        end_date: ISO-8601 date string from the Gamma API.
+        now_epoch: Current epoch seconds.
+
+    Returns:
+        ``True`` if the market has expired.
+
+    """
+    try:
+        dt = datetime.fromisoformat(end_date)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.timestamp() < now_epoch
+    except (ValueError, OSError):
+        return False
 
 
 def _empty_market_dict() -> dict[str, _KnownMarket]:
@@ -97,15 +116,13 @@ class MarketScanner:
         await self._maybe_rediscover()
 
         now = int(time.time())
-        opportunities: list[SpreadOpportunity] = []
 
-        for cid in list(self._known_markets):
-            if cid in open_cids:
-                continue
-
-            opp = await self._evaluate_market(cid, now)
-            if opp is not None:
-                opportunities.append(opp)
+        cids_to_scan = [cid for cid in self._known_markets if cid not in open_cids]
+        results = await asyncio.gather(
+            *(self._evaluate_market(cid, now) for cid in cids_to_scan),
+            return_exceptions=True,
+        )
+        opportunities = [r for r in results if isinstance(r, SpreadOpportunity)]
 
         # Sort by highest margin first
         opportunities.sort(key=lambda o: o.margin, reverse=True)
@@ -228,7 +245,7 @@ class MarketScanner:
             return None
 
         combined = up_price + down_price
-        margin = _ONE - combined
+        margin = ONE - combined
 
         if combined >= self.max_combined_cost:
             return None
@@ -282,15 +299,29 @@ class MarketScanner:
             logger.warning("Market rediscovery failed")
             return
 
+        # Bug fix #1: compute new count BEFORE insertion (otherwise they
+        # are already in _known_markets and the count is always 0).
+        new_count = sum(1 for c, _ in discovered if c not in self._known_markets)
+
         for cid, end_date in discovered:
             if cid not in self._known_markets:
                 self._known_markets[cid] = _KnownMarket(condition_id=cid, end_date=end_date)
 
+        # Bug fix #6: purge markets past their end_date to prevent unbounded
+        # growth of _known_markets.
+        now_epoch = int(time.time())
+        expired = [
+            cid for cid, km in self._known_markets.items() if _is_expired(km.end_date, now_epoch)
+        ]
+        for cid in expired:
+            del self._known_markets[cid]
+
         self._last_discovery = now
         logger.debug(
-            "Rediscovered markets: %d total, %d new",
+            "Rediscovered markets: %d total, %d new, %d purged",
             len(discovered),
-            sum(1 for c, _ in discovered if c not in self._known_markets),
+            new_count,
+            len(expired),
         )
 
     @property

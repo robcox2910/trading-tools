@@ -9,10 +9,10 @@ import pytest
 
 from trading_tools.apps.whale_monitor.collector import (
     WhaleMonitor,
-    _now_ms,
     _parse_trade,
 )
 from trading_tools.apps.whale_monitor.config import WhaleMonitorConfig
+from trading_tools.core.timestamps import now_ms
 
 from .conftest import DEFAULT_ADDRESS, make_raw_trade, make_tracked_whale, make_whale_config
 
@@ -70,17 +70,17 @@ class TestParseTrade:
 
 
 class TestNowMs:
-    """Tests for the _now_ms utility."""
+    """Tests for the now_ms utility."""
 
     def test_returns_positive_integer(self) -> None:
-        """Verify _now_ms returns a positive integer."""
-        result = _now_ms()
+        """Verify now_ms returns a positive integer."""
+        result = now_ms()
         assert isinstance(result, int)
         assert result > 0
 
     def test_returns_milliseconds(self) -> None:
         """Verify the value is in milliseconds (> 1e12 for modern epochs)."""
-        result = _now_ms()
+        result = now_ms()
         assert result > _MIN_EPOCH_MS
 
 
@@ -160,16 +160,16 @@ class TestParseTradeEdgeCases:
 
 
 class TestHandleShutdown:
-    """Tests for the shutdown signal handler."""
+    """Tests for the GracefulShutdown integration."""
 
     def test_sets_shutdown_flag(self) -> None:
-        """Verify _handle_shutdown sets the shutdown flag."""
+        """Verify request() sets the should_stop flag."""
         config = make_whale_config()
         monitor = WhaleMonitor(config)
 
-        monitor._handle_shutdown()
+        monitor._shutdown.request()
 
-        assert monitor._shutdown is True
+        assert monitor._shutdown.should_stop is True
 
 
 class TestPollWhale:
@@ -332,8 +332,7 @@ class TestWhaleMonitorEndToEnd:
         mock_repo.close = AsyncMock()
         monitor._repo = mock_repo
 
-        with patch("asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value = MagicMock()
+        with patch.object(monitor._shutdown, "install"):
             await monitor.run()
 
         mock_repo.close.assert_awaited_once()
@@ -360,20 +359,15 @@ class TestWhaleMonitorEndToEnd:
         mock_response.json.return_value = [make_raw_trade()]
         mock_response.raise_for_status = MagicMock()
 
-        call_count = 0
-
         async def mock_sleep(delay: float) -> None:  # noqa: ARG001
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 1:
-                monitor._shutdown = True
+            # Request shutdown on every sleep call to ensure the loop exits
+            monitor._shutdown.request()
 
         with (
-            patch("asyncio.get_running_loop") as mock_loop,
+            patch.object(monitor._shutdown, "install"),
             patch("asyncio.sleep", side_effect=mock_sleep),
             patch("httpx.AsyncClient") as mock_http_cls,
         ):
-            mock_loop.return_value = MagicMock()
             mock_http = AsyncMock()
             mock_http.get = AsyncMock(return_value=mock_response)
             mock_http.__aenter__ = AsyncMock(return_value=mock_http)
@@ -406,7 +400,7 @@ class TestWhaleMonitorEndToEnd:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
-                monitor._shutdown = True
+                monitor._shutdown.request()
 
         with (
             patch("asyncio.sleep", side_effect=fast_sleep),
@@ -415,4 +409,4 @@ class TestWhaleMonitorEndToEnd:
             await monitor._periodic_heartbeat()
 
         assert monitor._trades_since_heartbeat == 0
-        assert "WHALE-MONITOR" in caplog.text
+        assert "HEARTBEAT" in caplog.text

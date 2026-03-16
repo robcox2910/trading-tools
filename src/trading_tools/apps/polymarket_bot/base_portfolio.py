@@ -73,7 +73,15 @@ class BasePortfolio(ABC):
 
     @property
     def total_equity(self) -> Decimal:
-        """Return total equity: cash plus mark-to-market value of all positions."""
+        """Return total equity: cash + mark-to-market value of all positions.
+
+        Decomposition:
+        - ``cash`` — liquid capital not deployed in positions
+        - ``cost_basis`` — total entry cost of all open positions
+        - ``unrealised`` — floating P&L at current mark prices
+
+        ``total_equity = cash + cost_basis + unrealised``
+        """
         unrealised = ZERO
         for cid, pos in self._positions.items():
             mark_price = self._mark_prices.get(cid, pos.entry_price)
@@ -81,11 +89,11 @@ class BasePortfolio(ABC):
                 unrealised += (mark_price - pos.entry_price) * pos.quantity
             else:
                 unrealised += (pos.entry_price - mark_price) * pos.quantity
-        return (
-            self._get_cash_balance()
-            + unrealised
-            + sum(pos.entry_price * pos.quantity for pos in self._positions.values())
+        cost_basis = sum(
+            (pos.entry_price * pos.quantity for pos in self._positions.values()),
+            start=ZERO,
         )
+        return self._get_cash_balance() + cost_basis + unrealised
 
     @property
     def positions(self) -> dict[str, Position]:

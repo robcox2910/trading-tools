@@ -35,7 +35,7 @@ Params:
 
 from decimal import Decimal
 
-from trading_tools.apps.backtester.indicators import ema_from_values
+from trading_tools.apps.backtester.indicators import detect_crossover, ema_from_values
 from trading_tools.core.models import ONE, TWO, Candle, Side, Signal
 
 
@@ -93,14 +93,15 @@ class EmaCrossoverStrategy:
         self._candle_count = all_count
         self._seeded = True
 
-        if prev_short <= prev_long and curr_short > curr_long:
+        cross = detect_crossover(prev_short, curr_short, prev_long, curr_long)
+        if cross == 1:
             return Signal(
                 side=Side.BUY,
                 symbol=candle.symbol,
                 strength=ONE,
                 reason=f"EMA{self._short_period} crossed above EMA{self._long_period}",
             )
-        if prev_short >= prev_long and curr_short < curr_long:
+        if cross == -1:
             return Signal(
                 side=Side.SELL,
                 symbol=candle.symbol,

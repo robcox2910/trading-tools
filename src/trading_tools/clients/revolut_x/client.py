@@ -76,9 +76,11 @@ class RevolutXClient:
         base_url = get_config().get("revolut_x.base_url", "https://revx.revolut.com/api/1.0")
 
         # Load private key
-        private_key = Ed25519Signer.load_private_key_from_file(
-            get_config().get("revolut_x.private_key_path")
-        )
+        private_key_path = get_config().get("revolut_x.private_key_path")
+        if not private_key_path:
+            msg = "revolut_x.private_key_path is not configured"
+            raise ValueError(msg)
+        private_key = Ed25519Signer.load_private_key_from_file(private_key_path)
 
         return cls(
             api_key=api_key,

@@ -28,7 +28,7 @@ from trading_tools.apps.bot_framework.redeemer import PositionRedeemer
 from trading_tools.apps.bot_framework.shutdown import GracefulShutdown
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.clients.binance.exceptions import BinanceError
-from trading_tools.core.models import ZERO, Interval
+from trading_tools.core.models import ONE, ZERO, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
 from .market_scanner import MarketScanner
@@ -52,7 +52,6 @@ logger = logging.getLogger(__name__)
 _BALANCE_REFRESH_POLLS = 60
 _WIN_PRICE = Decimal("1.0")
 _MIN_TOKEN_QTY = Decimal(5)
-_ONE = Decimal(1)
 _SUMMARY_INTERVAL = 900  # 15 minutes
 
 
@@ -301,8 +300,8 @@ class SpreadTrader:
         up_price = opp.up_price
         down_price = opp.down_price
         if not self.live and self.config.paper_slippage_pct > ZERO:
-            up_price = up_price * (_ONE + self.config.paper_slippage_pct)
-            down_price = down_price * (_ONE + self.config.paper_slippage_pct)
+            up_price = up_price * (ONE + self.config.paper_slippage_pct)
+            down_price = down_price * (ONE + self.config.paper_slippage_pct)
 
         up_cost = up_price * qty
         down_cost = down_price * qty
@@ -395,7 +394,7 @@ class SpreadTrader:
             up_price,
             down_price,
             combined_actual,
-            _ONE - combined_actual,
+            ONE - combined_actual,
             qty,
             up_cost + down_cost,
             opp.asset,
@@ -721,7 +720,13 @@ class SpreadTrader:
 
         open_price = candles[0].open
         close_price = candles[-1].close
-        winning_side = "Up" if close_price > open_price else "Down"
+        if close_price > open_price:
+            winning_side = "Up"
+        elif close_price < open_price:
+            winning_side = "Down"
+        else:
+            # Flat market — no clear winner; conservative path handles None
+            winning_side = None
 
         logger.info(
             "  SPOT %s open=%.2f close=%.2f direction=%s",
@@ -759,7 +764,7 @@ class SpreadTrader:
 
     def _log_heartbeat(self) -> None:
         """Emit a heartbeat via the shared HeartbeatLogger."""
-        total_pnl = sum(r.pnl for r in self._results)
+        total_pnl = sum((r.pnl for r in self._results), start=ZERO)
         scanner_markets = self._scanner.known_market_count if self._scanner else 0
         self._heartbeat.maybe_log(
             polls=self._poll_count,
@@ -774,7 +779,7 @@ class SpreadTrader:
 
     def _log_periodic_summary(self) -> None:
         """Log a detailed session summary every 15 minutes."""
-        total_pnl = sum(r.pnl for r in self._results)
+        total_pnl = sum((r.pnl for r in self._results), start=ZERO)
         wins = sum(1 for r in self._results if r.pnl > ZERO)
         losses = sum(1 for r in self._results if r.pnl < ZERO)
         win_rate = (wins / len(self._results) * 100) if self._results else 0.0
@@ -816,7 +821,7 @@ class SpreadTrader:
 
     def _log_summary(self) -> None:
         """Log a final session summary on shutdown."""
-        total_pnl = sum(r.pnl for r in self._results)
+        total_pnl = sum((r.pnl for r in self._results), start=ZERO)
         logger.info(
             "SESSION SUMMARY polls=%d closed=%d open=%d pnl=%.4f",
             self._poll_count,

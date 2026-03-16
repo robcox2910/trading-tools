@@ -347,5 +347,5 @@ class TestBotCommand:
         # Should have expanded crypto-5m into 4 slugs
         mock_client.discover_series_markets.assert_called_once()
         slugs = mock_client.discover_series_markets.call_args[0][0]
-        expected_slug_count = 4
+        expected_slug_count = 7
         assert len(slugs) == expected_slug_count

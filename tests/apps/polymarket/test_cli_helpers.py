@@ -7,9 +7,10 @@ import pytest
 import typer
 
 from trading_tools.apps.polymarket.cli._helpers import (
-    CRYPTO_1H_SERIES,
+    CRYPTO_4H_SERIES,
     CRYPTO_5M_SERIES,
     CRYPTO_15M_SERIES,
+    CRYPTO_DAILY_SERIES,
     StrategyParams,
     build_authenticated_client,
     configure_logging,
@@ -62,24 +63,34 @@ class TestParseSeriesSlugs:
         result = parse_series_slugs("crypto-15m")
         assert result == CRYPTO_15M_SERIES
 
-    def test_crypto_1h_shortcut_expands(self) -> None:
-        """Expand the crypto-1h shortcut to all four hourly crypto series."""
-        result = parse_series_slugs("crypto-1h")
-        assert result == CRYPTO_1H_SERIES
+    def test_crypto_4h_shortcut_expands(self) -> None:
+        """Expand the crypto-4h shortcut to all crypto 4-hour series."""
+        result = parse_series_slugs("crypto-4h")
+        assert result == CRYPTO_4H_SERIES
 
-    def test_both_shortcuts_combined(self) -> None:
-        """Expand both crypto-5m and crypto-15m shortcuts together."""
-        result = parse_series_slugs("crypto-5m,crypto-15m")
-        expected_len = len(CRYPTO_5M_SERIES) + len(CRYPTO_15M_SERIES)
-        assert len(result) == expected_len
-        assert result[: len(CRYPTO_5M_SERIES)] == CRYPTO_5M_SERIES
-        assert result[len(CRYPTO_5M_SERIES) :] == CRYPTO_15M_SERIES
+    def test_crypto_daily_shortcut_expands(self) -> None:
+        """Expand the crypto-daily shortcut to all crypto daily series."""
+        result = parse_series_slugs("crypto-daily")
+        assert result == CRYPTO_DAILY_SERIES
 
-    def test_all_three_shortcuts_combined(self) -> None:
-        """Expand all three shortcuts together."""
-        result = parse_series_slugs("crypto-5m,crypto-15m,crypto-1h")
-        expected_len = len(CRYPTO_5M_SERIES) + len(CRYPTO_15M_SERIES) + len(CRYPTO_1H_SERIES)
+    def test_all_shortcuts_combined(self) -> None:
+        """Expand all four crypto shortcuts together."""
+        result = parse_series_slugs("crypto-5m,crypto-15m,crypto-4h,crypto-daily")
+        expected_len = (
+            len(CRYPTO_5M_SERIES)
+            + len(CRYPTO_15M_SERIES)
+            + len(CRYPTO_4H_SERIES)
+            + len(CRYPTO_DAILY_SERIES)
+        )
         assert len(result) == expected_len
+        offset = 0
+        assert result[offset : offset + len(CRYPTO_5M_SERIES)] == CRYPTO_5M_SERIES
+        offset += len(CRYPTO_5M_SERIES)
+        assert result[offset : offset + len(CRYPTO_15M_SERIES)] == CRYPTO_15M_SERIES
+        offset += len(CRYPTO_15M_SERIES)
+        assert result[offset : offset + len(CRYPTO_4H_SERIES)] == CRYPTO_4H_SERIES
+        offset += len(CRYPTO_4H_SERIES)
+        assert result[offset : offset + len(CRYPTO_DAILY_SERIES)] == CRYPTO_DAILY_SERIES
 
 
 class TestConfigureLogging:

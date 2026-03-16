@@ -25,6 +25,7 @@ Params:
     long_period:  Number of candles for the slow-moving average (default 20).
 """
 
+from trading_tools.apps.backtester.indicators import detect_crossover
 from trading_tools.apps.backtester.indicators import sma as compute_sma
 from trading_tools.core.models import ONE, Candle, Side, Signal
 
@@ -61,14 +62,15 @@ class SmaCrossoverStrategy:
         prev_short = compute_sma(all_candles[:-1], self._short_period)
         prev_long = compute_sma(all_candles[:-1], self._long_period)
 
-        if prev_short <= prev_long and current_short > current_long:
+        cross = detect_crossover(prev_short, current_short, prev_long, current_long)
+        if cross == 1:
             return Signal(
                 side=Side.BUY,
                 symbol=candle.symbol,
                 strength=ONE,
                 reason=f"SMA{self._short_period} crossed above SMA{self._long_period}",
             )
-        if prev_short >= prev_long and current_short < current_long:
+        if cross == -1:
             return Signal(
                 side=Side.SELL,
                 symbol=candle.symbol,

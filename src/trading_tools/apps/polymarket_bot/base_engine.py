@@ -28,6 +28,7 @@ from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import Market
 from trading_tools.core.models import Signal
+from trading_tools.core.timestamps import FIVE_MINUTES
 
 if TYPE_CHECKING:
     from trading_tools.clients.polymarket.models import OrderBook
@@ -35,7 +36,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MIN_TOKENS = 2
-_FIVE_MINUTES = 300
 
 
 class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
@@ -90,7 +90,7 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
         self._cached_order_books: dict[str, OrderBook] = {}
         self._cached_markets: dict[str, Market] = {}
         now = int(time.time())
-        self._current_window: int = (now // _FIVE_MINUTES) * _FIVE_MINUTES
+        self._current_window: int = (now // FIVE_MINUTES) * FIVE_MINUTES
         self._asset_ids: list[str] = []
 
     # ------------------------------------------------------------------
@@ -288,7 +288,7 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
         while True:
             await asyncio.sleep(1)
             now = int(time.time())
-            new_window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
+            new_window = (now // FIVE_MINUTES) * FIVE_MINUTES
             if new_window != self._current_window:
                 self._current_window = new_window
                 await self._rotate_markets()
