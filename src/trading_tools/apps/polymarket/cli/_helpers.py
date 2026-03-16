@@ -41,6 +41,16 @@ CRYPTO_15M_SERIES: tuple[str, ...] = (
     "hype-updown-15m",
 )
 
+CRYPTO_1H_SERIES: tuple[str, ...] = (
+    "btc-updown-1h",
+    "eth-updown-1h",
+    "sol-updown-1h",
+    "xrp-updown-1h",
+    "doge-updown-1h",
+    "bnb-updown-1h",
+    "hype-updown-1h",
+)
+
 CRYPTO_4H_SERIES: tuple[str, ...] = (
     "btc-updown-4h",
     "eth-updown-4h",
@@ -65,6 +75,7 @@ CRYPTO_DAILY_SERIES: tuple[str, ...] = (
 _SHORTCUT_MAP: dict[str, tuple[str, ...]] = {
     "crypto-5m": CRYPTO_5M_SERIES,
     "crypto-15m": CRYPTO_15M_SERIES,
+    "crypto-1h": CRYPTO_1H_SERIES,
     "crypto-4h": CRYPTO_4H_SERIES,
     "crypto-daily": CRYPTO_DAILY_SERIES,
 }
@@ -73,14 +84,14 @@ _SHORTCUT_MAP: dict[str, tuple[str, ...]] = {
 def parse_series_slugs(series: str) -> tuple[str, ...]:
     """Parse a comma-separated series string into expanded slug tuples.
 
-    Expand the shortcuts ``"crypto-5m"``, ``"crypto-15m"``, ``"crypto-4h"``,
-    and ``"crypto-daily"`` into all crypto Up/Down series slugs for the
+    Expand the shortcuts ``"crypto-5m"``, ``"crypto-15m"``, ``"crypto-1h"``,
+    ``"crypto-4h"``, and ``"crypto-daily"`` into all crypto Up/Down series slugs for the
     respective timeframe.
 
     Args:
         series: Comma-separated series slugs, or shortcuts like
-            ``"crypto-5m"`` / ``"crypto-15m"`` / ``"crypto-4h"`` /
-            ``"crypto-daily"``.
+            ``"crypto-5m"`` / ``"crypto-15m"`` / ``"crypto-1h"`` /
+            ``"crypto-4h"`` / ``"crypto-daily"``.
 
     Returns:
         Tuple of expanded series slug strings.

@@ -517,8 +517,9 @@ class TestResolveTimestampedSlugs:
 
     def test_4h_slug_gets_epoch_suffix(self) -> None:
         """Verify -4h slugs get a 14400s-aligned epoch timestamp appended."""
-        result = _resolve_timestamped_slugs(["btc-updown-4h"])
+        result, hourly = _resolve_timestamped_slugs(["btc-updown-4h"])
         assert len(result) == 1
+        assert hourly == []
         assert result[0].startswith("btc-updown-4h-")
         epoch_str = result[0].split("-")[-1]
         epoch = int(epoch_str)
@@ -527,14 +528,18 @@ class TestResolveTimestampedSlugs:
 
     def test_daily_slug_returns_title_query(self) -> None:
         """Verify -daily slugs pass through unchanged (title-based discovery)."""
-        result = _resolve_timestamped_slugs(["btc-updown-daily"])
+        result, hourly = _resolve_timestamped_slugs(["btc-updown-daily"])
         assert result == ["btc-updown-daily"]
+        assert hourly == []
 
     def test_mixed_5m_4h_and_daily_slugs(self) -> None:
         """Resolve 5m, 4h, and daily slugs correctly in a single call."""
         expected_count = 3
-        result = _resolve_timestamped_slugs(["btc-updown-5m", "btc-updown-4h", "btc-updown-daily"])
+        result, hourly = _resolve_timestamped_slugs(
+            ["btc-updown-5m", "btc-updown-4h", "btc-updown-daily"]
+        )
         assert len(result) == expected_count
+        assert hourly == []
         five_minutes = 300
         four_hours = 14400
         epoch_5m = int(result[0].split("-")[-1])
@@ -542,6 +547,19 @@ class TestResolveTimestampedSlugs:
         assert epoch_5m % five_minutes == 0
         assert epoch_4h % four_hours == 0
         assert result[2] == "btc-updown-daily"
+
+    def test_1h_slug_returns_hourly_title(self) -> None:
+        """Hourly slugs return title search strings instead of timestamped slugs."""
+        result, hourly = _resolve_timestamped_slugs(["btc-updown-1h"])
+        assert result == []
+        assert hourly == ["Bitcoin Up or Down"]
+
+    def test_mixed_5m_and_1h_slugs(self) -> None:
+        """Mix of 5m and 1h slugs produces both timestamped and hourly results."""
+        result, hourly = _resolve_timestamped_slugs(["btc-updown-5m", "eth-updown-1h"])
+        assert len(result) == 1
+        assert result[0].startswith("btc-updown-5m-")
+        assert hourly == ["Ethereum Up or Down"]
 
 
 class TestGetMarketTokens:
