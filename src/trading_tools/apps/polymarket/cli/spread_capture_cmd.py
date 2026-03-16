@@ -39,7 +39,8 @@ _PARAM_MAP: tuple[tuple[str, str, bool], ...] = (
     ("max_combined_cost", "max_combined_cost", True),
     ("min_spread_margin", "min_spread_margin", True),
     ("max_entry_age_pct", "max_entry_age_pct", True),
-    ("clob_fee_rate", "clob_fee_rate", True),
+    ("fee_rate", "fee_rate", True),
+    ("max_book_pct", "max_book_pct", True),
     ("max_drawdown_pct", "max_drawdown_pct", True),
     ("paper_slippage_pct", "paper_slippage_pct", True),
     # Direct params (int, passed through unchanged)
@@ -50,6 +51,7 @@ _PARAM_MAP: tuple[tuple[str, str, bool], ...] = (
     ("rediscovery_interval", "rediscovery_interval", False),
     ("circuit_breaker_losses", "circuit_breaker_losses", False),
     ("circuit_breaker_cooldown", "circuit_breaker_cooldown", False),
+    ("fee_exponent", "fee_exponent", False),
 )
 
 
@@ -146,8 +148,15 @@ def spread_capture(
         int | None,
         typer.Option(help="Seconds between market rediscovery calls"),
     ] = None,
-    clob_fee_rate: Annotated[
-        str | None, typer.Option(help="Per-leg CLOB fee rate (e.g. 0.0)")
+    fee_rate: Annotated[
+        str | None, typer.Option(help="Polymarket fee rate coefficient (e.g. 0.25)")
+    ] = None,
+    fee_exponent: Annotated[
+        int | None, typer.Option(help="Polymarket fee exponent (e.g. 2)")
+    ] = None,
+    max_book_pct: Annotated[
+        str | None,
+        typer.Option(help="Max fraction of visible depth per side (e.g. 0.20)"),
     ] = None,
     circuit_breaker_losses: Annotated[
         int | None,
@@ -213,7 +222,9 @@ def spread_capture(
         max_entry_age_pct=max_entry_age_pct,
         single_leg_timeout=single_leg_timeout,
         rediscovery_interval=rediscovery_interval,
-        clob_fee_rate=clob_fee_rate,
+        fee_rate=fee_rate,
+        fee_exponent=fee_exponent,
+        max_book_pct=max_book_pct,
         circuit_breaker_losses=circuit_breaker_losses,
         circuit_breaker_cooldown=circuit_breaker_cooldown,
         max_drawdown_pct=max_drawdown_pct,

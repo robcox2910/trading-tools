@@ -78,7 +78,11 @@ class SpreadCaptureConfig:
         max_entry_age_pct: Maximum fraction of the market window elapsed
             before entries are skipped.
         use_market_orders: Use FOK market orders instead of GTC limit.
-        clob_fee_rate: Per-leg CLOB fee rate for profitability check.
+        fee_rate: Polymarket crypto fee rate coefficient (e.g. ``0.25``).
+        fee_exponent: Exponent for the ``price * (1 - price)`` term in
+            the Polymarket fee formula.
+        max_book_pct: Maximum fraction of visible order book depth to
+            consume per side.  Prevents excessive market impact.
         compound_profits: Grow paper capital by adding realised P&L.
         circuit_breaker_losses: Consecutive losses to trigger cooldown
             (0 = disabled).
@@ -107,7 +111,9 @@ class SpreadCaptureConfig:
     max_window_seconds: int = 0
     max_entry_age_pct: Decimal = Decimal("0.60")
     use_market_orders: bool = False
-    clob_fee_rate: Decimal = Decimal("0.0")
+    fee_rate: Decimal = Decimal("0.25")
+    fee_exponent: int = 2
+    max_book_pct: Decimal = Decimal("0.20")
     compound_profits: bool = True
     circuit_breaker_losses: int = 3
     circuit_breaker_cooldown: int = 300

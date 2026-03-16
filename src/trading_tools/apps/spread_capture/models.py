@@ -11,7 +11,6 @@ persisting closed trade results to PostgreSQL (or SQLite).
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -55,8 +54,8 @@ class SpreadOpportunity:
         margin: Guaranteed profit per token pair (``1.0 - combined``).
         window_start_ts: UTC epoch seconds when the market window opens.
         window_end_ts: UTC epoch seconds when the market window closes.
-        up_bid_depth: Best bid size (tokens) for Up outcome order book.
-        down_bid_depth: Best bid size (tokens) for Down outcome order book.
+        up_ask_depth: Total visible ask liquidity for Up outcome.
+        down_ask_depth: Total visible ask liquidity for Down outcome.
 
     """
 
@@ -71,30 +70,8 @@ class SpreadOpportunity:
     margin: Decimal
     window_start_ts: int
     window_end_ts: int
-    up_bid_depth: Decimal = Decimal(0)
-    down_bid_depth: Decimal = Decimal(0)
-
-    @property
-    def fill_score(self) -> Decimal:
-        """Return depth-weighted score that favours liquid, fillable markets.
-
-        Use ``log2(1 + margin_bps)`` to compress the margin range so that
-        a 30x margin advantage (e.g. HYPE 94% vs BTC 3%) becomes only ~3x
-        in log-space.  Multiply by average bid depth so that deep order
-        books dominate over thin ones.
-
-        Example scores (real data):
-        - BTC: margin=3%, depth=(96,403) → log2(301)*249 ≈ 2,070
-        - HYPE: margin=94%, depth=(50,50) → log2(9401)*50 ≈ 649
-        """
-        margin_bps = float(self.margin) * _MARGIN_BPS_SCALE
-        log_margin = Decimal(str(math.log2(1 + margin_bps)))
-        avg_depth = (self.up_bid_depth + self.down_bid_depth) / _TWO
-        return log_margin * avg_depth
-
-
-_MARGIN_BPS_SCALE = 10_000
-_TWO = Decimal(2)
+    up_ask_depth: Decimal = Decimal(0)
+    down_ask_depth: Decimal = Decimal(0)
 
 
 class SideLeg:

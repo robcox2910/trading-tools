@@ -10,28 +10,31 @@ from trading_tools.clients.polymarket.models import Market, MarketToken, OrderBo
 
 _UP_PRICE = Decimal("0.48")
 _DOWN_PRICE = Decimal("0.47")
-_UP_BID = Decimal("0.46")
-_DOWN_BID = Decimal("0.45")
-_COMBINED_BID = _UP_BID + _DOWN_BID
+_UP_ASK = Decimal("0.48")
+_DOWN_ASK = Decimal("0.47")
+_COMBINED_ASK = _UP_ASK + _DOWN_ASK
 _NOW = 1_710_000_100
 _WINDOW_START = 1_710_000_000
 _WINDOW_END = 1_710_000_300
 _MAX_COMBINED = Decimal("0.98")
 _MIN_MARGIN = Decimal("0.01")
 _EXPECTED_TWO_OPPS = 2
+_ZERO_FEE = Decimal("0.0")
+_DEFAULT_FEE_EXPONENT = 2
+_ASK_DEPTH = Decimal(100)
 
 
 def _mock_order_book(
     token_id: str = "tok",
-    best_bid: Decimal = Decimal("0.46"),
+    best_ask: Decimal = Decimal("0.48"),
 ) -> OrderBook:
-    """Build a mock OrderBook with a single best bid level."""
+    """Build a mock OrderBook with a single best ask level."""
     return OrderBook(
         token_id=token_id,
-        bids=(OrderLevel(price=best_bid, size=Decimal(100)),),
-        asks=(OrderLevel(price=best_bid + Decimal("0.02"), size=Decimal(100)),),
+        bids=(OrderLevel(price=best_ask - Decimal("0.02"), size=Decimal(100)),),
+        asks=(OrderLevel(price=best_ask, size=Decimal(100)),),
         spread=Decimal("0.02"),
-        midpoint=best_bid + Decimal("0.01"),
+        midpoint=best_ask - Decimal("0.01"),
     )
 
 
@@ -68,7 +71,7 @@ def _make_scanner(**overrides: object) -> MarketScanner:
     async def _get_order_book(token_id: str) -> OrderBook:
         return _mock_order_book(
             token_id=token_id,
-            best_bid=_UP_BID if token_id == "up_tok" else _DOWN_BID,
+            best_ask=_UP_ASK if token_id == "up_tok" else _DOWN_ASK,
         )
 
     client.get_order_book = AsyncMock(side_effect=_get_order_book)
@@ -80,6 +83,8 @@ def _make_scanner(**overrides: object) -> MarketScanner:
         "max_window_seconds": 0,
         "max_entry_age_pct": Decimal("0.60"),
         "rediscovery_interval": 30,
+        "fee_rate": _ZERO_FEE,
+        "fee_exponent": _DEFAULT_FEE_EXPONENT,
     }
     defaults.update(overrides)
     return MarketScanner(**defaults)  # type: ignore[arg-type]
@@ -99,11 +104,11 @@ class TestMarketScanner:
 
         assert len(opps) == 1
         assert opps[0].condition_id == "cond_a"
-        assert opps[0].combined == _COMBINED_BID
-        assert opps[0].margin == Decimal(1) - _COMBINED_BID
+        assert opps[0].combined == _COMBINED_ASK
+        assert opps[0].margin == Decimal(1) - _COMBINED_ASK
 
-    async def test_uses_best_bid_not_midpoint(self) -> None:
-        """Scanner uses order book best bid prices, not midpoint prices."""
+    async def test_uses_best_ask_not_midpoint(self) -> None:
+        """Scanner uses order book best ask prices, not midpoint prices."""
         scanner = _make_scanner()
         with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
             mock_time.monotonic.return_value = 100.0
@@ -111,14 +116,14 @@ class TestMarketScanner:
             opps = await scanner.scan(set())
 
         assert len(opps) == 1
-        # Prices should be best bids, not midpoints
-        assert opps[0].up_price == _UP_BID
-        assert opps[0].down_price == _DOWN_BID
+        # Prices should be best asks, not midpoints
+        assert opps[0].up_price == _UP_ASK
+        assert opps[0].down_price == _DOWN_ASK
 
-    async def test_falls_back_to_midpoint_when_no_bids(self) -> None:
-        """Scanner falls back to midpoint when order book has no bids."""
+    async def test_falls_back_to_midpoint_when_no_asks(self) -> None:
+        """Scanner falls back to midpoint when order book has no asks."""
         scanner = _make_scanner()
-        # Return empty order books (no bids)
+        # Return empty order books (no asks)
         scanner.client.get_order_book = AsyncMock(  # type: ignore[attr-defined]
             return_value=OrderBook(
                 token_id="tok",
@@ -167,9 +172,9 @@ class TestMarketScanner:
         scanner.client.get_market = AsyncMock(  # type: ignore[attr-defined]
             return_value=_mock_market(up_price=Decimal("0.50"), down_price=Decimal("0.50"))
         )
-        # High bid prices too
+        # High ask prices too
         scanner.client.get_order_book = AsyncMock(  # type: ignore[attr-defined]
-            return_value=_mock_order_book(best_bid=Decimal("0.50"))
+            return_value=_mock_order_book(best_ask=Decimal("0.50"))
         )
         with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
             mock_time.monotonic.return_value = 100.0
@@ -226,7 +231,7 @@ class TestMarketScanner:
         # Reset mock call count
         scanner.client.discover_series_markets.reset_mock()  # type: ignore[attr-defined]
 
-        # Second scan within interval — no rediscovery
+        # Second scan within interval -- no rediscovery
         with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
             mock_time.monotonic.return_value = 110.0  # only 10s later
             mock_time.time.return_value = _NOW
@@ -276,17 +281,17 @@ class TestMarketScanner:
 
         scanner.client.get_market = _get_market  # type: ignore[attr-defined]
 
-        # Market A: higher bids (less margin), Market B: lower bids (more margin)
-        bid_map: dict[str, Decimal] = {
-            "up_tok_a": Decimal("0.46"),
-            "down_tok_a": Decimal("0.45"),
-            "up_tok_b": Decimal("0.40"),
-            "down_tok_b": Decimal("0.39"),
+        # Market A: higher asks (less margin), Market B: lower asks (more margin)
+        ask_map: dict[str, Decimal] = {
+            "up_tok_a": Decimal("0.48"),
+            "down_tok_a": Decimal("0.47"),
+            "up_tok_b": Decimal("0.42"),
+            "down_tok_b": Decimal("0.41"),
         }
 
         async def _get_order_book(token_id: str) -> OrderBook:
-            bid = bid_map[token_id]
-            return _mock_order_book(token_id=token_id, best_bid=bid)
+            ask = ask_map[token_id]
+            return _mock_order_book(token_id=token_id, best_ask=ask)
 
         scanner.client.get_order_book = _get_order_book  # type: ignore[attr-defined]
 
@@ -296,7 +301,66 @@ class TestMarketScanner:
             opps = await scanner.scan(set())
 
         assert len(opps) == _EXPECTED_TWO_OPPS
-        # cond_b has higher margin (lower bids: 0.40 + 0.39 = 0.79 vs 0.46 + 0.45 = 0.91)
+        # cond_b has higher margin (lower asks: 0.42 + 0.41 = 0.83 vs 0.48 + 0.47 = 0.95)
         assert opps[0].condition_id == "cond_b"
         assert opps[1].condition_id == "cond_a"
         assert opps[0].margin > opps[1].margin
+
+    async def test_ask_depth_populated(self) -> None:
+        """Spread opportunity includes total ask depth for both sides."""
+        scanner = _make_scanner()
+        with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            mock_time.time.return_value = _NOW
+            opps = await scanner.scan(set())
+
+        assert len(opps) == 1
+        assert opps[0].up_ask_depth == _ASK_DEPTH
+        assert opps[0].down_ask_depth == _ASK_DEPTH
+
+
+@pytest.mark.asyncio
+class TestFeeDeduction:
+    """Test that Polymarket fees are deducted from margin."""
+
+    async def test_fee_deduction_reduces_margin(self) -> None:
+        """Non-zero fee rate reduces the net margin below gross margin."""
+        scanner = _make_scanner(fee_rate=Decimal("0.25"), fee_exponent=2)
+        with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            mock_time.time.return_value = _NOW
+            opps = await scanner.scan(set())
+
+        assert len(opps) == 1
+        gross_margin = Decimal(1) - _COMBINED_ASK
+        # Net margin should be less than gross due to fees
+        assert opps[0].margin < gross_margin
+
+    async def test_fee_deduction_rejects_thin_margins(self) -> None:
+        """Opportunities with margin below min after fee deduction are rejected."""
+        # Set min_spread_margin just below gross margin but above net margin
+        gross_margin = Decimal(1) - _COMBINED_ASK  # 0.05
+        scanner = _make_scanner(
+            fee_rate=Decimal("0.25"),
+            fee_exponent=2,
+            min_spread_margin=gross_margin - Decimal("0.001"),
+        )
+        with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            mock_time.time.return_value = _NOW
+            opps = await scanner.scan(set())
+
+        # Fee deduction should push net margin below the threshold
+        assert opps == []
+
+    async def test_zero_fee_rate_preserves_gross_margin(self) -> None:
+        """Zero fee rate preserves gross margin exactly."""
+        scanner = _make_scanner(fee_rate=_ZERO_FEE)
+        with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            mock_time.time.return_value = _NOW
+            opps = await scanner.scan(set())
+
+        assert len(opps) == 1
+        gross_margin = Decimal(1) - _COMBINED_ASK
+        assert opps[0].margin == gross_margin
