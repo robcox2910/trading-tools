@@ -29,10 +29,10 @@ _PAST_TS = 1_709_999_000
 _DEFAULT_POLL = 5
 _ZERO_FEE = Decimal("0.0")
 _DEFAULT_FEE_EXPONENT = 2
-_THRESHOLD = Decimal("0.48")
-_MAX_VWAP = Decimal("0.98")
-_MAX_IMBALANCE = Decimal("2.0")
-_FILL_SIZE = Decimal(10)
+_THRESHOLD = Decimal("0.95")
+_MAX_VWAP = Decimal("0.97")
+_MAX_IMBALANCE = Decimal("3.0")
+_FILL_SIZE = Decimal(5)
 
 
 def _make_config(**overrides: object) -> SpreadCaptureConfig:
@@ -147,7 +147,7 @@ class TestFillDecisions:
         trader = _make_trader()
         pos = _make_accum_position(budget=Decimal(50))
 
-        result = trader._should_fill_side(pos, "Up", Decimal("0.55"), _QTY)
+        result = trader._should_fill_side(pos, "Up", Decimal("0.96"), _QTY)
         assert result is False
 
     async def test_skips_side_when_ask_equals_threshold(self) -> None:
@@ -155,7 +155,7 @@ class TestFillDecisions:
         trader = _make_trader()
         pos = _make_accum_position(budget=Decimal(50))
 
-        result = trader._should_fill_side(pos, "Up", Decimal("0.48"), _QTY)
+        result = trader._should_fill_side(pos, "Up", Decimal("0.95"), _QTY)
         assert result is False
 
     async def test_stops_when_combined_vwap_exceeds_max(self) -> None:
