@@ -13,8 +13,8 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from websockets import ConnectionClosed
 from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
