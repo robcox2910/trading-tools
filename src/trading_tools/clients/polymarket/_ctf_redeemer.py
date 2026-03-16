@@ -17,13 +17,13 @@ from web3 import Web3
 from web3.exceptions import Web3Exception
 from web3.types import Nonce, TxParams, TxReceipt, Wei
 
+from trading_tools.clients.polymarket._constants import USDC_E_ADDRESS
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 
 logger = logging.getLogger(__name__)
 
 # Polygon contract addresses
 _CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-_USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 _PROXY_WALLET_FACTORY = "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052"
 _PARENT_COLLECTION_ID = b"\x00" * 32
 
@@ -98,7 +98,7 @@ def _encode_redeem_calldata(condition_id: str) -> bytes:
     return ctf.encode_abi(  # type: ignore[no-any-return]
         "redeemPositions",
         [
-            Web3.to_checksum_address(_USDC_E_ADDRESS),
+            Web3.to_checksum_address(USDC_E_ADDRESS),
             _PARENT_COLLECTION_ID,
             cid_bytes,
             _INDEX_SETS,
@@ -199,6 +199,6 @@ def redeem_positions(
                 tx_hash.hex(),
             )
         except (Web3Exception, ValueError, TypeError, OSError):
-            logger.warning("Failed to redeem %s", cid[:20])
+            logger.warning("Failed to redeem %s", cid[:20], exc_info=True)
 
     return receipts

@@ -42,6 +42,7 @@ Params:
 from collections import deque
 from decimal import Decimal
 
+from trading_tools.apps.backtester.indicators import detect_crossover
 from trading_tools.core.models import HUNDRED, ONE, Candle, Side, Signal
 
 
@@ -112,14 +113,15 @@ class StochasticStrategy:
         self._prev_k = curr_k
         self._prev_d = curr_d
 
-        if prev_k <= prev_d and curr_k > curr_d and curr_k < self._oversold:
+        cross = detect_crossover(prev_k, curr_k, prev_d, curr_d)
+        if cross == 1 and curr_k < self._oversold:
             return Signal(
                 side=Side.BUY,
                 symbol=candle.symbol,
                 strength=ONE,
                 reason=f"%K crossed above %D in oversold zone ({curr_k:.1f})",
             )
-        if prev_k >= prev_d and curr_k < curr_d and curr_k > self._overbought:
+        if cross == -1 and curr_k > self._overbought:
             return Signal(
                 side=Side.SELL,
                 symbol=candle.symbol,

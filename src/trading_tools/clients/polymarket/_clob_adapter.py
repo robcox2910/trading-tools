@@ -29,9 +29,8 @@ from py_clob_client.exceptions import PolyApiException  # type: ignore[import-un
 from web3 import Web3
 
 from trading_tools.clients._http_status import HTTP_INTERNAL_ERROR, HTTP_NOT_FOUND
+from trading_tools.clients.polymarket._constants import USDC_E_ADDRESS
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
-
-_USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
 # Minimal ERC-20 ABI for balanceOf
 _ERC20_BALANCE_ABI: list[dict[str, Any]] = [
@@ -568,7 +567,7 @@ def get_onchain_usdc_balance(rpc_url: str, wallet_address: str) -> int:
         )
 
     usdc = w3.eth.contract(
-        address=Web3.to_checksum_address(_USDC_E_ADDRESS),
+        address=Web3.to_checksum_address(USDC_E_ADDRESS),
         abi=_ERC20_BALANCE_ABI,
     )
     try:
