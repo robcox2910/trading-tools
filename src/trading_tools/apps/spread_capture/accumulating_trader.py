@@ -502,10 +502,23 @@ class AccumulatingTrader:
         if self._would_exceed_single_side_cap(pos, side, ask_price, fill_qty):
             return False
 
-        # Check hypothetical combined VWAP
+        # Check hypothetical combined VWAP.
+        # When both sides already have fills and the VWAP is above target,
+        # only allow fills that *improve* (lower) the combined VWAP.  The
+        # whale edge comes from time-averaging dips over many fills — we
+        # must let improving fills through even when VWAP is above target.
+        current_vwap = pos.combined_vwap
         hyp_vwap = self._hypothetical_combined_vwap(pos, side, ask_price, fill_qty)
         if hyp_vwap > ZERO and hyp_vwap > self.config.max_combined_vwap:
-            return False
+            if current_vwap <= ZERO:
+                # First time both sides have fills — allow to bootstrap
+                pass
+            elif hyp_vwap < current_vwap:
+                # Fill improves (lowers) the combined VWAP — allow
+                pass
+            else:
+                # Fill would worsen or maintain above-target VWAP — block
+                return False
 
         # Check imbalance ratio
         return not self._would_exceed_imbalance(pos, side, fill_qty)
