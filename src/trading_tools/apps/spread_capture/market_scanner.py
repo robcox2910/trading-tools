@@ -124,8 +124,8 @@ class MarketScanner:
         )
         opportunities = [r for r in results if isinstance(r, SpreadOpportunity)]
 
-        # Sort by highest margin first
-        opportunities.sort(key=lambda o: o.margin, reverse=True)
+        # Sort by fill score (margin weighted by bid-side liquidity)
+        opportunities.sort(key=lambda o: o.fill_score, reverse=True)
         return opportunities
 
     async def _evaluate_market(self, cid: str, now: int) -> SpreadOpportunity | None:
@@ -175,6 +175,10 @@ class MarketScanner:
         up_bid = up_book.bids[0].price if up_book.bids else up_token.price
         down_bid = down_book.bids[0].price if down_book.bids else down_token.price
 
+        # Extract bid-side depth for fill probability scoring
+        up_bid_depth = up_book.bids[0].size if up_book.bids else ZERO
+        down_bid_depth = down_book.bids[0].size if down_book.bids else ZERO
+
         return self._check_spread(
             market,
             cid,
@@ -184,6 +188,8 @@ class MarketScanner:
             now,
             up_bid_price=up_bid,
             down_bid_price=down_bid,
+            up_bid_depth=up_bid_depth,
+            down_bid_depth=down_bid_depth,
         )
 
     def _check_spread(
@@ -197,6 +203,8 @@ class MarketScanner:
         *,
         up_bid_price: Decimal | None = None,
         down_bid_price: Decimal | None = None,
+        up_bid_depth: Decimal = ZERO,
+        down_bid_depth: Decimal = ZERO,
     ) -> SpreadOpportunity | None:
         """Check whether a market has a viable spread opportunity.
 
@@ -213,6 +221,8 @@ class MarketScanner:
             now: Current epoch seconds.
             up_bid_price: Best bid price for Up token (order book).
             down_bid_price: Best bid price for Down token (order book).
+            up_bid_depth: Best bid size (tokens) for Up token.
+            down_bid_depth: Best bid size (tokens) for Down token.
 
         Returns:
             A ``SpreadOpportunity`` if viable, else ``None``.
@@ -264,6 +274,8 @@ class MarketScanner:
             margin=margin,
             window_start_ts=window_start_ts,
             window_end_ts=window_end_ts,
+            up_bid_depth=up_bid_depth,
+            down_bid_depth=down_bid_depth,
         )
 
     async def _fetch_order_books(
