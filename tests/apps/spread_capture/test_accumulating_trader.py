@@ -29,8 +29,8 @@ _PAST_TS = 1_709_999_000
 _DEFAULT_POLL = 5
 _ZERO_FEE = Decimal("0.0")
 _DEFAULT_FEE_EXPONENT = 2
-_THRESHOLD = Decimal("0.52")
-_MAX_VWAP = Decimal("0.995")
+_THRESHOLD = Decimal("0.48")
+_MAX_VWAP = Decimal("0.98")
 _MAX_IMBALANCE = Decimal("2.0")
 _FILL_SIZE = Decimal(10)
 
@@ -130,7 +130,7 @@ class TestFillDecisions:
         pos = _make_accum_position(budget=Decimal(50))
         trader._positions["cond_a"] = pos
 
-        result = trader._should_fill_side(pos, "Up", Decimal("0.48"), _QTY)
+        result = trader._should_fill_side(pos, "Up", Decimal("0.45"), _QTY)
         assert result is True
 
     async def test_buys_down_when_ask_below_threshold(self) -> None:
@@ -139,7 +139,7 @@ class TestFillDecisions:
         pos = _make_accum_position(budget=Decimal(50))
         trader._positions["cond_a"] = pos
 
-        result = trader._should_fill_side(pos, "Down", Decimal("0.47"), _QTY)
+        result = trader._should_fill_side(pos, "Down", Decimal("0.44"), _QTY)
         assert result is True
 
     async def test_skips_side_when_ask_above_threshold(self) -> None:
@@ -148,6 +148,14 @@ class TestFillDecisions:
         pos = _make_accum_position(budget=Decimal(50))
 
         result = trader._should_fill_side(pos, "Up", Decimal("0.55"), _QTY)
+        assert result is False
+
+    async def test_skips_side_when_ask_equals_threshold(self) -> None:
+        """No fill when ask == per_side_ask_threshold (must be strictly below)."""
+        trader = _make_trader()
+        pos = _make_accum_position(budget=Decimal(50))
+
+        result = trader._should_fill_side(pos, "Up", Decimal("0.48"), _QTY)
         assert result is False
 
     async def test_stops_when_combined_vwap_exceeds_max(self) -> None:
@@ -163,8 +171,8 @@ class TestFillDecisions:
             budget=Decimal(50),
         )
 
-        # Adding more Up at 0.48 would make combined = ~0.49 + 0.45 = 0.94 > 0.90
-        result = trader._should_fill_side(pos, "Up", Decimal("0.48"), _QTY)
+        # Adding more Up at 0.47 would make combined = ~0.485 + 0.45 = 0.935 > 0.90
+        result = trader._should_fill_side(pos, "Up", Decimal("0.47"), _QTY)
         assert result is False
 
     async def test_imbalance_ratio_blocks_heavy_side(self) -> None:
@@ -172,19 +180,59 @@ class TestFillDecisions:
         config = _make_config(max_imbalance_ratio=Decimal("1.5"))
         trader = _make_trader(config=config)
         pos = _make_accum_position(
-            up_price=Decimal("0.48"),
+            up_price=Decimal("0.45"),
             up_qty=Decimal(20),
-            down_price=Decimal("0.45"),
+            down_price=Decimal("0.42"),
             down_qty=Decimal(10),
             budget=Decimal(50),
         )
 
         # Up has 20, Down has 10 — ratio is 2.0, adding more Up would exceed 1.5
-        result = trader._should_fill_side(pos, "Up", Decimal("0.48"), _QTY)
+        result = trader._should_fill_side(pos, "Up", Decimal("0.45"), _QTY)
         assert result is False
 
         # But filling Down is fine — it helps balance
-        result = trader._should_fill_side(pos, "Down", Decimal("0.45"), _QTY)
+        result = trader._should_fill_side(pos, "Down", Decimal("0.42"), _QTY)
+        assert result is True
+
+    async def test_single_side_cap_blocks_when_other_empty(self) -> None:
+        """Block fills on one side when it would exceed single-side cap and other side has no fills."""
+        config = _make_config(max_single_side_pct=Decimal("0.50"))
+        trader = _make_trader(config=config)
+        # Up side already has fills consuming 50%+ of budget, Down has zero
+        pos = _make_accum_position(
+            up_price=Decimal("0.45"),
+            up_qty=Decimal(12),  # cost = 5.40
+            budget=Decimal(10),  # cap = 5.00
+        )
+
+        # Adding more Up at 0.45 would push well over 50% cap
+        result = trader._should_fill_side(pos, "Up", Decimal("0.45"), Decimal(5))
+        assert result is False
+
+    async def test_single_side_cap_allows_when_other_has_fills(self) -> None:
+        """Allow fills freely once the other side also has fills."""
+        config = _make_config(max_single_side_pct=Decimal("0.50"))
+        trader = _make_trader(config=config)
+        # Both sides have fills, balanced — no single-side cap
+        pos = _make_accum_position(
+            up_price=Decimal("0.45"),
+            up_qty=Decimal(10),
+            down_price=Decimal("0.42"),
+            down_qty=Decimal(10),
+            budget=Decimal(20),
+        )
+
+        result = trader._should_fill_side(pos, "Up", Decimal("0.45"), Decimal(5))
+        assert result is True
+
+    async def test_single_side_cap_allows_first_fill(self) -> None:
+        """Allow the first fill on a side even when other side is empty."""
+        config = _make_config(max_single_side_pct=Decimal("0.50"))
+        trader = _make_trader(config=config)
+        pos = _make_accum_position(budget=Decimal(20))
+
+        result = trader._should_fill_side(pos, "Up", Decimal("0.45"), Decimal(10))
         assert result is True
 
 

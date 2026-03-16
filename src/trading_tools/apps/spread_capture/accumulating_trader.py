@@ -498,6 +498,10 @@ class AccumulatingTrader:
         if ask_price >= self.config.per_side_ask_threshold:
             return False
 
+        # Cap single-side spend when other side has no fills yet
+        if self._would_exceed_single_side_cap(pos, side, ask_price, fill_qty):
+            return False
+
         # Check hypothetical combined VWAP
         hyp_vwap = self._hypothetical_combined_vwap(pos, side, ask_price, fill_qty)
         if hyp_vwap > ZERO and hyp_vwap > self.config.max_combined_vwap:
@@ -505,6 +509,46 @@ class AccumulatingTrader:
 
         # Check imbalance ratio
         return not self._would_exceed_imbalance(pos, side, fill_qty)
+
+    def _would_exceed_single_side_cap(
+        self,
+        pos: AccumulatingPosition,
+        side: str,
+        ask_price: Decimal,
+        fill_qty: Decimal,
+    ) -> bool:
+        """Check if a fill would exceed the single-side budget cap.
+
+        When one side has fills but the other does not, limit total spend
+        on the filled side to ``budget * max_single_side_pct``.  This
+        reserves budget for the other side and prevents the position from
+        becoming a pure directional bet.
+
+        Args:
+            pos: The accumulating position.
+            side: ``"Up"`` or ``"Down"``.
+            ask_price: Fill price for cost computation.
+            fill_qty: Proposed fill quantity.
+
+        Returns:
+            ``True`` if the fill would violate the single-side cap.
+
+        """
+        if side == "Up":
+            this_leg = pos.up_leg
+            other_leg = pos.down_leg
+        else:
+            this_leg = pos.down_leg
+            other_leg = pos.up_leg
+
+        # Both sides have fills — no single-side cap applies
+        if other_leg.quantity > ZERO:
+            return False
+
+        # Check if adding this fill would exceed the cap
+        new_cost = this_leg.cost_basis + ask_price * fill_qty
+        cap = pos.budget * self.config.max_single_side_pct
+        return new_cost > cap
 
     def _hypothetical_combined_vwap(
         self,
