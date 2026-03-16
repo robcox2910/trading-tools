@@ -24,6 +24,7 @@ from trading_tools.apps.polymarket.cli._helpers import (
     configure_logging,
     parse_series_slugs,
 )
+from trading_tools.apps.spread_capture.accumulating_trader import AccumulatingTrader
 from trading_tools.apps.spread_capture.config import SpreadCaptureConfig
 from trading_tools.apps.spread_capture.repository import SpreadResultRepository
 from trading_tools.apps.spread_capture.spread_trader import SpreadTrader
@@ -43,6 +44,10 @@ _PARAM_MAP: tuple[tuple[str, str, bool], ...] = (
     ("max_book_pct", "max_book_pct", True),
     ("max_drawdown_pct", "max_drawdown_pct", True),
     ("paper_slippage_pct", "paper_slippage_pct", True),
+    ("per_side_ask_threshold", "per_side_ask_threshold", True),
+    ("max_combined_vwap", "max_combined_vwap", True),
+    ("max_imbalance_ratio", "max_imbalance_ratio", True),
+    ("fill_size_tokens", "fill_size_tokens", True),
     # Direct params (int, passed through unchanged)
     ("poll_interval", "poll_interval", False),
     ("max_window", "max_window_seconds", False),
@@ -61,6 +66,7 @@ def _build_config(
     series_slugs_str: str | None,
     compound_profits: bool | None,
     use_market_orders: bool | None,
+    strategy: str | None = None,
     **cli_args: object,
 ) -> SpreadCaptureConfig:
     """Build a ``SpreadCaptureConfig`` from an optional YAML file plus CLI overrides.
@@ -74,6 +80,7 @@ def _build_config(
         series_slugs_str: Comma-separated series slugs string.
         compound_profits: Tri-state bool (``None`` = not set on CLI).
         use_market_orders: Tri-state bool (``None`` = not set on CLI).
+        strategy: Trading strategy name (``None`` = not set on CLI).
         **cli_args: Remaining CLI parameters keyed by their CLI name.
 
     Returns:
@@ -98,6 +105,8 @@ def _build_config(
         overrides["compound_profits"] = compound_profits
     if use_market_orders is not None:
         overrides["use_market_orders"] = use_market_orders
+    if strategy is not None:
+        overrides["strategy"] = strategy
 
     return SpreadCaptureConfig.with_overrides(base, **overrides)
 
@@ -188,6 +197,28 @@ def spread_capture(
             help="Use FOK market orders instead of GTC limit",
         ),
     ] = None,
+    strategy: Annotated[
+        str | None,
+        typer.Option(
+            help="Strategy: 'simultaneous' (both sides at once) or 'accumulate' (per-side)"
+        ),
+    ] = None,
+    per_side_ask_threshold: Annotated[
+        str | None,
+        typer.Option(help="Buy a side when ask < this price (accumulate strategy, e.g. 0.52)"),
+    ] = None,
+    max_combined_vwap: Annotated[
+        str | None,
+        typer.Option(help="Stop accumulating when combined VWAP would exceed (e.g. 0.995)"),
+    ] = None,
+    max_imbalance_ratio: Annotated[
+        str | None,
+        typer.Option(help="Max qty ratio between legs before pausing heavier side (e.g. 2.0)"),
+    ] = None,
+    fill_size_tokens: Annotated[
+        str | None,
+        typer.Option(help="Base tokens per individual fill (accumulate strategy, e.g. 10)"),
+    ] = None,
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
@@ -212,6 +243,7 @@ def spread_capture(
         series_slugs_str=series_slugs,
         compound_profits=compound_profits,
         use_market_orders=use_market_orders,
+        strategy=strategy,
         poll_interval=poll_interval,
         capital=capital,
         max_position_pct=max_position_pct,
@@ -229,6 +261,10 @@ def spread_capture(
         circuit_breaker_cooldown=circuit_breaker_cooldown,
         max_drawdown_pct=max_drawdown_pct,
         paper_slippage_pct=paper_slippage_pct,
+        per_side_ask_threshold=per_side_ask_threshold,
+        max_combined_vwap=max_combined_vwap,
+        max_imbalance_ratio=max_imbalance_ratio,
+        fill_size_tokens=fill_size_tokens,
     )
 
     if confirm_live:
@@ -250,11 +286,18 @@ def spread_capture(
             await repo.init_db()
             _logger.info("Spread result persistence enabled")
 
-        trader = SpreadTrader(
-            config=config,
-            live=confirm_live,
-            client=client,
-        )
+        if config.strategy == "accumulate":
+            trader: SpreadTrader | AccumulatingTrader = AccumulatingTrader(
+                config=config,
+                live=confirm_live,
+                client=client,
+            )
+        else:
+            trader = SpreadTrader(
+                config=config,
+                live=confirm_live,
+                client=client,
+            )
         if repo is not None:
             trader.set_repo(repo)
 

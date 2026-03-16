@@ -389,6 +389,7 @@ circuit_breaker_cooldown: 600
 |------|---------|-------------|
 | `--series-slugs` | `btc-updown-5m,eth-updown-5m` | Comma-separated series slugs or `crypto-5m`/`crypto-15m` shortcut |
 | `--config` | *none* | Path to YAML config file (CLI flags override YAML values) |
+| `--strategy` | `simultaneous` | Execution strategy: `simultaneous` (both sides at once) or `accumulate` (independent per-side fills over time) |
 | `--poll-interval` | `5` | Seconds between scan cycles |
 | `--capital` | `100` | Starting capital in USDC (paper mode) |
 | `--max-position-pct` | `0.10` | Max fraction of capital per spread trade |
@@ -410,6 +411,15 @@ circuit_breaker_cooldown: 600
 | `--paper-slippage-pct` | `0.005` | Simulated slippage for paper fills |
 | `--confirm-live` | `false` | **Required flag** for live trading |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
+
+**`accumulate` strategy flags** (only active when `--strategy accumulate`):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--per-side-ask-threshold` | `0.52` | Maximum ask price to accept for a single side when accumulating independently |
+| `--max-combined-vwap` | `0.995` | Maximum VWAP-weighted combined cost across accumulated fills (must be < 1.0) |
+| `--max-imbalance-ratio` | `2.0` | Maximum ratio of tokens held on one side vs the other before new fills on that side are paused |
+| `--fill-size-tokens` | `10` | Number of tokens to buy per individual fill when accumulating |
 
 **Spread detection pipeline:**
 

@@ -320,6 +320,107 @@ class TestMarketScanner:
 
 
 @pytest.mark.asyncio
+class TestScanPerSide:
+    """Test scan_per_side for accumulating strategy."""
+
+    async def test_returns_markets_with_cheap_side(self) -> None:
+        """Return markets where at least one side is below threshold."""
+        scanner = _make_scanner()
+        with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            mock_time.time.return_value = _NOW
+            opps = await scanner.scan_per_side(set(), Decimal("0.50"))
+
+        assert len(opps) == 1
+        assert opps[0].condition_id == "cond_a"
+
+    async def test_skips_when_both_sides_above_threshold(self) -> None:
+        """Skip markets where both sides are above threshold."""
+        scanner = _make_scanner()
+        with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            mock_time.time.return_value = _NOW
+            # Set threshold very low so both sides are above it
+            opps = await scanner.scan_per_side(set(), Decimal("0.40"))
+
+        assert opps == []
+
+    async def test_skips_open_positions(self) -> None:
+        """Markets with open positions are skipped in per-side scan."""
+        scanner = _make_scanner()
+        with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            mock_time.time.return_value = _NOW
+            opps = await scanner.scan_per_side({"cond_a"}, Decimal("0.50"))
+
+        assert opps == []
+
+    async def test_no_combined_cost_filter(self) -> None:
+        """Per-side scan does not filter by combined cost."""
+        scanner = _make_scanner()
+        # Override with high combined asks that would fail simultaneous scan
+        scanner.client.get_order_book = AsyncMock(  # type: ignore[attr-defined]
+            return_value=_mock_order_book(best_ask=Decimal("0.50"))
+        )
+        with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            mock_time.time.return_value = _NOW
+            # Per-side threshold is 0.52, so 0.50 passes per-side check
+            opps = await scanner.scan_per_side(set(), Decimal("0.52"))
+
+        # Combined would be 1.00 (fails simultaneous), but per-side should pass
+        assert len(opps) == 1
+
+    async def test_sorted_by_cheapest_side(self) -> None:
+        """Results are sorted by lowest min(up_ask, down_ask)."""
+        scanner = _make_scanner()
+        market_a = _mock_market(condition_id="cond_a")
+        market_b = _mock_market(condition_id="cond_b")
+
+        scanner.client.discover_series_markets = AsyncMock(  # type: ignore[attr-defined]
+            return_value=[
+                ("cond_a", "2025-03-10T23:05:00Z"),
+                ("cond_b", "2025-03-10T23:05:00Z"),
+            ]
+        )
+
+        async def _get_market(cid: str) -> Market:
+            return market_a if cid == "cond_a" else market_b
+
+        scanner.client.get_market = _get_market  # type: ignore[attr-defined]
+
+        ask_map: dict[str, Decimal] = {
+            "up_tok": Decimal("0.48"),
+            "down_tok": Decimal("0.47"),
+        }
+        call_count = 0
+
+        async def _get_order_book(token_id: str) -> OrderBook:
+            nonlocal call_count
+            call_count += 1
+            # Second market (cond_b) gets cheaper asks
+            if call_count > _EXPECTED_TWO_OPPS:
+                return _mock_order_book(
+                    token_id=token_id,
+                    best_ask=ask_map.get(token_id, Decimal("0.48")) - Decimal("0.05"),
+                )
+            return _mock_order_book(
+                token_id=token_id, best_ask=ask_map.get(token_id, Decimal("0.48"))
+            )
+
+        scanner.client.get_order_book = _get_order_book  # type: ignore[attr-defined]
+
+        with patch("trading_tools.apps.spread_capture.market_scanner.time") as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            mock_time.time.return_value = _NOW
+            opps = await scanner.scan_per_side(set(), Decimal("0.50"))
+
+        assert len(opps) == _EXPECTED_TWO_OPPS
+        # Second market should be first (cheaper)
+        assert opps[0].condition_id == "cond_b"
+
+
+@pytest.mark.asyncio
 class TestFeeDeduction:
     """Test that Polymarket fees are deducted from margin."""
 

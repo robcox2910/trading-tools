@@ -26,12 +26,14 @@ class PositionState(Enum):
     PAIRED: Both sides filled, guaranteed profit locked in.
     SINGLE_LEG: Only one side filled after timeout.
     SETTLED: Position closed at market expiry, P&L realised.
+    ACCUMULATING: Actively buying sides independently over time.
     """
 
     PENDING = "pending"
     PAIRED = "paired"
     SINGLE_LEG = "single_leg"
     SETTLED = "settled"
+    ACCUMULATING = "accumulating"
 
 
 @dataclass(frozen=True)
@@ -175,6 +177,69 @@ class PairedPosition:
     def is_paired(self) -> bool:
         """Return ``True`` when both legs are filled."""
         return self.down_leg is not None and self.state == PositionState.PAIRED
+
+
+@dataclass
+class AccumulatingPosition:
+    """A spread position being built via independent per-side fills over time.
+
+    Unlike ``PairedPosition`` which requires both sides simultaneously, an
+    accumulating position buys each side independently whenever its ask price
+    dips below a threshold.  The goal is a combined VWAP well below $1.00
+    across many small fills, mimicking whale accumulation behaviour.
+
+    Attributes:
+        opportunity: The spread opportunity that triggered tracking.
+        state: Current lifecycle state (ACCUMULATING or SETTLED).
+        up_leg: The Up side leg (starts at qty=0, fills added over time).
+        down_leg: The Down side leg (starts at qty=0, fills added over time).
+        entry_time: UTC epoch seconds when the position was first opened.
+        is_paper: ``True`` for simulated trades, ``False`` for live.
+        budget: Total USDC budget allocated for this market.
+
+    """
+
+    opportunity: SpreadOpportunity
+    state: PositionState
+    up_leg: SideLeg
+    down_leg: SideLeg
+    entry_time: int
+    is_paper: bool = True
+    budget: Decimal = Decimal(0)
+
+    @property
+    def combined_vwap(self) -> Decimal:
+        """Return the combined VWAP of both legs, or zero if either side has no fills."""
+        if self.up_leg.quantity <= 0 or self.down_leg.quantity <= 0:
+            return Decimal(0)
+        return self.up_leg.entry_price + self.down_leg.entry_price
+
+    @property
+    def paired_quantity(self) -> Decimal:
+        """Return the minimum quantity across both legs (fully hedged amount)."""
+        return min(self.up_leg.quantity, self.down_leg.quantity)
+
+    @property
+    def total_cost_basis(self) -> Decimal:
+        """Return the combined cost basis of both legs."""
+        return self.up_leg.cost_basis + self.down_leg.cost_basis
+
+    @property
+    def imbalance_ratio(self) -> Decimal:
+        """Return the ratio of the heavier to the lighter leg quantity.
+
+        Return zero when either side has no fills (avoids division by zero).
+        """
+        if self.up_leg.quantity <= 0 or self.down_leg.quantity <= 0:
+            return Decimal(0)
+        max_qty = max(self.up_leg.quantity, self.down_leg.quantity)
+        min_qty = min(self.up_leg.quantity, self.down_leg.quantity)
+        return max_qty / min_qty
+
+    @property
+    def all_order_ids(self) -> list[str]:
+        """Return all CLOB order IDs across both legs."""
+        return list(self.up_leg.order_ids) + list(self.down_leg.order_ids)
 
 
 @dataclass(frozen=True)
