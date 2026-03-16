@@ -13,6 +13,7 @@ trading-tools/
 │   │   ├── backtester/              # Candle-based backtesting engine
 │   │   │   ├── cli/                 # CLI commands (run, compare, monte-carlo, walk-forward)
 │   │   │   ├── strategies/          # 10 pluggable trading strategies
+│   │   │   ├── _providers.py        # Internal candle provider helpers
 │   │   │   ├── engine.py            # Backtest orchestration
 │   │   │   ├── portfolio.py         # Portfolio state tracking
 │   │   │   ├── metrics.py           # Performance metrics (Sharpe, drawdown, etc.)
@@ -26,17 +27,28 @@ trading-tools/
 │   │   │   ├── grid_backtest.py     # Grid search engine
 │   │   │   └── run.py               # CLI entry point
 │   │   ├── bot_framework/           # Shared composable services for trading bots
+│   │   │   ├── balance_manager.py   # USDC balance tracking and available-to-trade accounting
+│   │   │   ├── heartbeat.py         # Periodic status logging for monitoring
+│   │   │   ├── order_executor.py    # CLOB order placement wrapper
 │   │   │   ├── redeemer.py          # CTF position redemption service
-│   │   │   └── order_executor.py    # CLOB order placement wrapper
+│   │   │   └── shutdown.py          # Graceful shutdown signal handling
 │   │   ├── polymarket_bot/          # Paper and live trading bot engines
 │   │   │   ├── strategies/          # 5 Polymarket-specific strategies
-│   │   │   ├── bot_engine.py        # Paper trading engine
-│   │   │   └── live_engine.py       # Live trading engine
+│   │   │   ├── base_engine.py       # Abstract base engine with shared lifecycle
+│   │   │   ├── base_portfolio.py    # Abstract base portfolio with shared accounting
+│   │   │   ├── engine.py            # Paper trading engine
+│   │   │   ├── kelly.py             # Kelly criterion position sizing
+│   │   │   ├── live_engine.py       # Live trading engine
+│   │   │   ├── live_portfolio.py    # Live portfolio with real balance tracking
+│   │   │   ├── price_tracker.py     # Real-time price tracking for open positions
+│   │   │   └── snapshot_simulator.py # Synthetic market snapshot generator
 │   │   ├── tick_collector/          # Real-time WebSocket tick streaming
 │   │   │   ├── collector.py         # WebSocket consumer and DB writer
-│   │   │   └── models.py            # Tick and order book SQLAlchemy models
+│   │   │   ├── models.py            # Tick and order book SQLAlchemy models
+│   │   │   ├── ws_client.py         # WebSocket connection management and reconnection
+│   │   │   └── snapshot_builder.py  # Order book snapshot construction from raw data
 │   │   ├── whale_monitor/           # Whale trade monitoring service
-│   │   │   ├── monitor.py           # Polling service
+│   │   │   ├── whale_spotter.py     # Polling service
 │   │   │   ├── models.py            # Whale and trade SQLAlchemy models
 │   │   │   ├── repository.py        # Async SQLAlchemy repository for whales and trades
 │   │   │   ├── analyser.py          # Aggregate trades into WhaleAnalysis / MarketBreakdown
@@ -47,10 +59,10 @@ trading-tools/
 │   │   │   └── config.py            # Whale monitor configuration dataclasses
 │   │   └── spread_capture/          # Real-time spread capture bot
 │   │       ├── config.py            # SpreadCaptureConfig (frozen dataclass)
-│   │       ├── models.py            # CopySignal, SideLeg, OpenPosition, CopyResult, CopyResultRecord (ORM)
+│   │       ├── models.py            # SpreadOpportunity, SideLeg, PairedPosition, SpreadResult, SpreadResultRecord (ORM)
 │   │       ├── repository.py        # Async SQLAlchemy repository for persisting closed trade results
-│   │       ├── signal_detector.py   # Incremental polling and signal detection
-│   │       └── copy_trader.py       # Temporal spread arbitrage engine
+│   │       ├── market_scanner.py    # Incremental polling and signal detection
+│   │       └── spread_trader.py     # Temporal spread arbitrage engine
 │   ├── clients/                     # External API clients
 │   │   ├── revolut_x/               # Revolut X API client
 │   │   │   ├── auth/                # Ed25519 authentication
