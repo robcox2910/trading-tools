@@ -142,10 +142,10 @@ class SpreadCaptureConfig:
     single_leg_timeout: int = 10
     rediscovery_interval: int = 30
     strategy: str = "simultaneous"
-    per_side_ask_threshold: Decimal = Decimal("0.48")
-    max_combined_vwap: Decimal = Decimal("0.98")
-    max_imbalance_ratio: Decimal = Decimal("2.0")
-    fill_size_tokens: Decimal = Decimal(10)
+    per_side_ask_threshold: Decimal = Decimal("0.95")
+    max_combined_vwap: Decimal = Decimal("0.97")
+    max_imbalance_ratio: Decimal = Decimal("3.0")
+    fill_size_tokens: Decimal = Decimal(5)
     max_single_side_pct: Decimal = Decimal("0.50")
 
     @classmethod
