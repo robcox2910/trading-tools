@@ -15,7 +15,7 @@ _CUSTOM_COMBINED = Decimal("0.96")
 _DEFAULT_CAPITAL = Decimal(100)
 _CUSTOM_POLL = 10
 _CUSTOM_MAX_OPEN = 5
-_CRYPTO_5M_COUNT = 4
+_CRYPTO_5M_COUNT = 7
 
 
 class TestBuildConfig:

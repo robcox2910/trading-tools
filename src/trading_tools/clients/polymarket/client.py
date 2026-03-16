@@ -1111,6 +1111,7 @@ def _safe_decimal(value: Any) -> Decimal:
 
 _FIVE_MINUTES = 300
 _FIFTEEN_MINUTES = 900
+_FOUR_HOURS = 14400
 
 
 def _resolve_timestamped_slugs(
@@ -1118,12 +1119,14 @@ def _resolve_timestamped_slugs(
     *,
     include_next: bool = False,
 ) -> list[str]:
-    """Expand series slugs into timestamped slugs for rotating markets.
+    """Expand series slugs into timestamped or title-query slugs for rotating markets.
 
     Polymarket rotating markets use slugs like ``btc-updown-5m-1771758600``
     where the suffix is the Unix epoch of the current window start.  For
-    slugs ending in ``-5m`` or ``-15m``, compute the current window epoch
-    (aligned to 300s or 900s respectively) and append it.  When
+    slugs ending in ``-5m``, ``-15m``, or ``-4h``, compute the current
+    window epoch (aligned to 300s, 900s, or 14400s respectively) and append
+    it.  Slugs ending in ``-daily`` are passed through unchanged (they use
+    title-based discovery rather than epoch suffixes).  When
     ``include_next`` is ``True``, also emit the next window slug so the
     collector can discover upcoming markets before they open.
     Other slugs are passed through unchanged.
@@ -1150,6 +1153,11 @@ def _resolve_timestamped_slugs(
             resolved.append(f"{slug}-{window}")
             if include_next:
                 resolved.append(f"{slug}-{window + _FIFTEEN_MINUTES}")
+        elif slug.endswith("-4h"):
+            window = (now // _FOUR_HOURS) * _FOUR_HOURS
+            resolved.append(f"{slug}-{window}")
+            if include_next:
+                resolved.append(f"{slug}-{window + _FOUR_HOURS}")
         else:
             resolved.append(slug)
     return resolved

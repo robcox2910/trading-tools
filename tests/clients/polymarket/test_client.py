@@ -392,6 +392,7 @@ class TestPolymarketClient:
         async def mock_events(
             *,
             slug: str = "",
+            title_contains: str = "",  # noqa: ARG001
             active: bool = True,  # noqa: ARG001
             limit: int = 5,  # noqa: ARG001
         ) -> list[dict[str, Any]]:
@@ -514,16 +515,33 @@ class TestResolveTimestampedSlugs:
         assert epochs[1] - epochs[0] == fifteen_minutes
         assert all(e % fifteen_minutes == 0 for e in epochs)
 
-    def test_mixed_5m_and_15m_slugs(self) -> None:
-        """Resolve both 5m and 15m slugs correctly in a single call."""
-        result = _resolve_timestamped_slugs(["btc-updown-5m", "btc-updown-15m"])
-        assert len(result) == _EXPECTED_TOKEN_COUNT
+    def test_4h_slug_gets_epoch_suffix(self) -> None:
+        """Verify -4h slugs get a 14400s-aligned epoch timestamp appended."""
+        result = _resolve_timestamped_slugs(["btc-updown-4h"])
+        assert len(result) == 1
+        assert result[0].startswith("btc-updown-4h-")
+        epoch_str = result[0].split("-")[-1]
+        epoch = int(epoch_str)
+        four_hours = 14400
+        assert epoch % four_hours == 0
+
+    def test_daily_slug_returns_title_query(self) -> None:
+        """Verify -daily slugs pass through unchanged (title-based discovery)."""
+        result = _resolve_timestamped_slugs(["btc-updown-daily"])
+        assert result == ["btc-updown-daily"]
+
+    def test_mixed_5m_4h_and_daily_slugs(self) -> None:
+        """Resolve 5m, 4h, and daily slugs correctly in a single call."""
+        expected_count = 3
+        result = _resolve_timestamped_slugs(["btc-updown-5m", "btc-updown-4h", "btc-updown-daily"])
+        assert len(result) == expected_count
         five_minutes = 300
-        fifteen_minutes = 900
+        four_hours = 14400
         epoch_5m = int(result[0].split("-")[-1])
-        epoch_15m = int(result[1].split("-")[-1])
+        epoch_4h = int(result[1].split("-")[-1])
         assert epoch_5m % five_minutes == 0
-        assert epoch_15m % fifteen_minutes == 0
+        assert epoch_4h % four_hours == 0
+        assert result[2] == "btc-updown-daily"
 
 
 class TestGetMarketTokens:
