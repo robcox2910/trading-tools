@@ -9,6 +9,7 @@ and sell when it rises above +threshold (price too high).
 from collections import deque
 from decimal import Decimal
 
+from trading_tools.apps.backtester.indicators import z_score
 from trading_tools.apps.polymarket_bot.models import MarketSnapshot
 from trading_tools.core.models import ONE, ZERO, Side, Signal
 
@@ -75,10 +76,10 @@ class PMMeanReversionStrategy:
 
         if self._snapshot_count < self._period + 1:
             if self._snapshot_count >= self._period:
-                self._prev_z = self._compute_z()
+                self._prev_z = z_score(list(self._prices))
             return None
 
-        curr_z = self._compute_z()
+        curr_z = z_score(list(self._prices))
         prev_z = self._prev_z
         self._prev_z = curr_z
 
@@ -97,14 +98,3 @@ class PMMeanReversionStrategy:
                 reason=f"Z-score ({curr_z:.2f}) crossed above {self._z_threshold}",
             )
         return None
-
-    def _compute_z(self) -> Decimal:
-        """Compute the z-score of the latest price relative to the rolling window."""
-        prices = list(self._prices)
-        n = Decimal(len(prices))
-        mean = sum(prices) / n
-        variance = sum((p - mean) ** Decimal(2) for p in prices) / n
-        if variance == ZERO:
-            return ZERO
-        std = variance.sqrt()
-        return (prices[-1] - mean) / std

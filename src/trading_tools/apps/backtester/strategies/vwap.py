@@ -34,6 +34,7 @@ Params:
 from collections import deque
 from decimal import Decimal
 
+from trading_tools.apps.backtester.indicators import detect_crossover
 from trading_tools.core.models import ONE, Candle, Side, Signal
 
 
@@ -87,14 +88,15 @@ class VwapStrategy:
         self._prev_close = candle.close
         self._prev_vwap = curr_vwap
 
-        if prev_close >= prev_vwap and candle.close < curr_vwap:
+        cross = detect_crossover(prev_close, candle.close, prev_vwap, curr_vwap)
+        if cross == -1:
             return Signal(
                 side=Side.BUY,
                 symbol=candle.symbol,
                 strength=ONE,
                 reason=f"Price crossed below VWAP({self._period})",
             )
-        if prev_close <= prev_vwap and candle.close > curr_vwap:
+        if cross == 1:
             return Signal(
                 side=Side.SELL,
                 symbol=candle.symbol,

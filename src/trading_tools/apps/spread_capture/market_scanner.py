@@ -20,15 +20,13 @@ import httpx
 from trading_tools.apps.spread_capture.models import SpreadOpportunity
 from trading_tools.apps.whale_monitor.correlator import parse_asset, parse_time_window
 from trading_tools.clients.polymarket.exceptions import PolymarketError
-from trading_tools.core.models import ZERO
+from trading_tools.core.models import ONE, ZERO
 
 if TYPE_CHECKING:
     from trading_tools.clients.polymarket.client import PolymarketClient
     from trading_tools.clients.polymarket.models import Market, OrderBook
 
 logger = logging.getLogger(__name__)
-
-_ONE = Decimal(1)
 
 
 def _is_expired(end_date: str, now_epoch: int) -> bool:
@@ -118,15 +116,13 @@ class MarketScanner:
         await self._maybe_rediscover()
 
         now = int(time.time())
-        opportunities: list[SpreadOpportunity] = []
 
-        for cid in list(self._known_markets):
-            if cid in open_cids:
-                continue
-
-            opp = await self._evaluate_market(cid, now)
-            if opp is not None:
-                opportunities.append(opp)
+        cids_to_scan = [cid for cid in self._known_markets if cid not in open_cids]
+        results = await asyncio.gather(
+            *(self._evaluate_market(cid, now) for cid in cids_to_scan),
+            return_exceptions=True,
+        )
+        opportunities = [r for r in results if isinstance(r, SpreadOpportunity)]
 
         # Sort by highest margin first
         opportunities.sort(key=lambda o: o.margin, reverse=True)
@@ -249,7 +245,7 @@ class MarketScanner:
             return None
 
         combined = up_price + down_price
-        margin = _ONE - combined
+        margin = ONE - combined
 
         if combined >= self.max_combined_cost:
             return None
