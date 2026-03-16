@@ -151,7 +151,7 @@ class SpreadCaptureConfig:
     max_imbalance_ratio: Decimal = Decimal("3.0")
     fill_size_tokens: Decimal = Decimal(5)
     max_single_side_pct: Decimal = Decimal("0.50")
-    max_fill_age_pct: Decimal = Decimal("0.70")
+    max_fill_age_pct: Decimal = Decimal("0.80")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "SpreadCaptureConfig":
