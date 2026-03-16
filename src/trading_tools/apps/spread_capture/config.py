@@ -112,8 +112,12 @@ class SpreadCaptureConfig:
         max_imbalance_ratio: Maximum quantity ratio between the heavier
             and lighter legs.  Pause the heavier side until the other
             catches up.
-        fill_size_tokens: Base token quantity per individual fill in
-            the ``"accumulate"`` strategy.
+        fill_size_tokens: Token quantity for adjustment fills after the
+            initial position is established.  Smaller than the initial
+            fill to allow fine-grained ratio control.
+        initial_fill_size: Token quantity for the first fill on each side
+            of an accumulating position.  Larger than ``fill_size_tokens``
+            to establish a base position quickly.
         max_single_side_pct: Maximum fraction of the per-market budget
             that may be spent on one side before the other side has any
             fills.  Prevents dumping the entire budget into a single
@@ -150,6 +154,7 @@ class SpreadCaptureConfig:
     max_combined_vwap: Decimal = Decimal("0.97")
     max_imbalance_ratio: Decimal = Decimal("1.3")
     fill_size_tokens: Decimal = Decimal(5)
+    initial_fill_size: Decimal = Decimal(20)
     max_single_side_pct: Decimal = Decimal("0.50")
     max_fill_age_pct: Decimal = Decimal("0.80")
 

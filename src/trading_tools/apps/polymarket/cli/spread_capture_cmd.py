@@ -48,6 +48,7 @@ _PARAM_MAP: tuple[tuple[str, str, bool], ...] = (
     ("max_combined_vwap", "max_combined_vwap", True),
     ("max_imbalance_ratio", "max_imbalance_ratio", True),
     ("fill_size_tokens", "fill_size_tokens", True),
+    ("initial_fill_size", "initial_fill_size", True),
     ("max_single_side_pct", "max_single_side_pct", True),
     ("max_fill_age_pct", "max_fill_age_pct", True),
     # Direct params (int, passed through unchanged)
@@ -219,7 +220,11 @@ def spread_capture(
     ] = None,
     fill_size_tokens: Annotated[
         str | None,
-        typer.Option(help="Base tokens per individual fill (accumulate strategy, e.g. 10)"),
+        typer.Option(help="Adjustment fill size in tokens after initial position (e.g. 5)"),
+    ] = None,
+    initial_fill_size: Annotated[
+        str | None,
+        typer.Option(help="Initial fill size in tokens for first entry on each side (e.g. 20)"),
     ] = None,
     max_single_side_pct: Annotated[
         str | None,
@@ -275,6 +280,7 @@ def spread_capture(
         max_combined_vwap=max_combined_vwap,
         max_imbalance_ratio=max_imbalance_ratio,
         fill_size_tokens=fill_size_tokens,
+        initial_fill_size=initial_fill_size,
         max_single_side_pct=max_single_side_pct,
         max_fill_age_pct=max_fill_age_pct,
     )

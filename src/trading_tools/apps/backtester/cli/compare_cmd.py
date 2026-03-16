@@ -25,7 +25,7 @@ from trading_tools.apps.backtester.compare import (
 )
 
 
-def compare(  # noqa: PLR0913
+def compare(
     source: Annotated[
         str,
         typer.Option(
@@ -118,7 +118,7 @@ def compare(  # noqa: PLR0913
     )
 
 
-async def _compare(  # noqa: PLR0913
+async def _compare(
     *,
     source: str,
     csv: Path | None,

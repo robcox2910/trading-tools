@@ -101,7 +101,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.pylint]
-max-args = 30
+max-args = 35
 max-returns = 8
 
 [tool.ruff.lint.per-file-ignores]

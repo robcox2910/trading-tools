@@ -444,7 +444,7 @@ class AccumulatingTrader:
     def _compute_fill_qty(
         self,
         pos: AccumulatingPosition,
-        side: str,  # noqa: ARG002
+        side: str,
         ask_price: Decimal,
         depth: Decimal,
     ) -> Decimal | None:
@@ -460,8 +460,11 @@ class AccumulatingTrader:
             Fill quantity in tokens, or ``None`` if below minimum.
 
         """
-        # Start with configured fill size
-        qty = self.config.fill_size_tokens
+        # Use larger initial fill for first entry, smaller adjustments after
+        leg = pos.up_leg if side == "Up" else pos.down_leg
+        qty = (
+            self.config.initial_fill_size if leg.quantity == ZERO else self.config.fill_size_tokens
+        )
 
         # Cap by order book depth
         max_from_depth = depth * self.config.max_book_pct
