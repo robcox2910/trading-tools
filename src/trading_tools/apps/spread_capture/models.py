@@ -11,6 +11,7 @@ persisting closed trade results to PostgreSQL (or SQLite).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -75,14 +76,25 @@ class SpreadOpportunity:
 
     @property
     def fill_score(self) -> Decimal:
-        """Return margin weighted by minimum bid-side liquidity.
+        """Return depth-weighted score that favours liquid, fillable markets.
 
-        Use the minimum depth across both legs since the spread only
-        works when both fill.  Multiplicative scoring ensures zero-depth
-        markets score zero regardless of margin.
+        Use ``log2(1 + margin_bps)`` to compress the margin range so that
+        a 30x margin advantage (e.g. HYPE 94% vs BTC 3%) becomes only ~3x
+        in log-space.  Multiply by average bid depth so that deep order
+        books dominate over thin ones.
+
+        Example scores (real data):
+        - BTC: margin=3%, depth=(96,403) → log2(301)*249 ≈ 2,070
+        - HYPE: margin=94%, depth=(50,50) → log2(9401)*50 ≈ 649
         """
-        min_depth = min(self.up_bid_depth, self.down_bid_depth)
-        return self.margin * min_depth
+        margin_bps = float(self.margin) * _MARGIN_BPS_SCALE
+        log_margin = Decimal(str(math.log2(1 + margin_bps)))
+        avg_depth = (self.up_bid_depth + self.down_bid_depth) / _TWO
+        return log_margin * avg_depth
+
+
+_MARGIN_BPS_SCALE = 10_000
+_TWO = Decimal(2)
 
 
 class SideLeg:
