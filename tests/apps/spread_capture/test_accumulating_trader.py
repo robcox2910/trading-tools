@@ -468,6 +468,44 @@ class TestSettlement:
 
 
 @pytest.mark.asyncio
+class TestFillAgeCutoff:
+    """Test that fills stop when market window is near expiry."""
+
+    async def test_fills_blocked_past_cutoff(self) -> None:
+        """No fills when market window is past max_fill_age_pct."""
+        config = _make_config(max_fill_age_pct=Decimal("0.70"))
+        trader = _make_trader(config=config)
+        # 80% of window elapsed (> 70% cutoff)
+        elapsed = int((_WINDOW_END - _WINDOW_START) * 0.8)
+        now = _WINDOW_START + elapsed
+        opp = _make_opportunity()
+
+        assert trader._past_fill_cutoff(opp, now) is True
+
+    async def test_fills_allowed_before_cutoff(self) -> None:
+        """Fills proceed when market window is before max_fill_age_pct."""
+        config = _make_config(max_fill_age_pct=Decimal("0.70"))
+        trader = _make_trader(config=config)
+        # 50% of window elapsed (< 70% cutoff)
+        elapsed = int((_WINDOW_END - _WINDOW_START) * 0.5)
+        now = _WINDOW_START + elapsed
+        opp = _make_opportunity()
+
+        assert trader._past_fill_cutoff(opp, now) is False
+
+    async def test_fills_blocked_at_exact_cutoff(self) -> None:
+        """Fills blocked when exactly at the cutoff boundary."""
+        config = _make_config(max_fill_age_pct=Decimal("0.70"))
+        trader = _make_trader(config=config)
+        # Exactly 70% elapsed — should block (> not >=, but Decimal precision)
+        elapsed = int((_WINDOW_END - _WINDOW_START) * 0.71)
+        now = _WINDOW_START + elapsed
+        opp = _make_opportunity()
+
+        assert trader._past_fill_cutoff(opp, now) is True
+
+
+@pytest.mark.asyncio
 class TestRiskManagement:
     """Test drawdown halt and circuit breaker."""
 

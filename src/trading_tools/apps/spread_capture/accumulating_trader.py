@@ -338,9 +338,17 @@ class AccumulatingTrader:
         if self.client is None:
             return
 
+        now = int(time.time())
+
         for cid in list(self._positions.keys()):
             pos = self._positions.get(cid)
             if pos is None or pos.state != PositionState.ACCUMULATING:
+                continue
+
+            # Stop filling when market is too close to expiry — prices
+            # become deterministic and chasing cheap near-zero asks on
+            # the losing side just adds directional risk.
+            if self._past_fill_cutoff(pos.opportunity, now):
                 continue
 
             try:
@@ -522,6 +530,27 @@ class AccumulatingTrader:
 
         # Check imbalance ratio
         return not self._would_exceed_imbalance(pos, side, fill_qty)
+
+    def _past_fill_cutoff(self, opp: SpreadOpportunity, now: int) -> bool:
+        """Return ``True`` when the market window is past the fill cutoff.
+
+        Near expiry, prices become deterministic — one side collapses to
+        near-zero as the outcome becomes clear.  Buying cheap tokens at
+        that point is a directional bet, not spread capture.
+
+        Args:
+            opp: The spread opportunity with window timestamps.
+            now: Current epoch seconds.
+
+        Returns:
+            ``True`` if fills should be stopped for this market.
+
+        """
+        window_duration = opp.window_end_ts - opp.window_start_ts
+        if window_duration <= 0:
+            return True
+        elapsed_pct = Decimal(str(now - opp.window_start_ts)) / Decimal(str(window_duration))
+        return elapsed_pct > self.config.max_fill_age_pct
 
     def _would_exceed_single_side_cap(
         self,
