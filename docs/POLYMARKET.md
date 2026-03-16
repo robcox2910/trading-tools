@@ -418,7 +418,7 @@ circuit_breaker_cooldown: 600
 |------|---------|-------------|
 | `--per-side-ask-threshold` | `0.95` | Maximum ask price to accept for a single side (high default — VWAP cap is the real guard) |
 | `--max-combined-vwap` | `0.97` | Maximum combined VWAP across accumulated fills (must be < 1.0 for profit) |
-| `--max-imbalance-ratio` | `3.0` | Maximum ratio of tokens held on one side vs the other before new fills on that side are paused |
+| `--max-imbalance-ratio` | `1.3` | Maximum ratio of tokens held on one side vs the other (whale median is 1.15, P75 is 1.30) |
 | `--fill-size-tokens` | `5` | Number of tokens to buy per individual fill (matches whale median) |
 | `--max-single-side-pct` | `0.50` | Max fraction of budget on one side before the other side has any fills (prevents directional bets) |
 | `--max-fill-age-pct` | `0.80` | Stop filling when market window is past this fraction (whale median fill is at 60%) |
