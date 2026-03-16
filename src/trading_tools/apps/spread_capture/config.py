@@ -148,7 +148,7 @@ class SpreadCaptureConfig:
     strategy: str = "simultaneous"
     per_side_ask_threshold: Decimal = Decimal("0.95")
     max_combined_vwap: Decimal = Decimal("0.97")
-    max_imbalance_ratio: Decimal = Decimal("1.3")
+    max_imbalance_ratio: Decimal = Decimal("2.0")
     fill_size_tokens: Decimal = Decimal(5)
     max_single_side_pct: Decimal = Decimal("0.50")
     max_fill_age_pct: Decimal = Decimal("0.80")
