@@ -27,6 +27,8 @@ _WINDOW_END = 1_710_000_300
 _NOW = 1_710_000_100
 _PAST_TS = 1_709_999_000
 _DEFAULT_POLL = 5
+_ZERO_FEE = Decimal("0.0")
+_DEFAULT_FEE_EXPONENT = 2
 
 
 def _make_config(**overrides: object) -> SpreadCaptureConfig:
@@ -43,6 +45,8 @@ def _make_config(**overrides: object) -> SpreadCaptureConfig:
         "circuit_breaker_cooldown": 300,
         "max_drawdown_pct": Decimal("0.15"),
         "compound_profits": True,
+        "fee_rate": _ZERO_FEE,
+        "fee_exponent": _DEFAULT_FEE_EXPONENT,
     }
     defaults.update(overrides)
     return SpreadCaptureConfig(**defaults)  # type: ignore[arg-type]
@@ -176,7 +180,8 @@ class TestSpreadTraderSettlement:
 
     async def test_paired_position_settles_with_profit(self) -> None:
         """PAIRED position settles with guaranteed profit (winning_qty - cost)."""
-        trader = _make_trader()
+        config = _make_config(fee_rate=_ZERO_FEE)
+        trader = _make_trader(config=config)
         opp = _make_opportunity(window_end_ts=_NOW - 1)
         up_leg = SideLeg(
             side="Up", entry_price=_UP_PRICE, quantity=_QTY, cost_basis=_UP_PRICE * _QTY
@@ -210,7 +215,8 @@ class TestSpreadTraderSettlement:
 
     async def test_single_leg_win(self) -> None:
         """SINGLE_LEG position profits when the single leg wins."""
-        trader = _make_trader()
+        config = _make_config(fee_rate=_ZERO_FEE)
+        trader = _make_trader(config=config)
         opp = _make_opportunity(window_end_ts=_NOW - 1)
         up_leg = SideLeg(
             side="Up", entry_price=_UP_PRICE, quantity=_QTY, cost_basis=_UP_PRICE * _QTY
@@ -237,7 +243,8 @@ class TestSpreadTraderSettlement:
 
     async def test_single_leg_loss(self) -> None:
         """SINGLE_LEG position loses when the single leg loses."""
-        trader = _make_trader()
+        config = _make_config(fee_rate=_ZERO_FEE)
+        trader = _make_trader(config=config)
         opp = _make_opportunity(window_end_ts=_NOW - 1)
         up_leg = SideLeg(
             side="Up", entry_price=_UP_PRICE, quantity=_QTY, cost_basis=_UP_PRICE * _QTY
@@ -263,7 +270,8 @@ class TestSpreadTraderSettlement:
 
     async def test_unknown_outcome_paired(self) -> None:
         """PAIRED position with unknown outcome uses conservative estimate."""
-        trader = _make_trader()
+        config = _make_config(fee_rate=_ZERO_FEE)
+        trader = _make_trader(config=config)
         opp = _make_opportunity(window_end_ts=_NOW - 1)
         up_leg = SideLeg(
             side="Up", entry_price=_UP_PRICE, quantity=_QTY, cost_basis=_UP_PRICE * _QTY
@@ -292,7 +300,7 @@ class TestSpreadTraderSettlement:
         assert result.outcome_known is False
 
     async def test_settle_skips_pending_positions(self) -> None:
-        """PENDING positions are not settled — they are managed separately."""
+        """PENDING positions are not settled -- they are managed separately."""
         trader = _make_trader()
         opp = _make_opportunity(window_end_ts=_NOW - 1)
         up_leg = SideLeg(
@@ -315,7 +323,7 @@ class TestSpreadTraderSettlement:
             mock_time.time.return_value = _NOW
             await trader._settle_expired_positions()
 
-        # Position should still be there — not settled
+        # Position should still be there -- not settled
         assert "cond_a" in trader._positions
         assert len(trader._results) == 0
 
@@ -327,7 +335,7 @@ class TestPendingOrderManagement:
     async def test_both_filled_transitions_to_paired(self) -> None:
         """When both GTC orders are filled, position transitions to PAIRED."""
         client = AsyncMock()
-        # No open orders — both filled
+        # No open orders -- both filled
         client.get_open_orders = AsyncMock(return_value=[])
         trader = _make_trader(client=client)
 
@@ -565,7 +573,8 @@ class TestDatabasePersistence:
 
     async def test_persist_result_on_settle(self) -> None:
         """Settled positions are persisted via the repository."""
-        trader = _make_trader()
+        config = _make_config(fee_rate=_ZERO_FEE)
+        trader = _make_trader(config=config)
         mock_repo = AsyncMock()
         trader.set_repo(mock_repo)
 
@@ -610,3 +619,72 @@ class TestHeartbeat:
             kwargs = mock_log.call_args.kwargs
             assert "polls" in kwargs
             assert "known_markets" in kwargs
+
+
+@pytest.mark.asyncio
+class TestFeeAdjustedPnl:
+    """Test that P&L calculation deducts Polymarket entry fees."""
+
+    async def test_paired_pnl_deducts_fees(self) -> None:
+        """Paired settlement deducts Polymarket entry fees from P&L."""
+        config = _make_config(fee_rate=Decimal("0.25"), fee_exponent=2)
+        trader = _make_trader(config=config)
+        opp = _make_opportunity(window_end_ts=_NOW - 1)
+        up_leg = SideLeg(
+            side="Up", entry_price=_UP_PRICE, quantity=_QTY, cost_basis=_UP_PRICE * _QTY
+        )
+        down_leg = SideLeg(
+            side="Down", entry_price=_DOWN_PRICE, quantity=_QTY, cost_basis=_DOWN_PRICE * _QTY
+        )
+        trader._positions["cond_a"] = PairedPosition(
+            opportunity=opp,
+            state=PositionState.PAIRED,
+            up_leg=up_leg,
+            down_leg=down_leg,
+            entry_time=_PAST_TS,
+        )
+
+        with (
+            patch.object(trader, "_resolve_outcome", return_value="Up"),
+            patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time,
+        ):
+            mock_time.time.return_value = _NOW
+            await trader._settle_expired_positions()
+
+        result = trader._results[0]
+        # Raw P&L without fees = 10 * 1.0 - (4.8 + 4.7) = 0.5
+        raw_pnl = _QTY * Decimal(1) - (_UP_PRICE * _QTY + _DOWN_PRICE * _QTY)
+        # With fees deducted, P&L should be less than raw
+        assert result.pnl < raw_pnl
+        # But should still be positive (fees are small relative to margin)
+        assert result.pnl > Decimal(0)
+
+    async def test_zero_fee_rate_no_deduction(self) -> None:
+        """Zero fee rate preserves raw P&L exactly."""
+        config = _make_config(fee_rate=_ZERO_FEE)
+        trader = _make_trader(config=config)
+        opp = _make_opportunity(window_end_ts=_NOW - 1)
+        up_leg = SideLeg(
+            side="Up", entry_price=_UP_PRICE, quantity=_QTY, cost_basis=_UP_PRICE * _QTY
+        )
+        down_leg = SideLeg(
+            side="Down", entry_price=_DOWN_PRICE, quantity=_QTY, cost_basis=_DOWN_PRICE * _QTY
+        )
+        trader._positions["cond_a"] = PairedPosition(
+            opportunity=opp,
+            state=PositionState.PAIRED,
+            up_leg=up_leg,
+            down_leg=down_leg,
+            entry_time=_PAST_TS,
+        )
+
+        with (
+            patch.object(trader, "_resolve_outcome", return_value="Up"),
+            patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time,
+        ):
+            mock_time.time.return_value = _NOW
+            await trader._settle_expired_positions()
+
+        result = trader._results[0]
+        expected_pnl = _QTY * Decimal(1) - (_UP_PRICE * _QTY + _DOWN_PRICE * _QTY)
+        assert result.pnl == expected_pnl

@@ -333,32 +333,24 @@ trading-tools-polymarket whale-correlate --address 0x1234... --days 1 --min-trad
 
 ### `spread-capture` — Buy Both Sides When Combined < $1.00
 
-Run a polling service that monitors BTC/ETH 5-minute prediction markets and captures the spread when the combined price of both sides drops below $1.00. Paper mode by default; pass `--confirm-live` for real orders.
+Run a polling service that scans BTC/ETH/SOL/XRP/DOGE/BNB/HYPE Up/Down markets for spread opportunities where the combined cost of buying both sides is below $1.00, guaranteeing profit at settlement. Paper mode by default; pass `--confirm-live` for real orders.
 
-The bot uses a multi-phase approach:
+The bot uses a simple, guaranteed-profit approach:
 
-1. **Directional entry (leg 1):** detect the favoured side (via whale bias signals or series slug discovery) and buy it immediately at current CLOB prices. Position size is determined by the Kelly criterion based on estimated win rate.
-2. **Take-profit:** each poll cycle, check if the leg 1 token price has risen above the take-profit threshold (`entry × (1 + take_profit_pct)`). If so, sell early to lock in known profit.
-3. **Defensive hedge:** if the leg 1 token price drops below `entry × (1 - defensive_hedge_pct)`, buy the opposite side to cap loss at settlement instead of selling into a thin book. The position becomes hedged with a bounded max loss. If the combined cost (leg1 + hedge) would exceed `max_defensive_hedge_cost`, sell the tokens instead to avoid locking in a large guaranteed loss.
-4. **Profit hedge (leg 2):** monitor the opposite side each poll cycle. When `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee_rate`, the opposite side is cheap enough to lock in guaranteed profit. Hedge uses FOK market orders by default for fast execution.
-5. **Settlement:** all hedged positions resolve at market expiry with known P&L (profit or capped loss).
-
-If no hedge opportunity arises before expiry, the position resolves as a pure directional bet (profitable when the whale is correct ~80% of the time).
-
-6. **Flip trading (optional):** when `--enable-flipping` is set, take-profit exits are followed by immediate re-entry on the opposite side, capturing multiple spread swings per market window. On take-profit, the bot sells leg 1 tokens and immediately buys the opposite side with the same dollar amount. If that side then rises to the flip take-profit threshold, it flips back. Flips take priority over take-profit hedging when enabled. Flips are capped by `--max-flips-per-market` and stop when fewer than `--min-flip-buffer-seconds` remain before expiry. When flip limits are reached, the bot falls back to take-profit hedging (combined < $1.00) or selling.
-
-The service uses **incremental polling** for minimal latency: only new trades since the last poll are fetched, and a rolling window of trades is maintained in memory.
+1. **Market discovery:** periodically scan configured series slugs (e.g. `btc-updown-5m`, `eth-updown-15m`) for active markets with future settlement times.
+2. **Spread detection:** fetch CLOB order book best **ask** prices for both Up and Down tokens. If the combined ask price is below `max_combined_cost` and the net margin (after Polymarket fees) exceeds `min_spread_margin`, an opportunity is detected.
+3. **Entry:** buy both sides simultaneously. Position size is `capital × max_position_pct / combined_cost`, capped by `max_book_pct` of visible ask depth to limit market impact. In live mode, prices are re-validated via VWAP walk of the order book before placing orders.
+4. **Settlement:** at market expiry, one side pays out $1.00 per token. P&L = winning quantity × $1.00 - total cost basis - entry fees. Since combined cost < $1.00, profit is guaranteed for paired positions.
+5. **Single-leg management:** if one side fails to fill (FOK rejection or GTC timeout), the bot attempts to unwind the filled leg at market. If unwind fails, the position is tracked as SINGLE_LEG and the bot attempts early exit when >60 seconds remain before expiry.
 
 ```bash
 # Paper mode (default) — log signals, track virtual P&L
 trading-tools-polymarket spread-capture \
   --series-slugs btc-updown-5m \
   --poll-interval 5 \
-  --min-bias 1.5 \
-  --min-trades 3 \
   --capital 100 \
-  --max-spread-cost 0.95 \
-  --max-entry-price 0.65 \
+  --max-combined-cost 0.98 \
+  --min-spread-margin 0.01 \
   -v
 
 # Live mode — place real limit orders on Polymarket
@@ -383,68 +375,48 @@ trading-tools-polymarket spread-capture \
 series_slugs: "btc-updown-5m"
 capital: "200"
 max_position_pct: "0.15"
-max_spread_cost: "0.95"
-max_entry_price: "0.65"
-adaptive_kelly: true
+max_combined_cost: "0.97"
+min_spread_margin: "0.01"
+fee_rate: "0.25"
+fee_exponent: 2
+max_book_pct: "0.20"
 compound_profits: true
 circuit_breaker_losses: 5
 circuit_breaker_cooldown: 600
-enable_flipping: true
-max_flips_per_market: 4
-min_flip_buffer_seconds: 30
-flip_take_profit_pct: "0.10"
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--series-slugs` | *(required)* | Comma-separated series slugs for market discovery (e.g. `btc-updown-5m`) |
+| `--series-slugs` | `btc-updown-5m,eth-updown-5m` | Comma-separated series slugs or `crypto-5m`/`crypto-15m` shortcut |
 | `--config` | *none* | Path to YAML config file (CLI flags override YAML values) |
-| `--poll-interval` | `5` | Seconds between DB polls (lower = faster) |
-| `--lookback` | `900` | Rolling window in seconds for trade accumulation |
-| `--min-bias` | `1.3` | Minimum bias ratio to trigger a copy signal |
-| `--min-trades` | `2` | Minimum trades per market to trigger a signal |
+| `--poll-interval` | `5` | Seconds between scan cycles |
 | `--capital` | `100` | Starting capital in USDC (paper mode) |
-| `--max-position-pct` | `0.10` | Max fraction of capital per single trade |
-| `--max-spread-cost` | `0.95` | Max combined cost of both legs to trigger hedge (e.g. 0.95 = min 5% return) |
-| `--max-entry-price` | `0.65` | Max price for directional entry (skip if favoured side already above this) |
+| `--max-position-pct` | `0.10` | Max fraction of capital per spread trade |
+| `--max-combined-cost` | `0.98` | Max combined cost of both sides to enter (must be < 1.0) |
+| `--min-spread-margin` | `0.01` | Min profit margin per token pair after fees |
 | `--max-window` | `0` | Max market window in seconds (e.g. 300 for 5-min only, 0=all) |
-| `--no-hedge-market-orders` | `false` | Use GTC limit orders for hedge leg instead of FOK market |
-| `--defensive-hedge-pct` | `0.10` | Buy opposite side when leg1 drops this % (e.g. 0.10 = hedge at 10% drop) |
-| `--max-defensive-hedge-cost` | `1.05` | Max combined cost for defensive hedge; sell instead if exceeded |
-| `--win-rate` | `0.80` | Estimated whale win rate for Kelly criterion sizing |
-| `--kelly-fraction` | `0.5` | Fractional Kelly multiplier (e.g. 0.5 = half-Kelly for safety) |
-| `--clob-fee-rate` | `0.0` | Per-leg CLOB fee rate for hedge profitability check |
-| `--take-profit-pct` | `0.15` | Take profit at this % gain above entry (e.g. 0.15 = 15%) |
-| `--max-unhedged-exposure-pct` | `0.50` | Max fraction of capital in net unhedged exposure per asset (opposite sides offset) |
-| `--adaptive-kelly/--no-adaptive-kelly` | `true` | Dynamically adjust Kelly win rate from realised unhedged outcomes |
-| `--min-kelly-results` | `20` | Min closed unhedged trades before adaptive Kelly activates |
-| `--min-win-rate` | `0.65` | Floor for adaptive Kelly win rate |
-| `--max-asset-exposure-pct` | `0.30` | Max fraction of capital per asset+side (e.g. all BTC-USD Up) |
-| `--compound-profits/--no-compound-profits` | `true` | Grow paper capital by adding realised P&L from closed trades |
-| `--hedge-urgency-threshold` | `0.20` | Time fraction below which hedge spread threshold is relaxed |
-| `--hedge-urgency-spread-bump` | `0.03` | Amount added to max_spread_cost in urgency zone |
-| `--circuit-breaker-losses` | `3` | Consecutive unhedged losses to trigger cooldown pause (0=disabled) |
-| `--circuit-breaker-cooldown` | `300` | Seconds to pause new entries after circuit breaker triggers |
-| `--max-drawdown-pct` | `0.15` | Max session drawdown as fraction — halt entries at 15% loss from start |
-| `--drawdown-throttle-pct` | `0.10` | HWM drawdown fraction to throttle Kelly by 50% (e.g. 0.10 = throttle at 10% below peak) |
-| `--paper-slippage-pct` | `0.005` | Simulated slippage for paper fills (e.g. 0.005 = 0.5% worse price) |
-| `--signal-strength-sizing/--no-signal-strength-sizing` | `true` | Scale position size by signal strength (bias ratio × trade count) |
-| `--max-entry-age-pct` | `0.60` | Max fraction of window elapsed before skipping entry (e.g. 0.60 = first 60% only) |
-| `--halt-win-rate` | `0.55` | Halt entries when adaptive win rate drops below this threshold |
-| `--enable-flipping/--no-flipping` | `false` | Flip to opposite side on take-profit instead of selling (active spread capture) |
-| `--max-flips-per-market` | `4` | Max flips per market window |
-| `--min-flip-buffer-seconds` | `30` | Stop flipping with fewer than this many seconds to expiry |
-| `--flip-take-profit-pct` | `0.10` | Tighter take-profit % for flip legs (e.g. 0.10 = 10% vs 15% initial) |
+| `--max-entry-age-pct` | `0.60` | Max fraction of window elapsed before skipping entry |
+| `--max-open-positions` | `10` | Max concurrent spread positions |
+| `--fee-rate` | `0.25` | Polymarket crypto fee rate coefficient |
+| `--fee-exponent` | `2` | Polymarket fee exponent for `price × (1-price)` term |
+| `--max-book-pct` | `0.20` | Max fraction of visible order book depth to consume per side |
+| `--use-market-orders/--no-use-market-orders` | `false` | Use FOK market orders instead of GTC limit |
+| `--single-leg-timeout` | `10` | Seconds before cancelling unfilled side (live only) |
+| `--rediscovery-interval` | `30` | Seconds between market rediscovery calls |
+| `--compound-profits/--no-compound-profits` | `true` | Grow paper capital by adding realised P&L |
+| `--circuit-breaker-losses` | `3` | Consecutive losses to trigger cooldown (0=disabled) |
+| `--circuit-breaker-cooldown` | `300` | Seconds to pause after circuit breaker triggers |
+| `--max-drawdown-pct` | `0.15` | Max session drawdown as fraction — halt entries when exceeded |
+| `--paper-slippage-pct` | `0.005` | Simulated slippage for paper fills |
 | `--confirm-live` | `false` | **Required flag** for live trading |
-| `--db-url` | env `SPREAD_DB_URL`, `WHALE_DB_URL`, or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
 
-**Signal detection pipeline:**
+**Spread detection pipeline:**
 
-1. Poll `whale_trades` table incrementally (only new trades since last check)
-2. Group by `condition_id`, compute bias via `analyse_markets()`
-3. Filter: BTC/ETH asset only, future time window, bias > threshold, trades >= min
-4. Fetch current CLOB prices; skip if favoured side > `max_entry_price`
+1. Discover active markets from configured series slugs (refreshed every `rediscovery_interval` seconds)
+2. Fetch CLOB order books for both Up and Down tokens
+3. Use best ask price as actual buy cost (not bids or midpoints)
+4. Compute net margin: `1.0 - combined_ask - up_fee - down_fee`
 5. Open directional leg 1 (buy favoured side, Kelly-sized with optional signal strength scaling)
 6. Each poll cycle checks (in order): take-profit → defensive hedge → profit hedge → expiry
 7. Take-profit: if flipping enabled, sell + flip to opposite side (priority); otherwise hedge opposite side when combined < $1.00; sell as fallback

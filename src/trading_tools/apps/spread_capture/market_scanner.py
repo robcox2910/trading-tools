@@ -2,7 +2,8 @@
 
 Periodically discover active Up/Down markets from series slugs and check
 CLOB prices for spread opportunities where the combined cost of buying
-both sides is below the configured threshold.
+both sides is below the configured threshold.  Deduct Polymarket fees
+from the gross margin to filter out unprofitable opportunities.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from trading_tools.apps.spread_capture.fees import compute_poly_fee
 from trading_tools.apps.spread_capture.models import SpreadOpportunity
 from trading_tools.apps.whale_monitor.correlator import parse_asset, parse_time_window
 from trading_tools.clients.polymarket.exceptions import PolymarketError
@@ -81,10 +83,12 @@ class MarketScanner:
         client: Authenticated Polymarket client for CLOB and Gamma API.
         series_slugs: Event series slugs to scan.
         max_combined_cost: Maximum combined cost to trigger an entry.
-        min_spread_margin: Minimum profit margin per token pair.
+        min_spread_margin: Minimum profit margin per token pair after fees.
         max_window_seconds: Maximum market window duration (0 = no limit).
         max_entry_age_pct: Maximum fraction of window elapsed.
         rediscovery_interval: Seconds between market rediscovery calls.
+        fee_rate: Polymarket fee rate coefficient for margin deduction.
+        fee_exponent: Exponent for the fee formula.
 
     """
 
@@ -95,6 +99,8 @@ class MarketScanner:
     max_window_seconds: int
     max_entry_age_pct: Decimal
     rediscovery_interval: int
+    fee_rate: Decimal = Decimal("0.25")
+    fee_exponent: int = 2
     _known_markets: dict[str, _KnownMarket] = field(default_factory=_empty_market_dict, repr=False)
     _last_discovery: float = field(default=0.0, repr=False)
 
@@ -124,8 +130,8 @@ class MarketScanner:
         )
         opportunities = [r for r in results if isinstance(r, SpreadOpportunity)]
 
-        # Sort by fill score (margin weighted by bid-side liquidity)
-        opportunities.sort(key=lambda o: o.fill_score, reverse=True)
+        # Sort by margin (highest first)
+        opportunities.sort(key=lambda o: o.margin, reverse=True)
         return opportunities
 
     async def _evaluate_market(self, cid: str, now: int) -> SpreadOpportunity | None:
@@ -133,8 +139,7 @@ class MarketScanner:
 
         Fetch the market metadata (for title, active status, and token IDs),
         then fetch order books for both tokens concurrently and use the best
-        bid prices.  Best bids represent the price at which we can place GTC
-        limit buy orders that match existing resting liquidity.
+        ask prices.  Best asks represent the actual cost to buy each side.
 
         Args:
             cid: Market condition identifier.
@@ -162,7 +167,7 @@ class MarketScanner:
         if window is None:
             return None
 
-        # Fetch order books for both tokens to get best bid prices
+        # Fetch order books for both tokens to get best ask prices
         tokens_by_outcome = {t.outcome: t for t in market.tokens}
         up_token = tokens_by_outcome.get("Up")
         down_token = tokens_by_outcome.get("Down")
@@ -171,13 +176,13 @@ class MarketScanner:
 
         up_book, down_book = await self._fetch_order_books(up_token.token_id, down_token.token_id)
 
-        # Use best bid price; fall back to midpoint if no bids
-        up_bid = up_book.bids[0].price if up_book.bids else up_token.price
-        down_bid = down_book.bids[0].price if down_book.bids else down_token.price
+        # Use best ask price (actual buy cost); fall back to midpoint if no asks
+        up_ask = up_book.asks[0].price if up_book.asks else up_token.price
+        down_ask = down_book.asks[0].price if down_book.asks else down_token.price
 
-        # Extract bid-side depth for fill probability scoring
-        up_bid_depth = up_book.bids[0].size if up_book.bids else ZERO
-        down_bid_depth = down_book.bids[0].size if down_book.bids else ZERO
+        # Compute total visible ask-side depth for market impact cap
+        up_ask_depth = sum((level.size for level in up_book.asks), start=ZERO)
+        down_ask_depth = sum((level.size for level in down_book.asks), start=ZERO)
 
         return self._check_spread(
             market,
@@ -186,10 +191,10 @@ class MarketScanner:
             window[0],
             window[1],
             now,
-            up_bid_price=up_bid,
-            down_bid_price=down_bid,
-            up_bid_depth=up_bid_depth,
-            down_bid_depth=down_bid_depth,
+            up_ask_price=up_ask,
+            down_ask_price=down_ask,
+            up_ask_depth=up_ask_depth,
+            down_ask_depth=down_ask_depth,
         )
 
     def _check_spread(
@@ -201,16 +206,16 @@ class MarketScanner:
         window_end_ts: int,
         now: int,
         *,
-        up_bid_price: Decimal | None = None,
-        down_bid_price: Decimal | None = None,
-        up_bid_depth: Decimal = ZERO,
-        down_bid_depth: Decimal = ZERO,
+        up_ask_price: Decimal | None = None,
+        down_ask_price: Decimal | None = None,
+        up_ask_depth: Decimal = ZERO,
+        down_ask_depth: Decimal = ZERO,
     ) -> SpreadOpportunity | None:
         """Check whether a market has a viable spread opportunity.
 
         Apply window duration, entry age, price, and margin filters.
-        When ``up_bid_price`` / ``down_bid_price`` are provided (from
-        order book best bids), use those instead of midpoint prices.
+        Deduct Polymarket fees from the gross margin to ensure the
+        opportunity is profitable net of fees.
 
         Args:
             market: The fetched market with token prices.
@@ -219,10 +224,10 @@ class MarketScanner:
             window_start_ts: Window start epoch seconds.
             window_end_ts: Window end epoch seconds.
             now: Current epoch seconds.
-            up_bid_price: Best bid price for Up token (order book).
-            down_bid_price: Best bid price for Down token (order book).
-            up_bid_depth: Best bid size (tokens) for Up token.
-            down_bid_depth: Best bid size (tokens) for Down token.
+            up_ask_price: Best ask price for Up token (order book).
+            down_ask_price: Best ask price for Down token (order book).
+            up_ask_depth: Total visible ask depth for Up token.
+            down_ask_depth: Total visible ask depth for Down token.
 
         Returns:
             A ``SpreadOpportunity`` if viable, else ``None``.
@@ -247,19 +252,25 @@ class MarketScanner:
         if up_token is None or down_token is None:
             return None
 
-        # Use order book best bid prices when available, else midpoint
-        up_price = up_bid_price if up_bid_price is not None else up_token.price
-        down_price = down_bid_price if down_bid_price is not None else down_token.price
+        # Use order book best ask prices when available, else midpoint
+        up_price = up_ask_price if up_ask_price is not None else up_token.price
+        down_price = down_ask_price if down_ask_price is not None else down_token.price
 
         if up_price <= ZERO or down_price <= ZERO:
             return None
 
         combined = up_price + down_price
-        margin = ONE - combined
+        gross_margin = ONE - combined
 
         if combined >= self.max_combined_cost:
             return None
-        if margin < self.min_spread_margin:
+
+        # Deduct Polymarket fees from margin
+        up_fee = compute_poly_fee(up_price, self.fee_rate, self.fee_exponent)
+        down_fee = compute_poly_fee(down_price, self.fee_rate, self.fee_exponent)
+        net_margin = gross_margin - up_fee - down_fee
+
+        if net_margin < self.min_spread_margin:
             return None
 
         return SpreadOpportunity(
@@ -271,11 +282,11 @@ class MarketScanner:
             up_price=up_price,
             down_price=down_price,
             combined=combined,
-            margin=margin,
+            margin=net_margin,
             window_start_ts=window_start_ts,
             window_end_ts=window_end_ts,
-            up_bid_depth=up_bid_depth,
-            down_bid_depth=down_bid_depth,
+            up_ask_depth=up_ask_depth,
+            down_ask_depth=down_ask_depth,
         )
 
     async def _fetch_order_books(
