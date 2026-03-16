@@ -9,10 +9,10 @@ import pytest
 
 from trading_tools.apps.whale_monitor.collector import (
     WhaleMonitor,
-    _now_ms,
     _parse_trade,
 )
 from trading_tools.apps.whale_monitor.config import WhaleMonitorConfig
+from trading_tools.core.timestamps import now_ms
 
 from .conftest import DEFAULT_ADDRESS, make_raw_trade, make_tracked_whale, make_whale_config
 
@@ -70,17 +70,17 @@ class TestParseTrade:
 
 
 class TestNowMs:
-    """Tests for the _now_ms utility."""
+    """Tests for the now_ms utility."""
 
     def test_returns_positive_integer(self) -> None:
-        """Verify _now_ms returns a positive integer."""
-        result = _now_ms()
+        """Verify now_ms returns a positive integer."""
+        result = now_ms()
         assert isinstance(result, int)
         assert result > 0
 
     def test_returns_milliseconds(self) -> None:
         """Verify the value is in milliseconds (> 1e12 for modern epochs)."""
-        result = _now_ms()
+        result = now_ms()
         assert result > _MIN_EPOCH_MS
 
 
@@ -160,16 +160,16 @@ class TestParseTradeEdgeCases:
 
 
 class TestHandleShutdown:
-    """Tests for the shutdown signal handler."""
+    """Tests for the GracefulShutdown integration."""
 
     def test_sets_shutdown_flag(self) -> None:
-        """Verify _handle_shutdown sets the shutdown flag."""
+        """Verify request() sets the should_stop flag."""
         config = make_whale_config()
         monitor = WhaleMonitor(config)
 
-        monitor._handle_shutdown()
+        monitor._shutdown.request()
 
-        assert monitor._shutdown is True
+        assert monitor._shutdown.should_stop is True
 
 
 class TestPollWhale:
@@ -366,7 +366,7 @@ class TestWhaleMonitorEndToEnd:
             nonlocal call_count
             call_count += 1
             if call_count >= 1:
-                monitor._shutdown = True
+                monitor._shutdown.request()
 
         with (
             patch("asyncio.get_running_loop") as mock_loop,
@@ -406,7 +406,7 @@ class TestWhaleMonitorEndToEnd:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
-                monitor._shutdown = True
+                monitor._shutdown.request()
 
         with (
             patch("asyncio.sleep", side_effect=fast_sleep),

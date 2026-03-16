@@ -9,22 +9,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import signal
-import time
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from trading_tools.apps.bot_framework.heartbeat import HeartbeatLogger
+from trading_tools.apps.bot_framework.shutdown import GracefulShutdown
 from trading_tools.apps.whale_monitor.models import WhaleTrade
 from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
 if TYPE_CHECKING:
     from trading_tools.apps.whale_monitor.config import WhaleMonitorConfig
 
+from trading_tools.core.timestamps import now_ms
+
 logger = logging.getLogger(__name__)
 
-_HEARTBEAT_INTERVAL_SECONDS = 60
-_MS_PER_SECOND = 1000
 _DATA_API_BASE = "https://data-api.polymarket.com"
 
 
@@ -50,7 +50,8 @@ class WhaleMonitor:
         """
         self._config = config
         self._repo = WhaleRepository(config.db_url)
-        self._shutdown = False
+        self._shutdown = GracefulShutdown()
+        self._heartbeat = HeartbeatLogger()
         self._trades_since_heartbeat = 0
         self._total_trades = 0
 
@@ -65,9 +66,7 @@ class WhaleMonitor:
             5. On SIGINT/SIGTERM, finish the current cycle and shut down.
 
         """
-        loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGINT, self._handle_shutdown)
-        loop.add_signal_handler(signal.SIGTERM, self._handle_shutdown)
+        self._shutdown.install()
 
         await self._repo.init_db()
         await self._register_cli_whales()
@@ -104,14 +103,14 @@ class WhaleMonitor:
 
     async def _poll_loop(self) -> None:
         """Run the main poll cycle, sleeping between iterations."""
-        while not self._shutdown:
+        while not self._shutdown.should_stop:
             whales = await self._repo.get_active_whales()
             async with httpx.AsyncClient(
                 timeout=30.0,
                 limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
             ) as client:
                 for whale in whales:
-                    if self._shutdown:
+                    if self._shutdown.should_stop:
                         break
                     try:
                         new_count = await self._poll_whale(client, whale.address)
@@ -151,7 +150,7 @@ class WhaleMonitor:
         total_new = 0
         seen_hashes: set[str] = set()
         limit = self._config.api_limit
-        now_ms = _now_ms()
+        poll_ts_ms = now_ms()
 
         for offset in range(0, self._config.max_offset + 1, limit):
             url = f"{_DATA_API_BASE}/trades"
@@ -167,7 +166,7 @@ class WhaleMonitor:
             if not page:
                 break
 
-            page_new = await self._process_page(page, address, seen_hashes, now_ms)
+            page_new = await self._process_page(page, address, seen_hashes, poll_ts_ms)
             total_new += page_new
 
             if len(page) < limit:
@@ -180,7 +179,7 @@ class WhaleMonitor:
         page: list[dict[str, Any]],
         address: str,
         seen_hashes: set[str],
-        now_ms: int,
+        collected_at_ms: int,
     ) -> int:
         """Deduplicate and persist a single page of raw trades.
 
@@ -194,7 +193,7 @@ class WhaleMonitor:
             address: Whale proxy wallet address.
             seen_hashes: Hashes already seen in this poll cycle
                 (mutated in-place to track cross-page duplicates).
-            now_ms: Collection timestamp in epoch milliseconds.
+            collected_at_ms: Collection timestamp in epoch milliseconds.
 
         Returns:
             Number of new trades inserted from this page.
@@ -217,7 +216,7 @@ class WhaleMonitor:
             if tx_hash in skip or tx_hash in seen_hashes:
                 continue
             seen_hashes.add(tx_hash)
-            trade = _parse_trade(raw, address, now_ms)
+            trade = _parse_trade(raw, address, collected_at_ms)
             if trade:
                 new_trades.append(trade)
 
@@ -228,11 +227,6 @@ class WhaleMonitor:
 
         return len(new_trades)
 
-    def _handle_shutdown(self) -> None:
-        """Set the shutdown flag for graceful exit on SIGINT/SIGTERM."""
-        logger.info("Shutdown signal received")
-        self._shutdown = True
-
     async def _periodic_heartbeat(self) -> None:
         """Log collection stats at regular intervals for monitoring.
 
@@ -241,25 +235,20 @@ class WhaleMonitor:
         count.
         """
         try:
-            await self._periodic_heartbeat_inner()
+            while not self._shutdown.should_stop:
+                await asyncio.sleep(60)
+                if self._shutdown.should_stop:
+                    break
+                whales = await self._repo.get_active_whales()
+                total = await self._repo.get_trade_count()
+                self._heartbeat.maybe_log(
+                    trades_last_min=self._trades_since_heartbeat,
+                    total_stored=total,
+                    whales=len(whales),
+                )
+                self._trades_since_heartbeat = 0
         except asyncio.CancelledError:
             return
-
-    async def _periodic_heartbeat_inner(self) -> None:
-        """Execute the heartbeat loop body (separated for CancelledError handling)."""
-        while not self._shutdown:
-            await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
-            if self._shutdown:
-                break
-            whales = await self._repo.get_active_whales()
-            total = await self._repo.get_trade_count()
-            logger.info(
-                "[WHALE-MONITOR] trades_last_min=%d total_stored=%d whales=%d",
-                self._trades_since_heartbeat,
-                total,
-                len(whales),
-            )
-            self._trades_since_heartbeat = 0
 
 
 def _parse_trade(
@@ -297,13 +286,3 @@ def _parse_trade(
     except (KeyError, ValueError, TypeError):
         logger.debug("Skipping malformed trade record: %s", raw)
         return None
-
-
-def _now_ms() -> int:
-    """Return the current time as epoch milliseconds.
-
-    Returns:
-        Integer epoch milliseconds.
-
-    """
-    return int(time.time() * _MS_PER_SECOND)
