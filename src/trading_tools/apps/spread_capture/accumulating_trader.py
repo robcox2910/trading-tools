@@ -460,11 +460,19 @@ class AccumulatingTrader:
             Fill quantity in tokens, or ``None`` if below minimum.
 
         """
-        # Use larger initial fill for first entry, smaller adjustments after
+        # Size the fill based on position state:
+        # 1. First side to fill: use initial_fill_size (large, establishes base)
+        # 2. Second side's first fill: match the other side's quantity
+        # 3. Subsequent fills: use fill_size_tokens (small adjustments)
         leg = pos.up_leg if side == "Up" else pos.down_leg
-        qty = (
-            self.config.initial_fill_size if leg.quantity == ZERO else self.config.fill_size_tokens
-        )
+        other_leg = pos.down_leg if side == "Up" else pos.up_leg
+        if leg.quantity == ZERO:
+            if other_leg.quantity == ZERO:
+                qty = self.config.initial_fill_size
+            else:
+                qty = other_leg.quantity
+        else:
+            qty = self.config.fill_size_tokens
 
         # Cap by order book depth
         max_from_depth = depth * self.config.max_book_pct
