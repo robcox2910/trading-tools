@@ -1,12 +1,17 @@
-"""Tests for AccumulatingTrader directional entry + opportunistic hedge engine."""
+"""Tests for SpreadEngine directional entry + opportunistic hedge logic.
+
+Test the pure decision engine extracted from the former monolithic
+AccumulatingTrader.  Use mock adapters that satisfy the ExecutionPort
+and MarketDataPort protocols so tests run without any I/O.
+"""
 
 from decimal import Decimal
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
-from trading_tools.apps.spread_capture.accumulating_trader import AccumulatingTrader
 from trading_tools.apps.spread_capture.config import SpreadCaptureConfig
+from trading_tools.apps.spread_capture.engine import SpreadEngine
 from trading_tools.apps.spread_capture.models import (
     AccumulatingPosition,
     PositionState,
@@ -14,6 +19,7 @@ from trading_tools.apps.spread_capture.models import (
     SpreadOpportunity,
     SpreadResult,
 )
+from trading_tools.apps.spread_capture.ports import FillResult
 
 _UP_PRICE = Decimal("0.48")
 _DOWN_PRICE = Decimal("0.47")
@@ -85,11 +91,73 @@ def _make_opportunity(**overrides: object) -> SpreadOpportunity:
     return SpreadOpportunity(**defaults)  # type: ignore[arg-type]
 
 
-def _make_trader(**overrides: object) -> AccumulatingTrader:
-    """Create an AccumulatingTrader with mock client and sensible defaults."""
+class _MockExecution:
+    """Mock execution port for testing.
+
+    Return a FillResult with the requested price and quantity.
+    """
+
+    def __init__(self, capital: Decimal = _CAPITAL) -> None:
+        """Initialize with a given capital amount.
+
+        Args:
+            capital: Starting virtual capital.
+
+        """
+        self._capital = capital
+
+    async def execute_fill(
+        self,
+        token_id: str,  # noqa: ARG002
+        side: str,  # noqa: ARG002
+        price: Decimal,
+        quantity: Decimal,
+    ) -> FillResult | None:
+        """Return a fill at the requested price and quantity.
+
+        Args:
+            token_id: Token ID (unused).
+            side: Side (unused).
+            price: Requested price.
+            quantity: Requested quantity.
+
+        Returns:
+            A ``FillResult`` echoing the request.
+
+        """
+        return FillResult(price=price, quantity=quantity)
+
+    def get_capital(self) -> Decimal:
+        """Return the mock capital.
+
+        Returns:
+            Available capital.
+
+        """
+        return self._capital
+
+    def total_capital(self) -> Decimal:
+        """Return the mock total capital.
+
+        Returns:
+            Total capital.
+
+        """
+        return self._capital
+
+
+def _make_engine(**overrides: object) -> SpreadEngine:
+    """Create a SpreadEngine with mock adapters and sensible defaults."""
     config = overrides.pop("config", _make_config())  # type: ignore[arg-type]
-    client = overrides.pop("client", AsyncMock())  # type: ignore[arg-type]
-    return AccumulatingTrader(config=config, live=False, client=client, **overrides)  # type: ignore[arg-type]
+    execution = overrides.pop("execution", _MockExecution())  # type: ignore[arg-type]
+    market_data = overrides.pop("market_data", AsyncMock())  # type: ignore[arg-type]
+    return SpreadEngine(
+        config=config,  # type: ignore[arg-type]
+        execution=execution,  # type: ignore[arg-type]
+        market_data=market_data,  # type: ignore[arg-type]
+        mode_label="PAPER",
+        **overrides,  # type: ignore[arg-type]
+    )
 
 
 def _make_accum_position(
@@ -131,115 +199,87 @@ class TestSignalDetermination:
 
     async def test_binance_up_signal_multiple_candles(self) -> None:
         """Primary side is Up when weighted momentum is positive across candles."""
-        trader = _make_trader()
-        trader._binance = AsyncMock()
-        pos = _make_accum_position(budget=Decimal(50))
-
-        # 3 candles: small dip, flat, strong rally → net weighted Up
+        mock_md = AsyncMock()
         candles = [
             AsyncMock(open=Decimal(50000), close=Decimal(49990)),
             AsyncMock(open=Decimal(49990), close=Decimal(49990)),
             AsyncMock(open=Decimal(49990), close=Decimal(50100)),
         ]
+        mock_md.get_binance_candles = AsyncMock(return_value=candles)
+        engine = _make_engine(market_data=mock_md)
+        pos = _make_accum_position(budget=Decimal(50))
 
-        with patch(
-            "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
-        ) as mock_provider_cls:
-            mock_provider_cls.return_value.get_candles = AsyncMock(return_value=candles)
-            result = await trader._determine_primary_side(pos)
-
+        result = await engine._determine_primary_side(pos)
         assert result == "Up"
 
     async def test_binance_down_signal_multiple_candles(self) -> None:
         """Primary side is Down when weighted momentum is negative."""
-        trader = _make_trader()
-        trader._binance = AsyncMock()
-        pos = _make_accum_position(budget=Decimal(50))
-
-        # 3 candles: small rally, flat, strong drop → net weighted Down
+        mock_md = AsyncMock()
         candles = [
             AsyncMock(open=Decimal(50000), close=Decimal(50010)),
             AsyncMock(open=Decimal(50010), close=Decimal(50010)),
             AsyncMock(open=Decimal(50010), close=Decimal(49900)),
         ]
+        mock_md.get_binance_candles = AsyncMock(return_value=candles)
+        engine = _make_engine(market_data=mock_md)
+        pos = _make_accum_position(budget=Decimal(50))
 
-        with patch(
-            "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
-        ) as mock_provider_cls:
-            mock_provider_cls.return_value.get_candles = AsyncMock(return_value=candles)
-            result = await trader._determine_primary_side(pos)
-
+        result = await engine._determine_primary_side(pos)
         assert result == "Down"
 
     async def test_recency_weighting_favours_latest(self) -> None:
         """Recent candle outweighs older candle of equal magnitude."""
-        trader = _make_trader()
-        trader._binance = AsyncMock()
-        pos = _make_accum_position(budget=Decimal(50))
-
-        # Candle 1 (weight 1): +100, Candle 2 (weight 2): -60
-        # Weighted sum: 1*100 + 2*(-60) = 100 - 120 = -20 → Down
+        mock_md = AsyncMock()
         candles = [
             AsyncMock(open=Decimal(50000), close=Decimal(50100)),
             AsyncMock(open=Decimal(50100), close=Decimal(50040)),
         ]
+        mock_md.get_binance_candles = AsyncMock(return_value=candles)
+        engine = _make_engine(market_data=mock_md)
+        pos = _make_accum_position(budget=Decimal(50))
 
-        with patch(
-            "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
-        ) as mock_provider_cls:
-            mock_provider_cls.return_value.get_candles = AsyncMock(return_value=candles)
-            result = await trader._determine_primary_side(pos)
-
+        result = await engine._determine_primary_side(pos)
         assert result == "Down"
 
     async def test_lookback_window_is_before_market_open(self) -> None:
         """Signal uses candles from before the window, not during it."""
         config = _make_config(signal_delay_seconds=120)
-        trader = _make_trader(config=config)
-        trader._binance = AsyncMock()
+        mock_md = AsyncMock()
+        mock_candle = AsyncMock(open=Decimal(50000), close=Decimal(50100))
+        mock_md.get_binance_candles = AsyncMock(return_value=[mock_candle])
+        engine = _make_engine(config=config, market_data=mock_md)
         pos = _make_accum_position(budget=Decimal(50))
 
-        mock_candle = AsyncMock(open=Decimal(50000), close=Decimal(50100))
+        await engine._determine_primary_side(pos)
 
-        with patch(
-            "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
-        ) as mock_provider_cls:
-            mock_get = AsyncMock(return_value=[mock_candle])
-            mock_provider_cls.return_value.get_candles = mock_get
-            await trader._determine_primary_side(pos)
-
-        call_args = mock_get.call_args
-        start_ts = call_args[0][2]
-        end_ts = call_args[0][3]
+        call_args = mock_md.get_binance_candles.call_args
+        start_ts = call_args[0][1]
+        end_ts = call_args[0][2]
         assert end_ts == _WINDOW_START
         assert start_ts == _WINDOW_START - 120
 
     async def test_fallback_to_cheaper_side(self) -> None:
         """Fall back to the cheaper opportunity side when Binance unavailable."""
-        trader = _make_trader()
-        trader._binance = None
+        mock_md = AsyncMock()
+        mock_md.get_binance_candles = AsyncMock(side_effect=Exception("no data"))
+        engine = _make_engine(market_data=mock_md)
         pos = _make_accum_position(budget=Decimal(50))
 
-        result = await trader._determine_primary_side(pos)
+        result = await engine._determine_primary_side(pos)
         assert result == "Down"
 
     async def test_fallback_when_flat(self) -> None:
         """Fall back when all candles are flat (weighted sum is zero)."""
-        trader = _make_trader()
-        trader._binance = AsyncMock()
-        pos = _make_accum_position(budget=Decimal(50))
-
+        mock_md = AsyncMock()
         candles = [
             AsyncMock(open=Decimal(50000), close=Decimal(50000)),
             AsyncMock(open=Decimal(50000), close=Decimal(50000)),
         ]
+        mock_md.get_binance_candles = AsyncMock(return_value=candles)
+        engine = _make_engine(market_data=mock_md)
+        pos = _make_accum_position(budget=Decimal(50))
 
-        with patch(
-            "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
-        ) as mock_provider_cls:
-            mock_provider_cls.return_value.get_candles = AsyncMock(return_value=candles)
-            result = await trader._determine_primary_side(pos)
-
+        result = await engine._determine_primary_side(pos)
         assert result == "Down"
 
 
@@ -249,28 +289,26 @@ class TestMomentumSignal:
     def test_single_up_candle(self) -> None:
         """Single bullish candle returns Up."""
         candles = [AsyncMock(open=Decimal(100), close=Decimal(110))]
-        assert AccumulatingTrader._compute_momentum_signal(candles) == "Up"
+        assert SpreadEngine._compute_momentum_signal(candles) == "Up"
 
     def test_single_down_candle(self) -> None:
         """Single bearish candle returns Down."""
         candles = [AsyncMock(open=Decimal(110), close=Decimal(100))]
-        assert AccumulatingTrader._compute_momentum_signal(candles) == "Down"
+        assert SpreadEngine._compute_momentum_signal(candles) == "Down"
 
     def test_flat_returns_none(self) -> None:
         """Flat candle returns None."""
         candles = [AsyncMock(open=Decimal(100), close=Decimal(100))]
-        assert AccumulatingTrader._compute_momentum_signal(candles) is None
+        assert SpreadEngine._compute_momentum_signal(candles) is None
 
     def test_recent_candle_dominates(self) -> None:
         """Most recent candle has highest weight and dominates signal."""
-        # Candle 1 (w=1): +50, Candle 2 (w=2): +10, Candle 3 (w=3): -30
-        # Weighted: 50 + 20 - 90 = -20 → Down
         candles = [
             AsyncMock(open=Decimal(100), close=Decimal(150)),
             AsyncMock(open=Decimal(150), close=Decimal(160)),
             AsyncMock(open=Decimal(160), close=Decimal(130)),
         ]
-        assert AccumulatingTrader._compute_momentum_signal(candles) == "Down"
+        assert SpreadEngine._compute_momentum_signal(candles) == "Down"
 
 
 @pytest.mark.asyncio
@@ -285,14 +323,13 @@ class TestHedgeThreshold:
             hedge_start_pct=Decimal("0.20"),
             max_fill_age_pct=Decimal("0.80"),
         )
-        trader = _make_trader(config=config)
-        # Primary at 0.30 → cost cap = 1.0 - 0.30 = 0.70 (higher than time threshold)
+        engine = _make_engine(config=config)
         pos = _make_accum_position(
             up_price=Decimal("0.30"), up_qty=Decimal(20), budget=Decimal(50), primary_side="Up"
         )
 
         now = _WINDOW_START + 60  # 20% elapsed
-        threshold = trader._compute_hedge_threshold(pos, now)
+        threshold = engine._compute_hedge_threshold(pos, now)
         assert threshold == Decimal("0.45")
 
     async def test_cost_cap_limits_threshold(self) -> None:
@@ -303,15 +340,13 @@ class TestHedgeThreshold:
             hedge_start_pct=Decimal("0.20"),
             max_fill_age_pct=Decimal("0.80"),
         )
-        trader = _make_trader(config=config)
-        # Primary at 0.60 → cost cap = 1.0 - 0.60 = 0.40
-        # Time threshold at midpoint would be ~0.70, but cost cap is 0.40
+        engine = _make_engine(config=config)
         pos = _make_accum_position(
             up_price=Decimal("0.60"), up_qty=Decimal(20), budget=Decimal(50), primary_side="Up"
         )
 
         now = _WINDOW_START + 150  # 50% elapsed
-        threshold = trader._compute_hedge_threshold(pos, now)
+        threshold = engine._compute_hedge_threshold(pos, now)
         assert threshold == Decimal("0.40")
 
     async def test_cheap_primary_allows_expensive_hedge(self) -> None:
@@ -322,14 +357,13 @@ class TestHedgeThreshold:
             hedge_start_pct=Decimal("0.20"),
             max_fill_age_pct=Decimal("0.80"),
         )
-        trader = _make_trader(config=config)
-        # Primary at 0.20 → cost cap = 1.0 - 0.20 = 0.80
+        engine = _make_engine(config=config)
         pos = _make_accum_position(
             up_price=Decimal("0.20"), up_qty=Decimal(20), budget=Decimal(50), primary_side="Up"
         )
 
         now = _WINDOW_START + 240  # 80% elapsed → time threshold = 0.90
-        threshold = trader._compute_hedge_threshold(pos, now)
+        threshold = engine._compute_hedge_threshold(pos, now)
         # min(0.90, 0.80) = 0.80
         assert threshold == Decimal("0.80")
 
@@ -341,13 +375,13 @@ class TestHedgeThreshold:
             hedge_start_pct=Decimal("0.20"),
             max_fill_age_pct=Decimal("0.80"),
         )
-        trader = _make_trader(config=config)
+        engine = _make_engine(config=config)
         pos = _make_accum_position(
             up_price=Decimal("0.30"), up_qty=Decimal(20), budget=Decimal(50), primary_side="Up"
         )
 
         now = _WINDOW_START + 30  # 10% elapsed → before hedge_start_pct
-        threshold = trader._compute_hedge_threshold(pos, now)
+        threshold = engine._compute_hedge_threshold(pos, now)
         assert threshold == Decimal("0.45")
 
     async def test_no_primary_fills_uses_end_threshold(self) -> None:
@@ -358,11 +392,11 @@ class TestHedgeThreshold:
             hedge_start_pct=Decimal("0.20"),
             max_fill_age_pct=Decimal("0.80"),
         )
-        trader = _make_trader(config=config)
+        engine = _make_engine(config=config)
         pos = _make_accum_position(budget=Decimal(50), primary_side="Up")
 
         now = _WINDOW_START + 240  # 80% elapsed → time = 0.90, cost_cap = 0.90
-        threshold = trader._compute_hedge_threshold(pos, now)
+        threshold = engine._compute_hedge_threshold(pos, now)
         assert threshold == Decimal("0.90")
 
 
@@ -372,18 +406,17 @@ class TestPrimaryFills:
 
     async def test_primary_fill_no_threshold(self) -> None:
         """Primary side fills execute regardless of ask price."""
-        trader = _make_trader()
+        engine = _make_engine()
         pos = _make_accum_position(budget=Decimal(50), primary_side="Up")
-        trader._positions["cond_a"] = pos
+        engine._positions["cond_a"] = pos
 
-        # Ask at 0.60 — would fail any tight threshold but primary has none
-        await trader._try_fill_primary(pos, "Up", Decimal("0.60"), Decimal(100))
+        await engine._try_fill_primary(pos, "Up", Decimal("0.60"), Decimal(100))
         assert pos.up_leg.quantity > Decimal(0)
 
     async def test_primary_fill_imbalance_check(self) -> None:
         """Primary fill blocked when it would exceed imbalance ratio."""
         config = _make_config(max_imbalance_ratio=Decimal("1.5"))
-        trader = _make_trader(config=config)
+        engine = _make_engine(config=config)
         pos = _make_accum_position(
             up_price=Decimal("0.50"),
             up_qty=Decimal(20),
@@ -393,8 +426,7 @@ class TestPrimaryFills:
             primary_side="Up",
         )
 
-        await trader._try_fill_primary(pos, "Up", Decimal("0.50"), Decimal(100))
-        # Up already at 20, Down at 10 → ratio 2.0 > 1.5 → blocked
+        await engine._try_fill_primary(pos, "Up", Decimal("0.50"), Decimal(100))
         assert pos.up_leg.quantity == Decimal(20)
 
 
@@ -404,7 +436,7 @@ class TestSecondaryFills:
 
     async def test_secondary_fill_below_threshold(self) -> None:
         """Secondary fill executes when ask is below hedge threshold."""
-        trader = _make_trader()
+        engine = _make_engine()
         pos = _make_accum_position(
             up_price=Decimal("0.50"),
             up_qty=Decimal(20),
@@ -412,14 +444,13 @@ class TestSecondaryFills:
             primary_side="Up",
         )
 
-        # Ask at 0.40 < hedge threshold (0.45 at start)
-        await trader._try_fill_secondary(pos, "Down", Decimal("0.40"), Decimal(100))
+        await engine._try_fill_secondary(pos, "Down", Decimal("0.40"), Decimal(100))
         assert pos.down_leg.quantity > Decimal(0)
 
     async def test_secondary_fill_imbalance_check(self) -> None:
         """Secondary fill blocked when it would exceed imbalance ratio."""
         config = _make_config(max_imbalance_ratio=Decimal("1.5"))
-        trader = _make_trader(config=config)
+        engine = _make_engine(config=config)
         pos = _make_accum_position(
             up_price=Decimal("0.50"),
             up_qty=Decimal(10),
@@ -429,8 +460,7 @@ class TestSecondaryFills:
             primary_side="Up",
         )
 
-        await trader._try_fill_secondary(pos, "Down", Decimal("0.40"), Decimal(100))
-        # Down already at 20, Up at 10 → ratio 2.0 > 1.5 → blocked
+        await engine._try_fill_secondary(pos, "Down", Decimal("0.40"), Decimal(100))
         assert pos.down_leg.quantity == Decimal(20)
 
 
@@ -460,7 +490,10 @@ class TestSettlement:
     async def test_settlement_paired_pnl(self) -> None:
         """Paired settlement: winning_qty * 1.0 - total_cost - fees."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        trader = _make_trader(config=config)
+        mock_md = AsyncMock()
+        mock_md.resolve_outcome = AsyncMock(return_value="Up")
+        engine = _make_engine(config=config, market_data=mock_md)
+
         opp = _make_opportunity(window_end_ts=_NOW - 1)
         pos = _make_accum_position(
             up_price=Decimal("0.48"),
@@ -470,17 +503,12 @@ class TestSettlement:
             budget=Decimal(50),
             opportunity=opp,
         )
-        trader._positions["cond_a"] = pos
+        engine._positions["cond_a"] = pos
 
-        with (
-            patch.object(trader, "_resolve_outcome", return_value="Up"),
-            patch("trading_tools.apps.spread_capture.accumulating_trader.time") as mock_time,
-        ):
-            mock_time.time.return_value = _NOW
-            await trader._settle_expired_positions()
+        await engine._settle_expired_positions(_NOW)
 
-        assert len(trader._results) == 1
-        result = trader._results[0]
+        assert len(engine._results) == 1
+        result = engine._results[0]
         expected_pnl = _QTY * Decimal(1) - (_UP_PRICE * _QTY + _DOWN_PRICE * _QTY)
         assert result.pnl == expected_pnl
         assert result.pnl > Decimal(0)
@@ -488,7 +516,10 @@ class TestSettlement:
     async def test_settlement_unpaired_winner(self) -> None:
         """Excess tokens on winning side add bonus profit."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        trader = _make_trader(config=config)
+        mock_md = AsyncMock()
+        mock_md.resolve_outcome = AsyncMock(return_value="Up")
+        engine = _make_engine(config=config, market_data=mock_md)
+
         opp = _make_opportunity(window_end_ts=_NOW - 1)
         pos = _make_accum_position(
             up_price=Decimal("0.48"),
@@ -498,16 +529,11 @@ class TestSettlement:
             budget=Decimal(50),
             opportunity=opp,
         )
-        trader._positions["cond_a"] = pos
+        engine._positions["cond_a"] = pos
 
-        with (
-            patch.object(trader, "_resolve_outcome", return_value="Up"),
-            patch("trading_tools.apps.spread_capture.accumulating_trader.time") as mock_time,
-        ):
-            mock_time.time.return_value = _NOW
-            await trader._settle_expired_positions()
+        await engine._settle_expired_positions(_NOW)
 
-        result = trader._results[0]
+        result = engine._results[0]
         expected_pnl = Decimal(15) * Decimal(1) - (
             Decimal("0.48") * Decimal(15) + Decimal("0.47") * Decimal(10)
         )
@@ -516,7 +542,10 @@ class TestSettlement:
     async def test_settlement_unpaired_loser(self) -> None:
         """Excess tokens on losing side add to the loss."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        trader = _make_trader(config=config)
+        mock_md = AsyncMock()
+        mock_md.resolve_outcome = AsyncMock(return_value="Down")
+        engine = _make_engine(config=config, market_data=mock_md)
+
         opp = _make_opportunity(window_end_ts=_NOW - 1)
         pos = _make_accum_position(
             up_price=Decimal("0.48"),
@@ -526,16 +555,11 @@ class TestSettlement:
             budget=Decimal(50),
             opportunity=opp,
         )
-        trader._positions["cond_a"] = pos
+        engine._positions["cond_a"] = pos
 
-        with (
-            patch.object(trader, "_resolve_outcome", return_value="Down"),
-            patch("trading_tools.apps.spread_capture.accumulating_trader.time") as mock_time,
-        ):
-            mock_time.time.return_value = _NOW
-            await trader._settle_expired_positions()
+        await engine._settle_expired_positions(_NOW)
 
-        result = trader._results[0]
+        result = engine._results[0]
         expected_pnl = Decimal(10) * Decimal(1) - (
             Decimal("0.48") * Decimal(15) + Decimal("0.47") * Decimal(10)
         )
@@ -545,7 +569,10 @@ class TestSettlement:
     async def test_settlement_only_one_side_wins(self) -> None:
         """Single-side position wins when that side is the winner."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        trader = _make_trader(config=config)
+        mock_md = AsyncMock()
+        mock_md.resolve_outcome = AsyncMock(return_value="Up")
+        engine = _make_engine(config=config, market_data=mock_md)
+
         opp = _make_opportunity(window_end_ts=_NOW - 1)
         pos = _make_accum_position(
             up_price=Decimal("0.48"),
@@ -553,22 +580,20 @@ class TestSettlement:
             budget=Decimal(50),
             opportunity=opp,
         )
-        trader._positions["cond_a"] = pos
+        engine._positions["cond_a"] = pos
 
-        with (
-            patch.object(trader, "_resolve_outcome", return_value="Up"),
-            patch("trading_tools.apps.spread_capture.accumulating_trader.time") as mock_time,
-        ):
-            mock_time.time.return_value = _NOW
-            await trader._settle_expired_positions()
+        await engine._settle_expired_positions(_NOW)
 
-        result = trader._results[0]
+        result = engine._results[0]
         assert result.pnl == _QTY * Decimal(1) - _UP_PRICE * _QTY
 
     async def test_settlement_only_one_side_loses(self) -> None:
         """Single-side position loses when other side wins."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        trader = _make_trader(config=config)
+        mock_md = AsyncMock()
+        mock_md.resolve_outcome = AsyncMock(return_value="Down")
+        engine = _make_engine(config=config, market_data=mock_md)
+
         opp = _make_opportunity(window_end_ts=_NOW - 1)
         pos = _make_accum_position(
             up_price=Decimal("0.48"),
@@ -576,22 +601,20 @@ class TestSettlement:
             budget=Decimal(50),
             opportunity=opp,
         )
-        trader._positions["cond_a"] = pos
+        engine._positions["cond_a"] = pos
 
-        with (
-            patch.object(trader, "_resolve_outcome", return_value="Down"),
-            patch("trading_tools.apps.spread_capture.accumulating_trader.time") as mock_time,
-        ):
-            mock_time.time.return_value = _NOW
-            await trader._settle_expired_positions()
+        await engine._settle_expired_positions(_NOW)
 
-        result = trader._results[0]
+        result = engine._results[0]
         assert result.pnl == Decimal(0) - _UP_PRICE * _QTY
 
     async def test_unknown_outcome_paired(self) -> None:
         """Unknown outcome with both sides uses paired qty as conservative estimate."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        trader = _make_trader(config=config)
+        mock_md = AsyncMock()
+        mock_md.resolve_outcome = AsyncMock(return_value=None)
+        engine = _make_engine(config=config, market_data=mock_md)
+
         opp = _make_opportunity(window_end_ts=_NOW - 1)
         pos = _make_accum_position(
             up_price=Decimal("0.48"),
@@ -601,16 +624,11 @@ class TestSettlement:
             budget=Decimal(50),
             opportunity=opp,
         )
-        trader._positions["cond_a"] = pos
+        engine._positions["cond_a"] = pos
 
-        with (
-            patch.object(trader, "_resolve_outcome", return_value=None),
-            patch("trading_tools.apps.spread_capture.accumulating_trader.time") as mock_time,
-        ):
-            mock_time.time.return_value = _NOW
-            await trader._settle_expired_positions()
+        await engine._settle_expired_positions(_NOW)
 
-        result = trader._results[0]
+        result = engine._results[0]
         assert result.pnl > Decimal(0)
         assert result.outcome_known is False
 
@@ -622,32 +640,32 @@ class TestFillAgeCutoff:
     async def test_fills_blocked_past_cutoff(self) -> None:
         """No fills when market window is past max_fill_age_pct."""
         config = _make_config(max_fill_age_pct=Decimal("0.70"))
-        trader = _make_trader(config=config)
+        engine = _make_engine(config=config)
         elapsed = int((_WINDOW_END - _WINDOW_START) * 0.8)
         now = _WINDOW_START + elapsed
         opp = _make_opportunity()
 
-        assert trader._past_fill_cutoff(opp, now) is True
+        assert engine._past_fill_cutoff(opp, now) is True
 
     async def test_fills_allowed_before_cutoff(self) -> None:
         """Fills proceed when market window is before max_fill_age_pct."""
         config = _make_config(max_fill_age_pct=Decimal("0.70"))
-        trader = _make_trader(config=config)
+        engine = _make_engine(config=config)
         elapsed = int((_WINDOW_END - _WINDOW_START) * 0.5)
         now = _WINDOW_START + elapsed
         opp = _make_opportunity()
 
-        assert trader._past_fill_cutoff(opp, now) is False
+        assert engine._past_fill_cutoff(opp, now) is False
 
     async def test_fills_blocked_at_exact_cutoff(self) -> None:
         """Fills blocked when just past the cutoff boundary."""
         config = _make_config(max_fill_age_pct=Decimal("0.70"))
-        trader = _make_trader(config=config)
+        engine = _make_engine(config=config)
         elapsed = int((_WINDOW_END - _WINDOW_START) * 0.71)
         now = _WINDOW_START + elapsed
         opp = _make_opportunity()
 
-        assert trader._past_fill_cutoff(opp, now) is True
+        assert engine._past_fill_cutoff(opp, now) is True
 
 
 @pytest.mark.asyncio
@@ -657,11 +675,11 @@ class TestRiskManagement:
     async def test_drawdown_halt(self) -> None:
         """Drawdown halt prevents new entries when losses exceed threshold."""
         config = _make_config(max_drawdown_pct=Decimal("0.10"))
-        trader = _make_trader(config=config)
-        trader._session_start_capital = _CAPITAL
+        engine = _make_engine(config=config)
+        engine._session_start_capital = _CAPITAL
 
         opp = _make_opportunity()
-        trader._results.append(
+        engine._results.append(
             SpreadResult(
                 opportunity=opp,
                 state=PositionState.SETTLED,
@@ -676,19 +694,17 @@ class TestRiskManagement:
             )
         )
 
-        assert trader._check_drawdown_halt() is True
+        assert engine._check_drawdown_halt() is True
 
     async def test_circuit_breaker_activates(self) -> None:
         """Circuit breaker activates after consecutive losses."""
         config = _make_config(circuit_breaker_losses=2, circuit_breaker_cooldown=60)
-        trader = _make_trader(config=config)
+        engine = _make_engine(config=config)
 
-        with patch("trading_tools.apps.spread_capture.accumulating_trader.time") as mock_time:
-            mock_time.time.return_value = _NOW
-            trader._record_loss()
-            trader._record_loss()
+        engine._record_loss(_NOW)
+        engine._record_loss(_NOW)
 
-        assert trader._circuit_breaker_until == _NOW + 60
+        assert engine._circuit_breaker_until == _NOW + 60
 
 
 @pytest.mark.asyncio
@@ -697,23 +713,23 @@ class TestBudgetManagement:
 
     async def test_budget_per_market_limits_spending(self) -> None:
         """Fill qty is None when budget is exhausted."""
-        trader = _make_trader()
+        engine = _make_engine()
         pos = _make_accum_position(
             up_price=Decimal("0.48"),
             up_qty=_QTY,
             budget=Decimal("5.00"),
         )
 
-        qty = trader._compute_fill_qty(pos, "Down", Decimal("0.47"), Decimal(100))
+        qty = engine._compute_fill_qty(pos, "Down", Decimal("0.47"), Decimal(100))
         assert qty is None
 
     async def test_fill_qty_capped_by_depth(self) -> None:
         """Fill qty is capped by max_book_pct of visible depth."""
         config = _make_config(fill_size_tokens=Decimal(100), max_book_pct=Decimal("0.20"))
-        trader = _make_trader(config=config)
+        engine = _make_engine(config=config)
         pos = _make_accum_position(budget=Decimal(1000))
 
-        qty = trader._compute_fill_qty(pos, "Up", Decimal("0.48"), Decimal(30))
+        qty = engine._compute_fill_qty(pos, "Up", Decimal("0.48"), Decimal(30))
         assert qty is not None
         assert qty == Decimal("6.00")
 
@@ -725,9 +741,11 @@ class TestDatabasePersistence:
     async def test_persist_result_on_settle(self) -> None:
         """Settled positions are persisted via the repository."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        trader = _make_trader(config=config)
+        mock_md = AsyncMock()
+        mock_md.resolve_outcome = AsyncMock(return_value="Up")
+        engine = _make_engine(config=config, market_data=mock_md)
         mock_repo = AsyncMock()
-        trader.set_repo(mock_repo)
+        engine.set_repo(mock_repo)
 
         opp = _make_opportunity(window_end_ts=_NOW - 1)
         pos = _make_accum_position(
@@ -738,14 +756,9 @@ class TestDatabasePersistence:
             budget=Decimal(50),
             opportunity=opp,
         )
-        trader._positions["cond_a"] = pos
+        engine._positions["cond_a"] = pos
 
-        with (
-            patch.object(trader, "_resolve_outcome", return_value="Up"),
-            patch("trading_tools.apps.spread_capture.accumulating_trader.time") as mock_time,
-        ):
-            mock_time.time.return_value = _NOW
-            await trader._settle_expired_positions()
+        await engine._settle_expired_positions(_NOW)
 
         mock_repo.save_result.assert_called_once()
 
@@ -757,7 +770,7 @@ class TestImbalance:
     async def test_imbalance_blocks_heavy_side(self) -> None:
         """Pause heavier side until other catches up."""
         config = _make_config(max_imbalance_ratio=Decimal("1.5"))
-        trader = _make_trader(config=config)
+        engine = _make_engine(config=config)
         pos = _make_accum_position(
             up_price=Decimal("0.45"),
             up_qty=Decimal(20),
@@ -766,17 +779,17 @@ class TestImbalance:
             budget=Decimal(50),
         )
 
-        assert trader._would_exceed_imbalance(pos, "Up", _QTY) is True
-        assert trader._would_exceed_imbalance(pos, "Down", _QTY) is False
+        assert engine._would_exceed_imbalance(pos, "Up", _QTY) is True
+        assert engine._would_exceed_imbalance(pos, "Down", _QTY) is False
 
     async def test_imbalance_allows_when_other_empty(self) -> None:
         """Allow fills when the other side has no fills (can't compute ratio)."""
         config = _make_config(max_imbalance_ratio=Decimal("1.5"))
-        trader = _make_trader(config=config)
+        engine = _make_engine(config=config)
         pos = _make_accum_position(
             up_price=Decimal("0.45"),
             up_qty=Decimal(20),
             budget=Decimal(50),
         )
 
-        assert trader._would_exceed_imbalance(pos, "Up", _QTY) is False
+        assert engine._would_exceed_imbalance(pos, "Up", _QTY) is False

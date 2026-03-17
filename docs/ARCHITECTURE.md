@@ -43,8 +43,8 @@ trading-tools/
 │   │   │   ├── price_tracker.py     # Real-time price tracking for open positions
 │   │   │   └── snapshot_simulator.py # Synthetic market snapshot generator
 │   │   ├── tick_collector/          # Real-time WebSocket tick streaming
-│   │   │   ├── collector.py         # WebSocket consumer and DB writer
-│   │   │   ├── models.py            # Tick and order book SQLAlchemy models
+│   │   │   ├── collector.py         # WebSocket consumer and DB writer (also persists MarketMetadata)
+│   │   │   ├── models.py            # Tick, OrderBookSnapshot, and MarketMetadata SQLAlchemy models
 │   │   │   ├── ws_client.py         # WebSocket connection management and reconnection
 │   │   │   └── snapshot_builder.py  # Order book snapshot construction from raw data
 │   │   ├── whale_monitor/           # Whale trade monitoring service
@@ -57,13 +57,18 @@ trading-tools/
 │   │   │   ├── leaderboard.py       # Discover profitable traders via leaderboard or market enumeration
 │   │   │   ├── collector.py         # Shared trade-fetching utilities
 │   │   │   └── config.py            # Whale monitor configuration dataclasses
-│   │   └── spread_capture/          # Real-time spread capture bot
+│   │   └── spread_capture/          # Real-time spread capture bot + backtester
 │   │       ├── config.py            # SpreadCaptureConfig (frozen dataclass)
 │   │       ├── models.py            # SpreadOpportunity, SideLeg, PairedPosition, SpreadResult, SpreadResultRecord (ORM)
+│   │       ├── ports.py             # ExecutionPort and MarketDataPort protocols + FillResult
+│   │       ├── adapters.py          # Live, Paper, Backtest execution + Live/Replay market data adapters
+│   │       ├── engine.py            # SpreadEngine — pure decision logic (no I/O)
 │   │       ├── repository.py        # Async SQLAlchemy repository for persisting closed trade results
 │   │       ├── market_scanner.py    # Incremental polling and signal detection
-│   │       ├── spread_trader.py     # Temporal spread arbitrage engine
-│   │       └── accumulating_trader.py # Accumulating spread capture engine — independent per-side fills over time
+│   │       ├── spread_trader.py     # Thin wrapper: simultaneous both-sides strategy
+│   │       ├── accumulating_trader.py # Thin wrapper: directional entry + opportunistic hedge
+│   │       ├── backtest_runner.py   # Replay engine: feed historical windows through SpreadEngine
+│   │       └── grid_backtest.py     # Parameter sweep over hedge thresholds and signal delay
 │   ├── clients/                     # External API clients
 │   │   ├── revolut_x/               # Revolut X API client
 │   │   │   ├── auth/                # Ed25519 authentication
@@ -142,7 +147,7 @@ Runnable applications and long-lived services. Each application has:
 | `polymarket_bot` | Paper and live trading engines with fee/slippage modelling and loss limits (consumed by `polymarket` CLI) |
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
 | `whale_monitor` | Polling service that tracks whale trades, with analysis, per-market breakdown, trade enrichment, and Binance spot correlation |
-| `spread_capture` | Spread capture bot (paper and live) with adaptive Kelly sizing, compound capital, per-asset concentration limits, circuit breaker, and hedge urgency |
+| `spread_capture` | Spread capture bot (paper, live, and backtest) with port-based adapters, pure decision engine, hedge urgency, circuit breaker, and historical replay |
 
 ### `/clients` — API Clients
 
@@ -283,6 +288,7 @@ The tick collector and whale monitor use SQLAlchemy with async drivers:
 |-------|-----|-------------|
 | `ticks` | tick_collector | Trade events (timestamp, token_id, price, size) |
 | `order_book_snapshots` | tick_collector | Order book state at each poll interval |
+| `market_metadata` | tick_collector | Cached market fields (asset, tokens, window timestamps) for backtesting |
 | `tracked_whales` | whale_monitor | Registered whale addresses and labels |
 | `whale_trades` | whale_monitor | Historical whale trade records |
 

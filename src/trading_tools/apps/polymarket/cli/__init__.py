@@ -13,7 +13,9 @@ from trading_tools.apps.polymarket.cli.bot_live_cmd import bot_live
 from trading_tools.apps.polymarket.cli.grid_backtest_cmd import grid_backtest
 from trading_tools.apps.polymarket.cli.markets_cmd import markets
 from trading_tools.apps.polymarket.cli.odds_cmd import odds
+from trading_tools.apps.polymarket.cli.spread_backtest_cmd import backtest_spread
 from trading_tools.apps.polymarket.cli.spread_capture_cmd import spread_capture
+from trading_tools.apps.polymarket.cli.spread_grid_cmd import grid_spread
 from trading_tools.apps.polymarket.cli.tick_collector_cmd import tick_collect
 from trading_tools.apps.polymarket.cli.trade_cmd import balance, cancel, orders, redeem, trade
 from trading_tools.apps.polymarket.cli.whale_add_cmd import whale_add
@@ -44,5 +46,7 @@ app.command(name="whale-analyse")(whale_analyse)
 app.command(name="whale-markets")(whale_markets)
 app.command(name="spread-capture")(spread_capture)
 app.command(name="whale-correlate")(whale_correlate)
+app.command(name="backtest-spread")(backtest_spread)
+app.command(name="grid-spread")(grid_spread)
 
 __all__ = ["app"]
