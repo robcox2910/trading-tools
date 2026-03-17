@@ -129,26 +129,68 @@ def _make_accum_position(
 class TestSignalDetermination:
     """Test Binance momentum signal and primary side selection."""
 
-    async def test_binance_up_signal(self) -> None:
-        """Primary side is Up when Binance spot price rose before window."""
+    async def test_binance_up_signal_multiple_candles(self) -> None:
+        """Primary side is Up when weighted momentum is positive across candles."""
         trader = _make_trader()
         trader._binance = AsyncMock()
         pos = _make_accum_position(budget=Decimal(50))
 
-        mock_candle_start = AsyncMock()
-        mock_candle_start.open = Decimal(50000)
-        mock_candle_end = AsyncMock()
-        mock_candle_end.close = Decimal(50100)
+        # 3 candles: small dip, flat, strong rally → net weighted Up
+        candles = [
+            AsyncMock(open=Decimal(50000), close=Decimal(49990)),
+            AsyncMock(open=Decimal(49990), close=Decimal(49990)),
+            AsyncMock(open=Decimal(49990), close=Decimal(50100)),
+        ]
 
         with patch(
             "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
         ) as mock_provider_cls:
-            mock_provider_cls.return_value.get_candles = AsyncMock(
-                return_value=[mock_candle_start, mock_candle_end]
-            )
+            mock_provider_cls.return_value.get_candles = AsyncMock(return_value=candles)
             result = await trader._determine_primary_side(pos)
 
         assert result == "Up"
+
+    async def test_binance_down_signal_multiple_candles(self) -> None:
+        """Primary side is Down when weighted momentum is negative."""
+        trader = _make_trader()
+        trader._binance = AsyncMock()
+        pos = _make_accum_position(budget=Decimal(50))
+
+        # 3 candles: small rally, flat, strong drop → net weighted Down
+        candles = [
+            AsyncMock(open=Decimal(50000), close=Decimal(50010)),
+            AsyncMock(open=Decimal(50010), close=Decimal(50010)),
+            AsyncMock(open=Decimal(50010), close=Decimal(49900)),
+        ]
+
+        with patch(
+            "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
+        ) as mock_provider_cls:
+            mock_provider_cls.return_value.get_candles = AsyncMock(return_value=candles)
+            result = await trader._determine_primary_side(pos)
+
+        assert result == "Down"
+
+    async def test_recency_weighting_favours_latest(self) -> None:
+        """Recent candle outweighs older candle of equal magnitude."""
+        trader = _make_trader()
+        trader._binance = AsyncMock()
+        pos = _make_accum_position(budget=Decimal(50))
+
+        # Candle 1 (weight 1): +100, Candle 2 (weight 2): -60
+        # Weighted sum: 1*100 + 2*(-60) = 100 - 120 = -20 → Down
+        candles = [
+            AsyncMock(open=Decimal(50000), close=Decimal(50100)),
+            AsyncMock(open=Decimal(50100), close=Decimal(50040)),
+        ]
+
+        with patch(
+            "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
+        ) as mock_provider_cls:
+            mock_provider_cls.return_value.get_candles = AsyncMock(return_value=candles)
+            result = await trader._determine_primary_side(pos)
+
+        assert result == "Down"
 
     async def test_lookback_window_is_before_market_open(self) -> None:
         """Signal uses candles from before the window, not during it."""
@@ -157,9 +199,7 @@ class TestSignalDetermination:
         trader._binance = AsyncMock()
         pos = _make_accum_position(budget=Decimal(50))
 
-        mock_candle = AsyncMock()
-        mock_candle.open = Decimal(50000)
-        mock_candle.close = Decimal(50100)
+        mock_candle = AsyncMock(open=Decimal(50000), close=Decimal(50100))
 
         with patch(
             "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
@@ -174,27 +214,6 @@ class TestSignalDetermination:
         assert end_ts == _WINDOW_START
         assert start_ts == _WINDOW_START - 120
 
-    async def test_binance_down_signal(self) -> None:
-        """Primary side is Down when Binance spot price fell."""
-        trader = _make_trader()
-        trader._binance = AsyncMock()
-        pos = _make_accum_position(budget=Decimal(50))
-
-        mock_candle_start = AsyncMock()
-        mock_candle_start.open = Decimal(50100)
-        mock_candle_end = AsyncMock()
-        mock_candle_end.close = Decimal(50000)
-
-        with patch(
-            "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
-        ) as mock_provider_cls:
-            mock_provider_cls.return_value.get_candles = AsyncMock(
-                return_value=[mock_candle_start, mock_candle_end]
-            )
-            result = await trader._determine_primary_side(pos)
-
-        assert result == "Down"
-
     async def test_fallback_to_cheaper_side(self) -> None:
         """Fall back to the cheaper opportunity side when Binance unavailable."""
         trader = _make_trader()
@@ -205,23 +224,53 @@ class TestSignalDetermination:
         assert result == "Down"
 
     async def test_fallback_when_flat(self) -> None:
-        """Fall back when Binance shows no change (open == close)."""
+        """Fall back when all candles are flat (weighted sum is zero)."""
         trader = _make_trader()
         trader._binance = AsyncMock()
         pos = _make_accum_position(budget=Decimal(50))
 
-        mock_candle = AsyncMock()
-        mock_candle.open = Decimal(50000)
-        mock_candle.close = Decimal(50000)
+        candles = [
+            AsyncMock(open=Decimal(50000), close=Decimal(50000)),
+            AsyncMock(open=Decimal(50000), close=Decimal(50000)),
+        ]
 
         with patch(
             "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
         ) as mock_provider_cls:
-            mock_provider_cls.return_value.get_candles = AsyncMock(return_value=[mock_candle])
+            mock_provider_cls.return_value.get_candles = AsyncMock(return_value=candles)
             result = await trader._determine_primary_side(pos)
 
-        # Flat → fallback to cheaper side (Down at 0.47)
         assert result == "Down"
+
+
+class TestMomentumSignal:
+    """Test the static recency-weighted momentum computation."""
+
+    def test_single_up_candle(self) -> None:
+        """Single bullish candle returns Up."""
+        candles = [AsyncMock(open=Decimal(100), close=Decimal(110))]
+        assert AccumulatingTrader._compute_momentum_signal(candles) == "Up"
+
+    def test_single_down_candle(self) -> None:
+        """Single bearish candle returns Down."""
+        candles = [AsyncMock(open=Decimal(110), close=Decimal(100))]
+        assert AccumulatingTrader._compute_momentum_signal(candles) == "Down"
+
+    def test_flat_returns_none(self) -> None:
+        """Flat candle returns None."""
+        candles = [AsyncMock(open=Decimal(100), close=Decimal(100))]
+        assert AccumulatingTrader._compute_momentum_signal(candles) is None
+
+    def test_recent_candle_dominates(self) -> None:
+        """Most recent candle has highest weight and dominates signal."""
+        # Candle 1 (w=1): +50, Candle 2 (w=2): +10, Candle 3 (w=3): -30
+        # Weighted: 50 + 20 - 90 = -20 → Down
+        candles = [
+            AsyncMock(open=Decimal(100), close=Decimal(150)),
+            AsyncMock(open=Decimal(150), close=Decimal(160)),
+            AsyncMock(open=Decimal(160), close=Decimal(130)),
+        ]
+        assert AccumulatingTrader._compute_momentum_signal(candles) == "Down"
 
 
 @pytest.mark.asyncio

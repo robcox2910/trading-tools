@@ -156,7 +156,7 @@ class SpreadCaptureConfig:
     fill_size_tokens: Decimal = Decimal(2)
     initial_fill_size: Decimal = Decimal(20)
     max_fill_age_pct: Decimal = Decimal("0.80")
-    signal_delay_seconds: int = 60
+    signal_delay_seconds: int = 300
     hedge_start_threshold: Decimal = Decimal("0.45")
     hedge_end_threshold: Decimal = Decimal("0.55")
     hedge_start_pct: Decimal = Decimal("0.20")
