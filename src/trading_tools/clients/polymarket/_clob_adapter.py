@@ -133,13 +133,14 @@ def _normalize_order_book(raw: Any) -> dict[str, Any]:
     """Normalize an order book response to a plain dict.
 
     The CLOB client may return an ``OrderBookSummary`` dataclass or a plain
-    dict depending on the version. Normalize to ``{"bids": [...], "asks": [...]}``.
+    dict depending on the version.  Normalize to a plain dict, preserving
+    ``min_order_size`` when present in the response.
 
     Args:
         raw: Raw response from the CLOB client's ``get_order_book()``.
 
     Returns:
-        Dictionary with ``bids`` and ``asks`` lists of price/size dicts.
+        Dictionary with ``bids``, ``asks``, and optionally ``min_order_size``.
 
     """
     if isinstance(raw, dict):
@@ -148,7 +149,11 @@ def _normalize_order_book(raw: Any) -> dict[str, Any]:
     ask_levels: list[Any] = getattr(raw, "asks", [])
     bids: list[dict[str, str]] = [{"price": str(b.price), "size": str(b.size)} for b in bid_levels]
     asks: list[dict[str, str]] = [{"price": str(a.price), "size": str(a.size)} for a in ask_levels]
-    return {"bids": bids, "asks": asks}
+    result: dict[str, Any] = {"bids": bids, "asks": asks}
+    min_order_size = getattr(raw, "min_order_size", None)
+    if min_order_size is not None:
+        result["min_order_size"] = str(min_order_size)
+    return result
 
 
 def fetch_price(client: Any, token_id: str, side: str) -> str | None:

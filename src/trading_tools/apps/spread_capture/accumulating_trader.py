@@ -364,12 +364,14 @@ class AccumulatingTrader:
             down_ask = down_book.asks[0].price if down_book.asks else None
             up_depth = sum((level.size for level in up_book.asks), start=ZERO)
             down_depth = sum((level.size for level in down_book.asks), start=ZERO)
+            # Use per-market minimum from the order book (fallback to 5)
+            min_size = min(up_book.min_order_size, down_book.min_order_size)
 
             # Try filling each side independently
             if up_ask is not None:
-                await self._try_fill_side(pos, "Up", up_ask, up_depth)
+                await self._try_fill_side(pos, "Up", up_ask, up_depth, min_size)
             if down_ask is not None:
-                await self._try_fill_side(pos, "Down", down_ask, down_depth)
+                await self._try_fill_side(pos, "Down", down_ask, down_depth, min_size)
 
     async def _try_fill_side(
         self,
@@ -377,6 +379,7 @@ class AccumulatingTrader:
         side: str,
         ask_price: Decimal,
         depth: Decimal,
+        min_order_size: Decimal = _MIN_TOKEN_QTY,
     ) -> None:
         """Attempt a single fill on one side of an accumulating position.
 
@@ -388,9 +391,10 @@ class AccumulatingTrader:
             side: ``"Up"`` or ``"Down"``.
             ask_price: Current best ask price for this side.
             depth: Total visible ask depth for this side.
+            min_order_size: Per-market minimum order size from the CLOB.
 
         """
-        fill_qty = self._compute_fill_qty(pos, side, ask_price, depth)
+        fill_qty = self._compute_fill_qty(pos, side, ask_price, depth, min_order_size)
         if fill_qty is None:
             return
 
@@ -447,14 +451,16 @@ class AccumulatingTrader:
         side: str,
         ask_price: Decimal,
         depth: Decimal,
+        min_order_size: Decimal = _MIN_TOKEN_QTY,
     ) -> Decimal | None:
         """Compute the fill quantity, clamped by depth, budget, and minimum.
 
         Args:
             pos: The accumulating position.
-            side: ``"Up"`` or ``"Down"`` (reserved for future per-side budgets).
+            side: ``"Up"`` or ``"Down"``.
             ask_price: Current best ask price.
             depth: Total visible ask depth.
+            min_order_size: Per-market minimum from the CLOB order book.
 
         Returns:
             Fill quantity in tokens, or ``None`` if below minimum.
@@ -485,9 +491,9 @@ class AccumulatingTrader:
         max_from_budget = (budget_remaining / ask_price).quantize(Decimal("0.01"))
         qty = min(qty, max_from_budget)
 
-        # Quantize and check minimum
+        # Quantize and check against per-market minimum
         qty = qty.quantize(Decimal("0.01"))
-        if qty < _MIN_TOKEN_QTY:
+        if qty < min_order_size:
             return None
 
         return qty

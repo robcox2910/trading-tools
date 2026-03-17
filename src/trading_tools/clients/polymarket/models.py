@@ -37,6 +37,8 @@ class OrderBook:
         asks: Price levels on the sell side, ordered best-to-worst.
         spread: Difference between best ask and best bid.
         midpoint: Average of best bid and best ask prices.
+        min_order_size: Minimum order size in tokens for this market,
+            sourced from the CLOB order book response.
 
     """
 
@@ -45,6 +47,7 @@ class OrderBook:
     asks: tuple[OrderLevel, ...]
     spread: Decimal
     midpoint: Decimal
+    min_order_size: Decimal = Decimal(5)
 
 
 @dataclass(frozen=True)
