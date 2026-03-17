@@ -251,11 +251,12 @@ class SpreadEngine:
                     )
 
     async def _determine_primary_side(self, pos: AccumulatingPosition) -> str:
-        """Determine the primary side from recent Binance momentum.
+        """Determine the primary side via mean-reversion on recent Binance data.
 
         Look back ``signal_delay_seconds`` of 1-min candles before the
-        market window opened and compute a recency-weighted momentum
-        score.
+        market window opened and bet *against* the recent move.  On
+        5-min windows crypto tends to mean-revert: a sharp move up
+        triggers selling and vice versa.
 
         Args:
             pos: The position with opportunity metadata.
@@ -274,7 +275,8 @@ class SpreadEngine:
             if candles:
                 direction = self._compute_momentum_signal(candles)
                 if direction is not None:
-                    return direction
+                    # Mean-reversion: bet against the recent move
+                    return "Down" if direction == "Up" else "Up"
         except Exception:
             logger.debug(
                 "Binance signal unavailable for %s, using price fallback",
