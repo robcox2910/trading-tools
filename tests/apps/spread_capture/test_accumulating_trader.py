@@ -130,7 +130,7 @@ class TestSignalDetermination:
     """Test Binance momentum signal and primary side selection."""
 
     async def test_binance_up_signal(self) -> None:
-        """Primary side is Up when Binance spot price rose."""
+        """Primary side is Up when Binance spot price rose before window."""
         trader = _make_trader()
         trader._binance = AsyncMock()
         pos = _make_accum_position(budget=Decimal(50))
@@ -149,6 +149,30 @@ class TestSignalDetermination:
             result = await trader._determine_primary_side(pos)
 
         assert result == "Up"
+
+    async def test_lookback_window_is_before_market_open(self) -> None:
+        """Signal uses candles from before the window, not during it."""
+        config = _make_config(signal_delay_seconds=120)
+        trader = _make_trader(config=config)
+        trader._binance = AsyncMock()
+        pos = _make_accum_position(budget=Decimal(50))
+
+        mock_candle = AsyncMock()
+        mock_candle.open = Decimal(50000)
+        mock_candle.close = Decimal(50100)
+
+        with patch(
+            "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
+        ) as mock_provider_cls:
+            mock_get = AsyncMock(return_value=[mock_candle])
+            mock_provider_cls.return_value.get_candles = mock_get
+            await trader._determine_primary_side(pos)
+
+        call_args = mock_get.call_args
+        start_ts = call_args[0][2]
+        end_ts = call_args[0][3]
+        assert end_ts == _WINDOW_START
+        assert start_ts == _WINDOW_START - 120
 
     async def test_binance_down_signal(self) -> None:
         """Primary side is Down when Binance spot price fell."""
