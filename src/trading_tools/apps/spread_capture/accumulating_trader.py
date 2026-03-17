@@ -36,7 +36,7 @@ from trading_tools.apps.bot_framework.shutdown import GracefulShutdown
 from trading_tools.apps.spread_capture.fees import compute_poly_fee
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.clients.binance.exceptions import BinanceError
-from trading_tools.core.models import ONE, ZERO, Interval
+from trading_tools.core.models import ONE, ZERO, Candle, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
 from .market_scanner import MarketScanner
@@ -50,6 +50,8 @@ from .models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from trading_tools.clients.polymarket.client import PolymarketClient
 
     from .config import SpreadCaptureConfig
@@ -411,9 +413,11 @@ class AccumulatingTrader:
     async def _determine_primary_side(self, pos: AccumulatingPosition) -> str:
         """Determine the primary side from recent Binance momentum.
 
-        Look back at the ``signal_delay_seconds`` of Binance 1-min candle
-        data *before* the market window opened.  This gives an immediate
-        signal without waiting, maximising time available for hedge fills.
+        Look back ``signal_delay_seconds`` of 1-min candles before the
+        market window opened.  Compute a recency-weighted momentum score
+        where each candle's contribution is weighted by its position
+        (most recent candle has weight N, oldest has weight 1).  This
+        gives more influence to the latest price action.
 
         Args:
             pos: The position with opportunity metadata.
@@ -432,10 +436,10 @@ class AccumulatingTrader:
                     lookback_start,
                     pos.opportunity.window_start_ts,
                 )
-                if candles and candles[-1].close > candles[0].open:
-                    return "Up"
-                if candles and candles[-1].close < candles[0].open:
-                    return "Down"
+                if candles:
+                    direction = self._compute_momentum_signal(candles)
+                    if direction is not None:
+                        return direction
             except (BinanceError, httpx.HTTPError, KeyError, ValueError):
                 logger.debug(
                     "Binance signal unavailable for %s, using price fallback",
@@ -444,6 +448,34 @@ class AccumulatingTrader:
 
         # Fallback: pick the cheaper side from the opportunity
         return "Up" if pos.opportunity.up_price < pos.opportunity.down_price else "Down"
+
+    @staticmethod
+    def _compute_momentum_signal(candles: Sequence[Candle]) -> str | None:
+        """Compute recency-weighted momentum direction from candle data.
+
+        Each candle's return (close - open) is weighted by its position
+        in the sequence: the most recent candle gets weight N (where N
+        is the number of candles), the second most recent gets N-1, etc.
+        This ensures recent price action dominates the signal.
+
+        Args:
+            candles: List of 1-min candles ordered oldest to newest.
+
+        Returns:
+            ``"Up"`` if weighted momentum is positive, ``"Down"`` if
+            negative, ``None`` if exactly flat.
+
+        """
+        weighted_sum = ZERO
+        for i, candle in enumerate(candles):
+            weight = Decimal(i + 1)
+            weighted_sum += weight * (candle.close - candle.open)
+
+        if weighted_sum > ZERO:
+            return "Up"
+        if weighted_sum < ZERO:
+            return "Down"
+        return None
 
     def _compute_hedge_threshold(self, opp: SpreadOpportunity, now: int) -> Decimal:
         """Compute the time-decaying hedge threshold for the secondary side.
