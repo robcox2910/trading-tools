@@ -146,7 +146,7 @@ class SpreadCaptureConfig:
     max_drawdown_pct: Decimal = Decimal("0.15")
     paper_slippage_pct: Decimal = Decimal("0.005")
     series_slugs: tuple[str, ...] = ("btc-updown-5m", "eth-updown-5m")
-    max_combined_cost: Decimal = Decimal("0.98")
+    max_combined_cost: Decimal = Decimal("0.97")
     min_spread_margin: Decimal = Decimal("0.01")
     max_open_positions: int = 10
     single_leg_timeout: int = 10
@@ -157,8 +157,8 @@ class SpreadCaptureConfig:
     initial_fill_size: Decimal = Decimal(20)
     max_fill_age_pct: Decimal = Decimal("0.80")
     signal_delay_seconds: int = 300
-    hedge_start_threshold: Decimal = Decimal("0.45")
-    hedge_end_threshold: Decimal = Decimal("0.65")
+    hedge_start_threshold: Decimal = Decimal("0.50")
+    hedge_end_threshold: Decimal = Decimal("0.90")
     hedge_start_pct: Decimal = Decimal("0.20")
 
     @classmethod

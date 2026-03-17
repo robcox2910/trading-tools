@@ -404,7 +404,7 @@ class AccumulatingTrader:
 
             # Phase 2: opportunistic hedge on secondary side
             if secondary_ask is not None:
-                hedge_threshold = self._compute_hedge_threshold(pos.opportunity, now)
+                hedge_threshold = self._compute_hedge_threshold(pos, now)
                 if secondary_ask < hedge_threshold:
                     await self._try_fill_secondary(
                         pos, secondary_side, secondary_ask, secondary_depth, min_size
@@ -477,35 +477,50 @@ class AccumulatingTrader:
             return "Down"
         return None
 
-    def _compute_hedge_threshold(self, opp: SpreadOpportunity, now: int) -> Decimal:
-        """Compute the time-decaying hedge threshold for the secondary side.
+    def _compute_hedge_threshold(self, pos: AccumulatingPosition, now: int) -> Decimal:
+        """Compute the hedge threshold for the secondary side.
 
-        Linearly interpolate from ``hedge_start_threshold`` (tight) to
-        ``hedge_end_threshold`` (loose) as the window progresses from
-        ``hedge_start_pct`` to ``max_fill_age_pct``.
+        Use the tighter of two caps:
+        1. Time-decaying threshold: linearly interpolate from
+           ``hedge_start_threshold`` to ``hedge_end_threshold``.
+        2. Cost cap: ``1.0 - primary_vwap - min_spread_margin`` so the
+           combined VWAP stays profitable after fees.
 
         Args:
-            opp: The spread opportunity with window timestamps.
+            pos: The accumulating position (for primary VWAP).
             now: Current epoch seconds.
 
         Returns:
             Maximum ask price to accept for a secondary-side fill.
 
         """
+        opp = pos.opportunity
         window_duration = opp.window_end_ts - opp.window_start_ts
         if window_duration <= 0:
-            return self.config.hedge_end_threshold
+            time_threshold = self.config.hedge_end_threshold
+        else:
+            elapsed_pct = Decimal(str(now - opp.window_start_ts)) / Decimal(str(window_duration))
+            hedge_range = self.config.max_fill_age_pct - self.config.hedge_start_pct
+            if hedge_range <= ZERO:
+                time_threshold = self.config.hedge_end_threshold
+            else:
+                normalised = max(
+                    ZERO, min(ONE, (elapsed_pct - self.config.hedge_start_pct) / hedge_range)
+                )
+                time_threshold = (
+                    self.config.hedge_start_threshold
+                    + (self.config.hedge_end_threshold - self.config.hedge_start_threshold)
+                    * normalised
+                )
 
-        elapsed_pct = Decimal(str(now - opp.window_start_ts)) / Decimal(str(window_duration))
-        hedge_range = self.config.max_fill_age_pct - self.config.hedge_start_pct
-        if hedge_range <= ZERO:
-            return self.config.hedge_end_threshold
+        # Dynamic cap: don't let combined VWAP exceed 1.0 - margin
+        primary_leg = pos.up_leg if pos.primary_side == "Up" else pos.down_leg
+        if primary_leg.quantity > ZERO:
+            cost_cap = ONE - primary_leg.entry_price - self.config.min_spread_margin
+        else:
+            cost_cap = self.config.hedge_end_threshold
 
-        normalised = max(ZERO, min(ONE, (elapsed_pct - self.config.hedge_start_pct) / hedge_range))
-        return (
-            self.config.hedge_start_threshold
-            + (self.config.hedge_end_threshold - self.config.hedge_start_threshold) * normalised
-        )
+        return min(time_threshold, cost_cap)
 
     async def _try_fill_primary(
         self,
@@ -528,7 +543,9 @@ class AccumulatingTrader:
             min_order_size: Per-market minimum order size from the CLOB.
 
         """
-        fill_qty = self._compute_fill_qty(pos, side, ask_price, depth, min_order_size)
+        fill_qty = self._compute_fill_qty(
+            pos, side, ask_price, depth, min_order_size, is_primary=True
+        )
         if fill_qty is None:
             return
 
@@ -558,7 +575,9 @@ class AccumulatingTrader:
             min_order_size: Per-market minimum order size from the CLOB.
 
         """
-        fill_qty = self._compute_fill_qty(pos, side, ask_price, depth, min_order_size)
+        fill_qty = self._compute_fill_qty(
+            pos, side, ask_price, depth, min_order_size, is_primary=False
+        )
         if fill_qty is None:
             return
 
@@ -632,8 +651,15 @@ class AccumulatingTrader:
         ask_price: Decimal,
         depth: Decimal,
         min_order_size: Decimal = _MIN_TOKEN_QTY,
+        *,
+        is_primary: bool = True,
     ) -> Decimal | None:
         """Compute the fill quantity, clamped by depth, budget, and minimum.
+
+        Primary side uses ``initial_fill_size`` then ``fill_size_tokens``.
+        Secondary (hedge) side always uses ``fill_size_tokens`` to DCA into
+        the position gradually, mimicking whale behaviour of many small
+        hedge fills.
 
         Args:
             pos: The accumulating position.
@@ -641,21 +667,22 @@ class AccumulatingTrader:
             ask_price: Current best ask price.
             depth: Total visible ask depth.
             min_order_size: Per-market minimum from the CLOB order book.
+            is_primary: ``True`` for directional side, ``False`` for hedge.
 
         Returns:
             Fill quantity in tokens, or ``None`` if below minimum.
 
         """
         leg = pos.up_leg if side == "Up" else pos.down_leg
-        other_leg = pos.down_leg if side == "Up" else pos.up_leg
 
-        if leg.quantity == ZERO:
-            if other_leg.quantity == ZERO:
-                qty = self.config.initial_fill_size
-            else:
-                # Second side's first fill: match the other side's quantity
-                qty = other_leg.quantity
+        if is_primary:
+            qty = (
+                self.config.initial_fill_size
+                if leg.quantity == ZERO
+                else self.config.fill_size_tokens
+            )
         else:
+            # Hedge side: always small incremental fills (whale DCA pattern)
             qty = self.config.fill_size_tokens
 
         max_from_depth = depth * self.config.max_book_pct
@@ -696,7 +723,11 @@ class AccumulatingTrader:
         side: str,
         fill_qty: Decimal,
     ) -> bool:
-        """Check if adding a fill would exceed the max imbalance ratio.
+        """Check if adding a fill would worsen imbalance beyond the limit.
+
+        Always allow fills on the lighter side (they improve the ratio).
+        Only block fills on the heavier side that would push the ratio
+        further above the limit.
 
         Args:
             pos: The accumulating position.
@@ -717,9 +748,11 @@ class AccumulatingTrader:
         if other_qty <= ZERO:
             return False
 
-        max_qty = max(this_qty, other_qty)
-        min_qty = min(this_qty, other_qty)
-        ratio = max_qty / min_qty
+        # Always allow fills on the lighter side — they improve balance
+        if this_qty <= other_qty:
+            return False
+
+        ratio = this_qty / other_qty
         return ratio > self.config.max_imbalance_ratio
 
     # ------------------------------------------------------------------

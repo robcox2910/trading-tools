@@ -25,9 +25,9 @@ class TestDefaults:
         assert config.poll_interval == _DEFAULT_POLL_INTERVAL
 
     def test_default_max_combined_cost(self) -> None:
-        """Default max combined cost is 0.98."""
+        """Default max combined cost is 0.97."""
         config = SpreadCaptureConfig()
-        assert config.max_combined_cost == Decimal("0.98")
+        assert config.max_combined_cost == Decimal("0.97")
 
     def test_default_min_spread_margin(self) -> None:
         """Default min spread margin is 0.01."""

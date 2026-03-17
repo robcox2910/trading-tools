@@ -275,71 +275,99 @@ class TestMomentumSignal:
 
 @pytest.mark.asyncio
 class TestHedgeThreshold:
-    """Test time-decaying hedge threshold computation."""
+    """Test time-decaying hedge threshold with dynamic cost cap."""
 
-    async def test_threshold_at_hedge_start(self) -> None:
-        """Threshold equals hedge_start_threshold at hedge_start_pct elapsed."""
+    async def test_time_threshold_at_hedge_start(self) -> None:
+        """Time threshold equals hedge_start_threshold at hedge_start_pct elapsed."""
         config = _make_config(
             hedge_start_threshold=Decimal("0.45"),
-            hedge_end_threshold=Decimal("0.55"),
+            hedge_end_threshold=Decimal("0.90"),
             hedge_start_pct=Decimal("0.20"),
             max_fill_age_pct=Decimal("0.80"),
+            min_spread_margin=Decimal("0.01"),
         )
         trader = _make_trader(config=config)
-        opp = _make_opportunity()
+        # Primary at 0.30 → cost cap = 1.0 - 0.30 - 0.01 = 0.69 (higher than time threshold)
+        pos = _make_accum_position(
+            up_price=Decimal("0.30"), up_qty=Decimal(20), budget=Decimal(50), primary_side="Up"
+        )
 
-        # 20% of 300s window = 60s elapsed
-        now = _WINDOW_START + 60
-        threshold = trader._compute_hedge_threshold(opp, now)
+        now = _WINDOW_START + 60  # 20% elapsed
+        threshold = trader._compute_hedge_threshold(pos, now)
         assert threshold == Decimal("0.45")
 
-    async def test_threshold_at_fill_cutoff(self) -> None:
-        """Threshold equals hedge_end_threshold at max_fill_age_pct elapsed."""
+    async def test_cost_cap_limits_threshold(self) -> None:
+        """Dynamic cost cap tightens threshold when primary VWAP is high."""
         config = _make_config(
-            hedge_start_threshold=Decimal("0.45"),
-            hedge_end_threshold=Decimal("0.55"),
+            hedge_start_threshold=Decimal("0.50"),
+            hedge_end_threshold=Decimal("0.90"),
             hedge_start_pct=Decimal("0.20"),
             max_fill_age_pct=Decimal("0.80"),
+            min_spread_margin=Decimal("0.01"),
         )
         trader = _make_trader(config=config)
-        opp = _make_opportunity()
+        # Primary at 0.60 → cost cap = 1.0 - 0.60 - 0.01 = 0.39
+        # Time threshold at midpoint would be ~0.70, but cost cap is 0.39
+        pos = _make_accum_position(
+            up_price=Decimal("0.60"), up_qty=Decimal(20), budget=Decimal(50), primary_side="Up"
+        )
 
-        # 80% of 300s window = 240s elapsed
-        now = _WINDOW_START + 240
-        threshold = trader._compute_hedge_threshold(opp, now)
-        assert threshold == Decimal("0.55")
+        now = _WINDOW_START + 150  # 50% elapsed
+        threshold = trader._compute_hedge_threshold(pos, now)
+        assert threshold == Decimal("0.39")
 
-    async def test_threshold_at_midpoint(self) -> None:
-        """Threshold linearly interpolates at the midpoint."""
+    async def test_cheap_primary_allows_expensive_hedge(self) -> None:
+        """Cheap primary VWAP allows higher hedge prices."""
         config = _make_config(
-            hedge_start_threshold=Decimal("0.45"),
-            hedge_end_threshold=Decimal("0.55"),
+            hedge_start_threshold=Decimal("0.50"),
+            hedge_end_threshold=Decimal("0.90"),
             hedge_start_pct=Decimal("0.20"),
             max_fill_age_pct=Decimal("0.80"),
+            min_spread_margin=Decimal("0.01"),
         )
         trader = _make_trader(config=config)
-        opp = _make_opportunity()
+        # Primary at 0.20 → cost cap = 1.0 - 0.20 - 0.01 = 0.79
+        pos = _make_accum_position(
+            up_price=Decimal("0.20"), up_qty=Decimal(20), budget=Decimal(50), primary_side="Up"
+        )
 
-        # 50% of 300s window = 150s elapsed → normalised = (0.50 - 0.20) / 0.60 = 0.50
-        now = _WINDOW_START + 150
-        threshold = trader._compute_hedge_threshold(opp, now)
-        assert threshold == Decimal("0.50")
+        now = _WINDOW_START + 240  # 80% elapsed → time threshold = 0.90
+        threshold = trader._compute_hedge_threshold(pos, now)
+        # min(0.90, 0.79) = 0.79
+        assert threshold == Decimal("0.79")
 
     async def test_threshold_before_hedge_start(self) -> None:
         """Threshold clamps to hedge_start_threshold before hedge window."""
         config = _make_config(
             hedge_start_threshold=Decimal("0.45"),
-            hedge_end_threshold=Decimal("0.55"),
+            hedge_end_threshold=Decimal("0.90"),
+            hedge_start_pct=Decimal("0.20"),
+            max_fill_age_pct=Decimal("0.80"),
+            min_spread_margin=Decimal("0.01"),
+        )
+        trader = _make_trader(config=config)
+        pos = _make_accum_position(
+            up_price=Decimal("0.30"), up_qty=Decimal(20), budget=Decimal(50), primary_side="Up"
+        )
+
+        now = _WINDOW_START + 30  # 10% elapsed → before hedge_start_pct
+        threshold = trader._compute_hedge_threshold(pos, now)
+        assert threshold == Decimal("0.45")
+
+    async def test_no_primary_fills_uses_end_threshold(self) -> None:
+        """Cost cap defaults to hedge_end_threshold when primary has no fills."""
+        config = _make_config(
+            hedge_start_threshold=Decimal("0.50"),
+            hedge_end_threshold=Decimal("0.90"),
             hedge_start_pct=Decimal("0.20"),
             max_fill_age_pct=Decimal("0.80"),
         )
         trader = _make_trader(config=config)
-        opp = _make_opportunity()
+        pos = _make_accum_position(budget=Decimal(50), primary_side="Up")
 
-        # 10% of 300s window = 30s elapsed → before hedge_start_pct
-        now = _WINDOW_START + 30
-        threshold = trader._compute_hedge_threshold(opp, now)
-        assert threshold == Decimal("0.45")
+        now = _WINDOW_START + 240  # 80% elapsed → time = 0.90, cost_cap = 0.90
+        threshold = trader._compute_hedge_threshold(pos, now)
+        assert threshold == Decimal("0.90")
 
 
 @pytest.mark.asyncio
