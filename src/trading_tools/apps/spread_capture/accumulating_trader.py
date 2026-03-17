@@ -483,8 +483,9 @@ class AccumulatingTrader:
         Use the tighter of two caps:
         1. Time-decaying threshold: linearly interpolate from
            ``hedge_start_threshold`` to ``hedge_end_threshold``.
-        2. Cost cap: ``1.0 - primary_vwap - min_spread_margin`` so the
-           combined VWAP stays profitable after fees.
+        2. Cost cap: ``1.0 - primary_vwap`` so the combined VWAP
+           stays at or below break-even.  Whales accept losses on
+           37% of hedges — a small overpay beats an unhedged wipeout.
 
         Args:
             pos: The accumulating position (for primary VWAP).
@@ -513,10 +514,12 @@ class AccumulatingTrader:
                     * normalised
                 )
 
-        # Dynamic cap: don't let combined VWAP exceed 1.0 - margin
+        # Dynamic cap: allow hedge up to break-even (combined = 1.0).
+        # Whales accept losses on 37% of hedges — a small loss on the
+        # hedge is far cheaper than an unhedged directional wipeout.
         primary_leg = pos.up_leg if pos.primary_side == "Up" else pos.down_leg
         if primary_leg.quantity > ZERO:
-            cost_cap = ONE - primary_leg.entry_price - self.config.min_spread_margin
+            cost_cap = ONE - primary_leg.entry_price
         else:
             cost_cap = self.config.hedge_end_threshold
 
