@@ -1,15 +1,20 @@
-"""Accumulating spread capture trading engine.
+"""Directional entry + opportunistic hedge trading engine.
 
-Implement a whale-inspired strategy that buys each side of an Up/Down
-market independently whenever the ask price dips below a configurable
-threshold.  Over many small fills across the market window, the combined
-VWAP of both legs is driven well below $1.00, locking in profit at
-settlement.
+Implement a whale-inspired strategy that uses a Binance momentum signal
+to make a directional bet on one side of an Up/Down market, then
+opportunistically hedges the other side when its ask price dips below a
+time-decaying threshold.
 
-Unlike the simultaneous ``SpreadTrader`` that requires both sides to be
-cheap at the same instant, ``AccumulatingTrader`` accumulates positions
-opportunistically — one side at a time — mimicking the behaviour observed
-in high-profit whale wallets.
+Three-phase fill logic:
+  Phase 0 — Signal wait: pause for ``signal_delay_seconds`` then read
+      Binance 1-min candle(s) to determine primary direction.
+  Phase 1 — Directional entry: fill the primary side aggressively with
+      no price threshold.
+  Phase 2 — Opportunistic hedge: fill the secondary side only when
+      ``ask < hedge_threshold(t)``, where the threshold linearly
+      interpolates from ``hedge_start_threshold`` (tight, early) to
+      ``hedge_end_threshold`` (loose, near cutoff).
+  Phase 3 — Cutoff: stop all fills after ``max_fill_age_pct``.
 """
 
 from __future__ import annotations
@@ -70,12 +75,12 @@ def _empty_result_list() -> list[SpreadResult]:
 
 @dataclass
 class AccumulatingTrader:
-    """Accumulating spread capture engine for Polymarket Up/Down markets.
+    """Directional entry + opportunistic hedge engine for Polymarket Up/Down markets.
 
-    Buy each side of a spread independently over time, filling small
-    orders whenever the ask price dips below the per-side threshold.
-    Track combined VWAP and imbalance ratio to ensure the position
-    remains profitable and balanced.
+    Use a Binance momentum signal to determine the primary side, fill it
+    aggressively, then hedge the secondary side only when its ask dips
+    below a time-decaying threshold.  Imbalance ratio guards against
+    extreme directional exposure.
 
     Attributes:
         config: Immutable service configuration.
@@ -150,13 +155,14 @@ class AccumulatingTrader:
         self._high_water_mark = capital
         logger.info(
             "accumulate started mode=%s poll=%ds capital=$%s"
-            " threshold=%.4f max_vwap=%.4f max_imbal=%.1f"
+            " signal_delay=%ds hedge=%.2f→%.2f max_imbal=%.1f"
             " fill_size=%s max_open=%d slugs=%s",
             mode,
             self.config.poll_interval,
             capital,
-            self.config.per_side_ask_threshold,
-            self.config.max_combined_vwap,
+            self.config.signal_delay_seconds,
+            self.config.hedge_start_threshold,
+            self.config.hedge_end_threshold,
             self.config.max_imbalance_ratio,
             self.config.fill_size_tokens,
             self.config.max_open_positions,
@@ -271,10 +277,11 @@ class AccumulatingTrader:
 
         await self._settle_expired_positions()
 
-        # Scan for new markets to track
+        # Scan for new markets to track — pass ONE to accept all active
+        # markets; fill decisions are made in _attempt_fills.
         opportunities = await self._scanner.scan_per_side(
             set(self._positions.keys()),
-            self.config.per_side_ask_threshold,
+            ONE,
         )
 
         # Open new accumulating positions for discovered markets
@@ -317,11 +324,11 @@ class AccumulatingTrader:
 
         mode = "LIVE" if self.live else "PAPER"
         logger.info(
-            "%s TRACK %s budget=$%.2f threshold=%.4f asset=%s",
+            "%s TRACK %s budget=$%.2f signal_delay=%ds asset=%s",
             mode,
             opp.condition_id[:12],
             budget,
-            self.config.per_side_ask_threshold,
+            self.config.signal_delay_seconds,
             opp.asset,
         )
 
@@ -330,10 +337,13 @@ class AccumulatingTrader:
     # ------------------------------------------------------------------
 
     async def _attempt_fills(self) -> None:
-        """Attempt per-side fills on all open accumulating positions.
+        """Execute the three-phase fill logic on all open positions.
 
-        For each position, re-fetch order books and independently decide
-        whether to fill the Up and/or Down side based on current ask prices.
+        Phase 0 — Signal wait: skip positions until ``signal_delay_seconds``
+            have elapsed, then determine the primary side via Binance.
+        Phase 1 — Directional entry: fill the primary side aggressively.
+        Phase 2 — Opportunistic hedge: fill the secondary side only when
+            ``ask < hedge_threshold(t)``.
         """
         if self.client is None:
             return
@@ -345,11 +355,23 @@ class AccumulatingTrader:
             if pos is None or pos.state != PositionState.ACCUMULATING:
                 continue
 
-            # Stop filling when market is too close to expiry — prices
-            # become deterministic and chasing cheap near-zero asks on
-            # the losing side just adds directional risk.
             if self._past_fill_cutoff(pos.opportunity, now):
                 continue
+
+            # Phase 0: determine primary side after signal delay
+            if pos.primary_side is None:
+                elapsed = now - pos.opportunity.window_start_ts
+                if elapsed < self.config.signal_delay_seconds:
+                    continue
+                pos.primary_side = await self._determine_primary_side(pos)
+                mode = "LIVE" if self.live else "PAPER"
+                logger.info(
+                    "%s SIGNAL %s primary=%s asset=%s",
+                    mode,
+                    cid[:12],
+                    pos.primary_side,
+                    pos.opportunity.asset,
+                )
 
             try:
                 up_book, down_book = await asyncio.gather(
@@ -364,16 +386,98 @@ class AccumulatingTrader:
             down_ask = down_book.asks[0].price if down_book.asks else None
             up_depth = sum((level.size for level in up_book.asks), start=ZERO)
             down_depth = sum((level.size for level in down_book.asks), start=ZERO)
-            # Use per-market minimum from the order book (fallback to 5)
             min_size = min(up_book.min_order_size, down_book.min_order_size)
 
-            # Try filling each side independently
-            if up_ask is not None:
-                await self._try_fill_side(pos, "Up", up_ask, up_depth, min_size)
-            if down_ask is not None:
-                await self._try_fill_side(pos, "Down", down_ask, down_depth, min_size)
+            # Resolve primary / secondary book data
+            if pos.primary_side == "Up":
+                primary_ask, primary_depth = up_ask, up_depth
+                secondary_ask, secondary_depth = down_ask, down_depth
+            else:
+                primary_ask, primary_depth = down_ask, down_depth
+                secondary_ask, secondary_depth = up_ask, up_depth
+            secondary_side = "Down" if pos.primary_side == "Up" else "Up"
 
-    async def _try_fill_side(
+            # Phase 1: fill primary side (no price threshold)
+            if primary_ask is not None:
+                await self._try_fill_primary(
+                    pos, pos.primary_side, primary_ask, primary_depth, min_size
+                )
+
+            # Phase 2: opportunistic hedge on secondary side
+            if secondary_ask is not None:
+                hedge_threshold = self._compute_hedge_threshold(pos.opportunity, now)
+                if secondary_ask < hedge_threshold:
+                    await self._try_fill_secondary(
+                        pos, secondary_side, secondary_ask, secondary_depth, min_size
+                    )
+
+    async def _determine_primary_side(self, pos: AccumulatingPosition) -> str:
+        """Fetch Binance 1-min candle(s) and return the momentum direction.
+
+        If the spot price rose during the signal window, the primary side
+        is ``"Up"``; if it fell, ``"Down"``.  Falls back to the cheaper
+        side from the opportunity when candle data is unavailable.
+
+        Args:
+            pos: The position with opportunity metadata.
+
+        Returns:
+            ``"Up"`` or ``"Down"``.
+
+        """
+        if self._binance is not None:
+            try:
+                provider = BinanceCandleProvider(self._binance)
+                candles = await provider.get_candles(
+                    pos.opportunity.asset,
+                    Interval.M1,
+                    pos.opportunity.window_start_ts,
+                    pos.opportunity.window_start_ts + self.config.signal_delay_seconds,
+                )
+                if candles and candles[-1].close > candles[0].open:
+                    return "Up"
+                if candles and candles[-1].close < candles[0].open:
+                    return "Down"
+            except (BinanceError, httpx.HTTPError, KeyError, ValueError):
+                logger.debug(
+                    "Binance signal unavailable for %s, using price fallback",
+                    pos.opportunity.asset,
+                )
+
+        # Fallback: pick the cheaper side from the opportunity
+        return "Up" if pos.opportunity.up_price < pos.opportunity.down_price else "Down"
+
+    def _compute_hedge_threshold(self, opp: SpreadOpportunity, now: int) -> Decimal:
+        """Compute the time-decaying hedge threshold for the secondary side.
+
+        Linearly interpolate from ``hedge_start_threshold`` (tight) to
+        ``hedge_end_threshold`` (loose) as the window progresses from
+        ``hedge_start_pct`` to ``max_fill_age_pct``.
+
+        Args:
+            opp: The spread opportunity with window timestamps.
+            now: Current epoch seconds.
+
+        Returns:
+            Maximum ask price to accept for a secondary-side fill.
+
+        """
+        window_duration = opp.window_end_ts - opp.window_start_ts
+        if window_duration <= 0:
+            return self.config.hedge_end_threshold
+
+        elapsed_pct = Decimal(str(now - opp.window_start_ts)) / Decimal(str(window_duration))
+        hedge_range = self.config.max_fill_age_pct - self.config.hedge_start_pct
+        if hedge_range <= ZERO:
+            return self.config.hedge_end_threshold
+
+        normalised = max(ZERO, min(ONE, (elapsed_pct - self.config.hedge_start_pct) / hedge_range))
+        return (
+            self.config.hedge_start_threshold
+            + (self.config.hedge_end_threshold - self.config.hedge_start_threshold) * normalised
+        )
+
+    async def _try_fill_primary(
         self,
         pos: AccumulatingPosition,
         side: str,
@@ -381,16 +485,16 @@ class AccumulatingTrader:
         depth: Decimal,
         min_order_size: Decimal = _MIN_TOKEN_QTY,
     ) -> None:
-        """Attempt a single fill on one side of an accumulating position.
+        """Attempt a fill on the primary (directional) side.
 
-        Check the ask threshold, hypothetical VWAP, imbalance ratio, and
-        budget before executing a fill.
+        No price threshold — the primary side is filled aggressively.
+        Imbalance ratio is still checked to avoid extreme exposure.
 
         Args:
             pos: The accumulating position.
             side: ``"Up"`` or ``"Down"``.
-            ask_price: Current best ask price for this side.
-            depth: Total visible ask depth for this side.
+            ask_price: Current best ask on the primary side.
+            depth: Total visible ask depth.
             min_order_size: Per-market minimum order size from the CLOB.
 
         """
@@ -398,10 +502,57 @@ class AccumulatingTrader:
         if fill_qty is None:
             return
 
-        if not self._should_fill_side(pos, side, ask_price, fill_qty):
+        if self._would_exceed_imbalance(pos, side, fill_qty):
             return
 
-        # Execute the fill
+        await self._execute_fill(pos, side, ask_price, fill_qty)
+
+    async def _try_fill_secondary(
+        self,
+        pos: AccumulatingPosition,
+        side: str,
+        ask_price: Decimal,
+        depth: Decimal,
+        min_order_size: Decimal = _MIN_TOKEN_QTY,
+    ) -> None:
+        """Attempt a fill on the secondary (hedge) side.
+
+        The caller is responsible for checking the hedge threshold.
+        Imbalance ratio is still checked here.
+
+        Args:
+            pos: The accumulating position.
+            side: ``"Up"`` or ``"Down"``.
+            ask_price: Current best ask on the secondary side.
+            depth: Total visible ask depth.
+            min_order_size: Per-market minimum order size from the CLOB.
+
+        """
+        fill_qty = self._compute_fill_qty(pos, side, ask_price, depth, min_order_size)
+        if fill_qty is None:
+            return
+
+        if self._would_exceed_imbalance(pos, side, fill_qty):
+            return
+
+        await self._execute_fill(pos, side, ask_price, fill_qty)
+
+    async def _execute_fill(
+        self,
+        pos: AccumulatingPosition,
+        side: str,
+        ask_price: Decimal,
+        fill_qty: Decimal,
+    ) -> None:
+        """Execute a fill (paper or live) and update the position leg.
+
+        Args:
+            pos: The accumulating position.
+            side: ``"Up"`` or ``"Down"``.
+            ask_price: Price to buy at.
+            fill_qty: Quantity to buy.
+
+        """
         fill_price = ask_price
         if not self.live:
             fill_price = ask_price * (ONE + self.config.paper_slippage_pct)
@@ -423,24 +574,23 @@ class AccumulatingTrader:
 
         leg = pos.up_leg if side == "Up" else pos.down_leg
         if leg.quantity == ZERO:
-            # First fill — set initial values
             leg.entry_price = fill_price
             leg.quantity = fill_qty
             leg.cost_basis = fill_price * fill_qty
         else:
             leg.add_fill(fill_price, fill_qty)
 
+        role = "PRIMARY" if side == pos.primary_side else "HEDGE"
         mode = "LIVE" if self.live else "PAPER"
         logger.info(
-            "%s FILL %s %s price=%.4f qty=%.1f vwap=%.4f"
-            " combined_vwap=%.4f total_up=%.1f total_down=%.1f",
+            "%s FILL %s %s %s price=%.4f qty=%.1f vwap=%.4f total_up=%.1f total_down=%.1f",
             mode,
             pos.opportunity.condition_id[:12],
+            role,
             side,
             fill_price,
             fill_qty,
             leg.entry_price,
-            pos.combined_vwap,
             pos.up_leg.quantity,
             pos.down_leg.quantity,
         )
@@ -466,94 +616,35 @@ class AccumulatingTrader:
             Fill quantity in tokens, or ``None`` if below minimum.
 
         """
-        # Size the fill based on position state:
-        # 1. First side to fill: use initial_fill_size (large, establishes base)
-        # 2. Second side's first fill: match the other side's quantity
-        # 3. Subsequent fills: use fill_size_tokens (small adjustments)
         leg = pos.up_leg if side == "Up" else pos.down_leg
         other_leg = pos.down_leg if side == "Up" else pos.up_leg
+
         if leg.quantity == ZERO:
             if other_leg.quantity == ZERO:
                 qty = self.config.initial_fill_size
             else:
+                # Second side's first fill: match the other side's quantity
                 qty = other_leg.quantity
         else:
             qty = self.config.fill_size_tokens
 
-        # Cap by order book depth
         max_from_depth = depth * self.config.max_book_pct
         qty = min(qty, max_from_depth)
 
-        # Cap by remaining budget
         budget_remaining = pos.budget - pos.total_cost_basis
         if budget_remaining <= ZERO:
             return None
         max_from_budget = (budget_remaining / ask_price).quantize(Decimal("0.01"))
         qty = min(qty, max_from_budget)
 
-        # Quantize and check against per-market minimum
         qty = qty.quantize(Decimal("0.01"))
         if qty < min_order_size:
             return None
 
         return qty
 
-    def _should_fill_side(
-        self,
-        pos: AccumulatingPosition,
-        side: str,
-        ask_price: Decimal,
-        fill_qty: Decimal,
-    ) -> bool:
-        """Decide whether to execute a fill on one side of a position.
-
-        Check the ask price threshold, hypothetical combined VWAP after
-        fill, and imbalance ratio constraints.
-
-        Args:
-            pos: The accumulating position.
-            side: ``"Up"`` or ``"Down"``.
-            ask_price: Current best ask price.
-            fill_qty: Proposed fill quantity.
-
-        Returns:
-            ``True`` if the fill should proceed.
-
-        """
-        if ask_price >= self.config.per_side_ask_threshold:
-            return False
-
-        # Cap single-side spend when other side has no fills yet
-        if self._would_exceed_single_side_cap(pos, side, ask_price, fill_qty):
-            return False
-
-        # Check hypothetical combined VWAP.
-        # When both sides already have fills and the VWAP is above target,
-        # only allow fills that *improve* (lower) the combined VWAP.  The
-        # whale edge comes from time-averaging dips over many fills — we
-        # must let improving fills through even when VWAP is above target.
-        current_vwap = pos.combined_vwap
-        hyp_vwap = self._hypothetical_combined_vwap(pos, side, ask_price, fill_qty)
-        if hyp_vwap > ZERO and hyp_vwap > self.config.max_combined_vwap:
-            if current_vwap <= ZERO:
-                # First time both sides have fills — allow to bootstrap
-                pass
-            elif hyp_vwap < current_vwap:
-                # Fill improves (lowers) the combined VWAP — allow
-                pass
-            else:
-                # Fill would worsen or maintain above-target VWAP — block
-                return False
-
-        # Check imbalance ratio
-        return not self._would_exceed_imbalance(pos, side, fill_qty)
-
     def _past_fill_cutoff(self, opp: SpreadOpportunity, now: int) -> bool:
         """Return ``True`` when the market window is past the fill cutoff.
-
-        Near expiry, prices become deterministic — one side collapses to
-        near-zero as the outcome becomes clear.  Buying cheap tokens at
-        that point is a directional bet, not spread capture.
 
         Args:
             opp: The spread opportunity with window timestamps.
@@ -568,84 +659,6 @@ class AccumulatingTrader:
             return True
         elapsed_pct = Decimal(str(now - opp.window_start_ts)) / Decimal(str(window_duration))
         return elapsed_pct > self.config.max_fill_age_pct
-
-    def _would_exceed_single_side_cap(
-        self,
-        pos: AccumulatingPosition,
-        side: str,
-        ask_price: Decimal,
-        fill_qty: Decimal,
-    ) -> bool:
-        """Check if a fill would exceed the single-side budget cap.
-
-        When one side has fills but the other does not, limit total spend
-        on the filled side to ``budget * max_single_side_pct``.  This
-        reserves budget for the other side and prevents the position from
-        becoming a pure directional bet.
-
-        Args:
-            pos: The accumulating position.
-            side: ``"Up"`` or ``"Down"``.
-            ask_price: Fill price for cost computation.
-            fill_qty: Proposed fill quantity.
-
-        Returns:
-            ``True`` if the fill would violate the single-side cap.
-
-        """
-        if side == "Up":
-            this_leg = pos.up_leg
-            other_leg = pos.down_leg
-        else:
-            this_leg = pos.down_leg
-            other_leg = pos.up_leg
-
-        # Both sides have fills — no single-side cap applies
-        if other_leg.quantity > ZERO:
-            return False
-
-        # Check if adding this fill would exceed the cap
-        new_cost = this_leg.cost_basis + ask_price * fill_qty
-        cap = pos.budget * self.config.max_single_side_pct
-        return new_cost > cap
-
-    def _hypothetical_combined_vwap(
-        self,
-        pos: AccumulatingPosition,
-        side: str,
-        price: Decimal,
-        qty: Decimal,
-    ) -> Decimal:
-        """Compute what the combined VWAP would be after a hypothetical fill.
-
-        Args:
-            pos: The accumulating position.
-            side: ``"Up"`` or ``"Down"``.
-            price: Fill price.
-            qty: Fill quantity.
-
-        Returns:
-            Hypothetical combined VWAP, or zero if either side would still
-            have no fills.
-
-        """
-        if side == "Up":
-            up_cost = pos.up_leg.cost_basis + price * qty
-            up_qty = pos.up_leg.quantity + qty
-            down_cost = pos.down_leg.cost_basis
-            down_qty = pos.down_leg.quantity
-        else:
-            up_cost = pos.up_leg.cost_basis
-            up_qty = pos.up_leg.quantity
-            down_cost = pos.down_leg.cost_basis + price * qty
-            down_qty = pos.down_leg.quantity + qty
-
-        if up_qty <= ZERO or down_qty <= ZERO:
-            return ZERO
-
-        up_vwap = up_cost / up_qty
-        down_vwap = down_cost / down_qty
-        return up_vwap + down_vwap
 
     def _would_exceed_imbalance(
         self,
@@ -671,7 +684,6 @@ class AccumulatingTrader:
             this_qty = pos.down_leg.quantity + fill_qty
             other_qty = pos.up_leg.quantity
 
-        # If other side has no fills yet, allow the fill (can't compute ratio)
         if other_qty <= ZERO:
             return False
 

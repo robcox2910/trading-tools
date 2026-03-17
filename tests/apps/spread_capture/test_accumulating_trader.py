@@ -1,4 +1,4 @@
-"""Tests for AccumulatingTrader trading engine."""
+"""Tests for AccumulatingTrader directional entry + opportunistic hedge engine."""
 
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
@@ -25,14 +25,15 @@ _MAX_POS_PCT = Decimal("0.10")
 _WINDOW_START = 1_710_000_000
 _WINDOW_END = 1_710_000_300
 _NOW = 1_710_000_100
-_PAST_TS = 1_709_999_000
 _DEFAULT_POLL = 5
 _ZERO_FEE = Decimal("0.0")
 _DEFAULT_FEE_EXPONENT = 2
-_THRESHOLD = Decimal("0.95")
-_MAX_VWAP = Decimal("0.97")
 _MAX_IMBALANCE = Decimal("3.0")
 _FILL_SIZE = Decimal(5)
+_HEDGE_START = Decimal("0.45")
+_HEDGE_END = Decimal("0.55")
+_HEDGE_START_PCT = Decimal("0.20")
+_SIGNAL_DELAY = 60
 
 
 def _make_config(**overrides: object) -> SpreadCaptureConfig:
@@ -52,10 +53,12 @@ def _make_config(**overrides: object) -> SpreadCaptureConfig:
         "fee_rate": _ZERO_FEE,
         "fee_exponent": _DEFAULT_FEE_EXPONENT,
         "strategy": "accumulate",
-        "per_side_ask_threshold": _THRESHOLD,
-        "max_combined_vwap": _MAX_VWAP,
         "max_imbalance_ratio": _MAX_IMBALANCE,
         "fill_size_tokens": _FILL_SIZE,
+        "signal_delay_seconds": _SIGNAL_DELAY,
+        "hedge_start_threshold": _HEDGE_START,
+        "hedge_end_threshold": _HEDGE_END,
+        "hedge_start_pct": _HEDGE_START_PCT,
     }
     defaults.update(overrides)
     return SpreadCaptureConfig(**defaults)  # type: ignore[arg-type]
@@ -95,6 +98,7 @@ def _make_accum_position(
     down_price: Decimal = Decimal(0),
     down_qty: Decimal = Decimal(0),
     budget: Decimal = Decimal(10),
+    primary_side: str | None = None,
     **overrides: object,
 ) -> AccumulatingPosition:
     """Create an AccumulatingPosition with specified leg values."""
@@ -116,160 +120,221 @@ def _make_accum_position(
         ),
         entry_time=_NOW,
         budget=budget,
+        primary_side=primary_side,
         **overrides,  # type: ignore[arg-type]
     )
 
 
 @pytest.mark.asyncio
-class TestFillDecisions:
-    """Test per-side fill decision logic."""
+class TestSignalDetermination:
+    """Test Binance momentum signal and primary side selection."""
 
-    async def test_buys_up_when_ask_below_threshold(self) -> None:
-        """Fill Up leg when ask is below per_side_ask_threshold."""
+    async def test_binance_up_signal(self) -> None:
+        """Primary side is Up when Binance spot price rose."""
         trader = _make_trader()
+        trader._binance = AsyncMock()
         pos = _make_accum_position(budget=Decimal(50))
+
+        mock_candle_start = AsyncMock()
+        mock_candle_start.open = Decimal(50000)
+        mock_candle_end = AsyncMock()
+        mock_candle_end.close = Decimal(50100)
+
+        with patch(
+            "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
+        ) as mock_provider_cls:
+            mock_provider_cls.return_value.get_candles = AsyncMock(
+                return_value=[mock_candle_start, mock_candle_end]
+            )
+            result = await trader._determine_primary_side(pos)
+
+        assert result == "Up"
+
+    async def test_binance_down_signal(self) -> None:
+        """Primary side is Down when Binance spot price fell."""
+        trader = _make_trader()
+        trader._binance = AsyncMock()
+        pos = _make_accum_position(budget=Decimal(50))
+
+        mock_candle_start = AsyncMock()
+        mock_candle_start.open = Decimal(50100)
+        mock_candle_end = AsyncMock()
+        mock_candle_end.close = Decimal(50000)
+
+        with patch(
+            "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
+        ) as mock_provider_cls:
+            mock_provider_cls.return_value.get_candles = AsyncMock(
+                return_value=[mock_candle_start, mock_candle_end]
+            )
+            result = await trader._determine_primary_side(pos)
+
+        assert result == "Down"
+
+    async def test_fallback_to_cheaper_side(self) -> None:
+        """Fall back to the cheaper opportunity side when Binance unavailable."""
+        trader = _make_trader()
+        trader._binance = None
+        pos = _make_accum_position(budget=Decimal(50))
+
+        result = await trader._determine_primary_side(pos)
+        assert result == "Down"
+
+    async def test_fallback_when_flat(self) -> None:
+        """Fall back when Binance shows no change (open == close)."""
+        trader = _make_trader()
+        trader._binance = AsyncMock()
+        pos = _make_accum_position(budget=Decimal(50))
+
+        mock_candle = AsyncMock()
+        mock_candle.open = Decimal(50000)
+        mock_candle.close = Decimal(50000)
+
+        with patch(
+            "trading_tools.apps.spread_capture.accumulating_trader.BinanceCandleProvider"
+        ) as mock_provider_cls:
+            mock_provider_cls.return_value.get_candles = AsyncMock(return_value=[mock_candle])
+            result = await trader._determine_primary_side(pos)
+
+        # Flat → fallback to cheaper side (Down at 0.47)
+        assert result == "Down"
+
+
+@pytest.mark.asyncio
+class TestHedgeThreshold:
+    """Test time-decaying hedge threshold computation."""
+
+    async def test_threshold_at_hedge_start(self) -> None:
+        """Threshold equals hedge_start_threshold at hedge_start_pct elapsed."""
+        config = _make_config(
+            hedge_start_threshold=Decimal("0.45"),
+            hedge_end_threshold=Decimal("0.55"),
+            hedge_start_pct=Decimal("0.20"),
+            max_fill_age_pct=Decimal("0.80"),
+        )
+        trader = _make_trader(config=config)
+        opp = _make_opportunity()
+
+        # 20% of 300s window = 60s elapsed
+        now = _WINDOW_START + 60
+        threshold = trader._compute_hedge_threshold(opp, now)
+        assert threshold == Decimal("0.45")
+
+    async def test_threshold_at_fill_cutoff(self) -> None:
+        """Threshold equals hedge_end_threshold at max_fill_age_pct elapsed."""
+        config = _make_config(
+            hedge_start_threshold=Decimal("0.45"),
+            hedge_end_threshold=Decimal("0.55"),
+            hedge_start_pct=Decimal("0.20"),
+            max_fill_age_pct=Decimal("0.80"),
+        )
+        trader = _make_trader(config=config)
+        opp = _make_opportunity()
+
+        # 80% of 300s window = 240s elapsed
+        now = _WINDOW_START + 240
+        threshold = trader._compute_hedge_threshold(opp, now)
+        assert threshold == Decimal("0.55")
+
+    async def test_threshold_at_midpoint(self) -> None:
+        """Threshold linearly interpolates at the midpoint."""
+        config = _make_config(
+            hedge_start_threshold=Decimal("0.45"),
+            hedge_end_threshold=Decimal("0.55"),
+            hedge_start_pct=Decimal("0.20"),
+            max_fill_age_pct=Decimal("0.80"),
+        )
+        trader = _make_trader(config=config)
+        opp = _make_opportunity()
+
+        # 50% of 300s window = 150s elapsed → normalised = (0.50 - 0.20) / 0.60 = 0.50
+        now = _WINDOW_START + 150
+        threshold = trader._compute_hedge_threshold(opp, now)
+        assert threshold == Decimal("0.50")
+
+    async def test_threshold_before_hedge_start(self) -> None:
+        """Threshold clamps to hedge_start_threshold before hedge window."""
+        config = _make_config(
+            hedge_start_threshold=Decimal("0.45"),
+            hedge_end_threshold=Decimal("0.55"),
+            hedge_start_pct=Decimal("0.20"),
+            max_fill_age_pct=Decimal("0.80"),
+        )
+        trader = _make_trader(config=config)
+        opp = _make_opportunity()
+
+        # 10% of 300s window = 30s elapsed → before hedge_start_pct
+        now = _WINDOW_START + 30
+        threshold = trader._compute_hedge_threshold(opp, now)
+        assert threshold == Decimal("0.45")
+
+
+@pytest.mark.asyncio
+class TestPrimaryFills:
+    """Test that primary side fills execute without price threshold."""
+
+    async def test_primary_fill_no_threshold(self) -> None:
+        """Primary side fills execute regardless of ask price."""
+        trader = _make_trader()
+        pos = _make_accum_position(budget=Decimal(50), primary_side="Up")
         trader._positions["cond_a"] = pos
 
-        result = trader._should_fill_side(pos, "Up", Decimal("0.45"), _QTY)
-        assert result is True
+        # Ask at 0.60 — would fail any tight threshold but primary has none
+        await trader._try_fill_primary(pos, "Up", Decimal("0.60"), Decimal(100))
+        assert pos.up_leg.quantity > Decimal(0)
 
-    async def test_buys_down_when_ask_below_threshold(self) -> None:
-        """Fill Down leg when ask is below per_side_ask_threshold."""
-        trader = _make_trader()
-        pos = _make_accum_position(budget=Decimal(50))
-        trader._positions["cond_a"] = pos
-
-        result = trader._should_fill_side(pos, "Down", Decimal("0.44"), _QTY)
-        assert result is True
-
-    async def test_skips_side_when_ask_above_threshold(self) -> None:
-        """No fill when ask >= per_side_ask_threshold."""
-        trader = _make_trader()
-        pos = _make_accum_position(budget=Decimal(50))
-
-        result = trader._should_fill_side(pos, "Up", Decimal("0.96"), _QTY)
-        assert result is False
-
-    async def test_skips_side_when_ask_equals_threshold(self) -> None:
-        """No fill when ask == per_side_ask_threshold (must be strictly below)."""
-        trader = _make_trader()
-        pos = _make_accum_position(budget=Decimal(50))
-
-        result = trader._should_fill_side(pos, "Up", Decimal("0.95"), _QTY)
-        assert result is False
-
-    async def test_blocks_fill_that_worsens_vwap_above_target(self) -> None:
-        """Block fill when it would raise combined VWAP further above target."""
-        config = _make_config(max_combined_vwap=Decimal("0.90"))
-        trader = _make_trader(config=config)
-        # Combined VWAP already at 0.95, above the 0.90 target
-        pos = _make_accum_position(
-            up_price=Decimal("0.50"),
-            up_qty=Decimal(10),
-            down_price=Decimal("0.45"),
-            down_qty=Decimal(10),
-            budget=Decimal(50),
-        )
-
-        # Adding more Up at 0.55 would raise Up VWAP → worsens combined → BLOCK
-        result = trader._should_fill_side(pos, "Up", Decimal("0.55"), _QTY)
-        assert result is False
-
-    async def test_allows_fill_that_improves_vwap_above_target(self) -> None:
-        """Allow fill when it lowers combined VWAP even if still above target."""
-        config = _make_config(max_combined_vwap=Decimal("0.90"))
-        trader = _make_trader(config=config)
-        # Combined VWAP at 0.95, above the 0.90 target
-        pos = _make_accum_position(
-            up_price=Decimal("0.50"),
-            up_qty=Decimal(10),
-            down_price=Decimal("0.45"),
-            down_qty=Decimal(10),
-            budget=Decimal(50),
-        )
-
-        # Adding more Up at 0.40 lowers Up VWAP → improves combined → ALLOW
-        result = trader._should_fill_side(pos, "Up", Decimal("0.40"), _QTY)
-        assert result is True
-
-    async def test_allows_second_side_first_fill(self) -> None:
-        """Allow the first fill on the second side even at market rate.
-
-        The whale edge comes from time-averaging dips, not from requiring
-        the second side to be below the VWAP target on the very first fill.
-        """
-        trader = _make_trader()
-        # Up side already filled at 0.50, Down side empty
-        pos = _make_accum_position(
-            up_price=Decimal("0.50"),
-            up_qty=Decimal(5),
-            budget=Decimal(20),
-        )
-
-        # Filling Down at 0.50 → hyp_vwap = 0.50 + 0.50 = 1.00 > 0.97 target
-        # But since Down has zero fills, hypothetical returns 0 → check skipped
-        result = trader._should_fill_side(pos, "Down", Decimal("0.50"), _QTY)
-        assert result is True
-
-    async def test_imbalance_ratio_blocks_heavy_side(self) -> None:
-        """Pause heavier side until other catches up."""
+    async def test_primary_fill_imbalance_check(self) -> None:
+        """Primary fill blocked when it would exceed imbalance ratio."""
         config = _make_config(max_imbalance_ratio=Decimal("1.5"))
         trader = _make_trader(config=config)
         pos = _make_accum_position(
-            up_price=Decimal("0.45"),
+            up_price=Decimal("0.50"),
             up_qty=Decimal(20),
-            down_price=Decimal("0.42"),
+            down_price=Decimal("0.45"),
             down_qty=Decimal(10),
             budget=Decimal(50),
+            primary_side="Up",
         )
 
-        # Up has 20, Down has 10 — ratio is 2.0, adding more Up would exceed 1.5
-        result = trader._should_fill_side(pos, "Up", Decimal("0.45"), _QTY)
-        assert result is False
+        await trader._try_fill_primary(pos, "Up", Decimal("0.50"), Decimal(100))
+        # Up already at 20, Down at 10 → ratio 2.0 > 1.5 → blocked
+        assert pos.up_leg.quantity == Decimal(20)
 
-        # But filling Down is fine — it helps balance
-        result = trader._should_fill_side(pos, "Down", Decimal("0.42"), _QTY)
-        assert result is True
 
-    async def test_single_side_cap_blocks_when_other_empty(self) -> None:
-        """Block fills on one side when it would exceed single-side cap and other side has no fills."""
-        config = _make_config(max_single_side_pct=Decimal("0.50"))
-        trader = _make_trader(config=config)
-        # Up side already has fills consuming 50%+ of budget, Down has zero
+@pytest.mark.asyncio
+class TestSecondaryFills:
+    """Test that secondary side fills respect the hedge threshold."""
+
+    async def test_secondary_fill_below_threshold(self) -> None:
+        """Secondary fill executes when ask is below hedge threshold."""
+        trader = _make_trader()
         pos = _make_accum_position(
-            up_price=Decimal("0.45"),
-            up_qty=Decimal(12),  # cost = 5.40
-            budget=Decimal(10),  # cap = 5.00
+            up_price=Decimal("0.50"),
+            up_qty=Decimal(20),
+            budget=Decimal(50),
+            primary_side="Up",
         )
 
-        # Adding more Up at 0.45 would push well over 50% cap
-        result = trader._should_fill_side(pos, "Up", Decimal("0.45"), Decimal(5))
-        assert result is False
+        # Ask at 0.40 < hedge threshold (0.45 at start)
+        await trader._try_fill_secondary(pos, "Down", Decimal("0.40"), Decimal(100))
+        assert pos.down_leg.quantity > Decimal(0)
 
-    async def test_single_side_cap_allows_when_other_has_fills(self) -> None:
-        """Allow fills freely once the other side also has fills."""
-        config = _make_config(max_single_side_pct=Decimal("0.50"))
+    async def test_secondary_fill_imbalance_check(self) -> None:
+        """Secondary fill blocked when it would exceed imbalance ratio."""
+        config = _make_config(max_imbalance_ratio=Decimal("1.5"))
         trader = _make_trader(config=config)
-        # Both sides have fills, balanced — no single-side cap
         pos = _make_accum_position(
-            up_price=Decimal("0.45"),
+            up_price=Decimal("0.50"),
             up_qty=Decimal(10),
-            down_price=Decimal("0.42"),
-            down_qty=Decimal(10),
-            budget=Decimal(20),
+            down_price=Decimal("0.45"),
+            down_qty=Decimal(20),
+            budget=Decimal(50),
+            primary_side="Up",
         )
 
-        result = trader._should_fill_side(pos, "Up", Decimal("0.45"), Decimal(5))
-        assert result is True
-
-    async def test_single_side_cap_allows_first_fill(self) -> None:
-        """Allow the first fill on a side even when other side is empty."""
-        config = _make_config(max_single_side_pct=Decimal("0.50"))
-        trader = _make_trader(config=config)
-        pos = _make_accum_position(budget=Decimal(20))
-
-        result = trader._should_fill_side(pos, "Up", Decimal("0.45"), Decimal(10))
-        assert result is True
+        await trader._try_fill_secondary(pos, "Down", Decimal("0.40"), Decimal(100))
+        # Down already at 20, Up at 10 → ratio 2.0 > 1.5 → blocked
+        assert pos.down_leg.quantity == Decimal(20)
 
 
 @pytest.mark.asyncio
@@ -277,17 +342,15 @@ class TestMultipleFills:
     """Test VWAP tracking across multiple fills."""
 
     async def test_multiple_fills_update_vwap(self) -> None:
-        """SideLeg.add_fill produces correct weighted average across fills."""
+        """SideLeg.add_fill produce correct weighted average across fills."""
         leg = SideLeg(
             side="Up",
             entry_price=Decimal("0.50"),
             quantity=Decimal(10),
             cost_basis=Decimal("5.00"),
         )
-        # Add a cheaper fill
         leg.add_fill(Decimal("0.40"), Decimal(10))
 
-        # VWAP = (5.0 + 4.0) / 20 = 0.45
         assert leg.entry_price == Decimal("0.4500")
         assert leg.quantity == Decimal(20)
         assert leg.cost_basis == Decimal("9.00")
@@ -298,7 +361,7 @@ class TestSettlement:
     """Test position settlement P&L computation."""
 
     async def test_settlement_paired_pnl(self) -> None:
-        """Paired settlement: min(up, down) * 1.0 - total_cost - fees."""
+        """Paired settlement: winning_qty * 1.0 - total_cost - fees."""
         config = _make_config(fee_rate=_ZERO_FEE)
         trader = _make_trader(config=config)
         opp = _make_opportunity(window_end_ts=_NOW - 1)
@@ -321,7 +384,6 @@ class TestSettlement:
 
         assert len(trader._results) == 1
         result = trader._results[0]
-        # P&L = winning_qty * 1.0 - total_cost = 10 * 1.0 - (4.8 + 4.7) = 0.5
         expected_pnl = _QTY * Decimal(1) - (_UP_PRICE * _QTY + _DOWN_PRICE * _QTY)
         assert result.pnl == expected_pnl
         assert result.pnl > Decimal(0)
@@ -331,7 +393,6 @@ class TestSettlement:
         config = _make_config(fee_rate=_ZERO_FEE)
         trader = _make_trader(config=config)
         opp = _make_opportunity(window_end_ts=_NOW - 1)
-        # Up has more tokens than Down
         pos = _make_accum_position(
             up_price=Decimal("0.48"),
             up_qty=Decimal(15),
@@ -350,8 +411,6 @@ class TestSettlement:
             await trader._settle_expired_positions()
 
         result = trader._results[0]
-        # P&L = winning_qty * 1.0 - total_cost
-        # = 15 * 1.0 - (0.48 * 15 + 0.47 * 10) = 15 - 7.2 - 4.7 = 3.1
         expected_pnl = Decimal(15) * Decimal(1) - (
             Decimal("0.48") * Decimal(15) + Decimal("0.47") * Decimal(10)
         )
@@ -362,7 +421,6 @@ class TestSettlement:
         config = _make_config(fee_rate=_ZERO_FEE)
         trader = _make_trader(config=config)
         opp = _make_opportunity(window_end_ts=_NOW - 1)
-        # Up has more tokens than Down, but Down wins
         pos = _make_accum_position(
             up_price=Decimal("0.48"),
             up_qty=Decimal(15),
@@ -381,8 +439,6 @@ class TestSettlement:
             await trader._settle_expired_positions()
 
         result = trader._results[0]
-        # P&L = winning_qty * 1.0 - total_cost
-        # = 10 * 1.0 - (0.48 * 15 + 0.47 * 10) = 10 - 7.2 - 4.7 = -1.9
         expected_pnl = Decimal(10) * Decimal(1) - (
             Decimal("0.48") * Decimal(15) + Decimal("0.47") * Decimal(10)
         )
@@ -394,7 +450,6 @@ class TestSettlement:
         config = _make_config(fee_rate=_ZERO_FEE)
         trader = _make_trader(config=config)
         opp = _make_opportunity(window_end_ts=_NOW - 1)
-        # Only Up side has fills
         pos = _make_accum_position(
             up_price=Decimal("0.48"),
             up_qty=_QTY,
@@ -411,7 +466,6 @@ class TestSettlement:
             await trader._settle_expired_positions()
 
         result = trader._results[0]
-        # P&L = 10 * 1.0 - 4.8 = 5.2
         assert result.pnl == _QTY * Decimal(1) - _UP_PRICE * _QTY
 
     async def test_settlement_only_one_side_loses(self) -> None:
@@ -419,7 +473,6 @@ class TestSettlement:
         config = _make_config(fee_rate=_ZERO_FEE)
         trader = _make_trader(config=config)
         opp = _make_opportunity(window_end_ts=_NOW - 1)
-        # Only Up side has fills but Down wins
         pos = _make_accum_position(
             up_price=Decimal("0.48"),
             up_qty=_QTY,
@@ -436,7 +489,6 @@ class TestSettlement:
             await trader._settle_expired_positions()
 
         result = trader._results[0]
-        # P&L = 0 - 4.8 = -4.8
         assert result.pnl == Decimal(0) - _UP_PRICE * _QTY
 
     async def test_unknown_outcome_paired(self) -> None:
@@ -462,7 +514,6 @@ class TestSettlement:
             await trader._settle_expired_positions()
 
         result = trader._results[0]
-        # Conservative: paired_qty * 1.0 - total_cost = 10 * 1.0 - 9.5 = 0.5
         assert result.pnl > Decimal(0)
         assert result.outcome_known is False
 
@@ -475,7 +526,6 @@ class TestFillAgeCutoff:
         """No fills when market window is past max_fill_age_pct."""
         config = _make_config(max_fill_age_pct=Decimal("0.70"))
         trader = _make_trader(config=config)
-        # 80% of window elapsed (> 70% cutoff)
         elapsed = int((_WINDOW_END - _WINDOW_START) * 0.8)
         now = _WINDOW_START + elapsed
         opp = _make_opportunity()
@@ -486,7 +536,6 @@ class TestFillAgeCutoff:
         """Fills proceed when market window is before max_fill_age_pct."""
         config = _make_config(max_fill_age_pct=Decimal("0.70"))
         trader = _make_trader(config=config)
-        # 50% of window elapsed (< 70% cutoff)
         elapsed = int((_WINDOW_END - _WINDOW_START) * 0.5)
         now = _WINDOW_START + elapsed
         opp = _make_opportunity()
@@ -494,10 +543,9 @@ class TestFillAgeCutoff:
         assert trader._past_fill_cutoff(opp, now) is False
 
     async def test_fills_blocked_at_exact_cutoff(self) -> None:
-        """Fills blocked when exactly at the cutoff boundary."""
+        """Fills blocked when just past the cutoff boundary."""
         config = _make_config(max_fill_age_pct=Decimal("0.70"))
         trader = _make_trader(config=config)
-        # Exactly 70% elapsed — should block (> not >=, but Decimal precision)
         elapsed = int((_WINDOW_END - _WINDOW_START) * 0.71)
         now = _WINDOW_START + elapsed
         opp = _make_opportunity()
@@ -553,7 +601,6 @@ class TestBudgetManagement:
     async def test_budget_per_market_limits_spending(self) -> None:
         """Fill qty is None when budget is exhausted."""
         trader = _make_trader()
-        # Budget of $5, already spent $4.8
         pos = _make_accum_position(
             up_price=Decimal("0.48"),
             up_qty=_QTY,
@@ -561,8 +608,6 @@ class TestBudgetManagement:
         )
 
         qty = trader._compute_fill_qty(pos, "Down", Decimal("0.47"), Decimal(100))
-        # Remaining budget = 5.00 - 4.80 = 0.20
-        # Max from budget = 0.20 / 0.47 ≈ 0.42 — below min 5 tokens
         assert qty is None
 
     async def test_fill_qty_capped_by_depth(self) -> None:
@@ -571,7 +616,6 @@ class TestBudgetManagement:
         trader = _make_trader(config=config)
         pos = _make_accum_position(budget=Decimal(1000))
 
-        # Depth is 30, max_book_pct=0.20 → max 6 tokens
         qty = trader._compute_fill_qty(pos, "Up", Decimal("0.48"), Decimal(30))
         assert qty is not None
         assert qty == Decimal("6.00")
@@ -610,41 +654,32 @@ class TestDatabasePersistence:
 
 
 @pytest.mark.asyncio
-class TestHypotheticalVwap:
-    """Test hypothetical VWAP computation."""
+class TestImbalance:
+    """Test imbalance ratio guard."""
 
-    async def test_hypothetical_both_sides_filled(self) -> None:
-        """Compute combined VWAP including hypothetical fill on Up side."""
-        trader = _make_trader()
+    async def test_imbalance_blocks_heavy_side(self) -> None:
+        """Pause heavier side until other catches up."""
+        config = _make_config(max_imbalance_ratio=Decimal("1.5"))
+        trader = _make_trader(config=config)
         pos = _make_accum_position(
-            up_price=Decimal("0.50"),
-            up_qty=Decimal(10),
-            down_price=Decimal("0.45"),
+            up_price=Decimal("0.45"),
+            up_qty=Decimal(20),
+            down_price=Decimal("0.42"),
             down_qty=Decimal(10),
             budget=Decimal(50),
         )
 
-        vwap = trader._hypothetical_combined_vwap(pos, "Up", Decimal("0.40"), Decimal(10))
-        # New Up VWAP = (5.0 + 4.0) / 20 = 0.45, Down VWAP = 0.45, Combined = 0.90
-        assert vwap == Decimal("0.90")
+        assert trader._would_exceed_imbalance(pos, "Up", _QTY) is True
+        assert trader._would_exceed_imbalance(pos, "Down", _QTY) is False
 
-    async def test_hypothetical_zero_when_other_side_empty(self) -> None:
-        """Return zero when the other side has no fills yet."""
-        trader = _make_trader()
-        pos = _make_accum_position(budget=Decimal(50))
-
-        vwap = trader._hypothetical_combined_vwap(pos, "Up", Decimal("0.48"), Decimal(10))
-        assert vwap == Decimal(0)
-
-    async def test_hypothetical_first_fill_with_other_side(self) -> None:
-        """Compute VWAP for first fill on one side when other has fills."""
-        trader = _make_trader()
+    async def test_imbalance_allows_when_other_empty(self) -> None:
+        """Allow fills when the other side has no fills (can't compute ratio)."""
+        config = _make_config(max_imbalance_ratio=Decimal("1.5"))
+        trader = _make_trader(config=config)
         pos = _make_accum_position(
-            down_price=Decimal("0.45"),
-            down_qty=Decimal(10),
+            up_price=Decimal("0.45"),
+            up_qty=Decimal(20),
             budget=Decimal(50),
         )
 
-        vwap = trader._hypothetical_combined_vwap(pos, "Up", Decimal("0.48"), Decimal(10))
-        # Up VWAP = 0.48, Down VWAP = 0.45, Combined = 0.93
-        assert vwap == Decimal("0.93")
+        assert trader._would_exceed_imbalance(pos, "Up", _QTY) is False

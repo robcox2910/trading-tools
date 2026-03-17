@@ -181,12 +181,13 @@ class PairedPosition:
 
 @dataclass
 class AccumulatingPosition:
-    """A spread position being built via independent per-side fills over time.
+    """A spread position being built via directional entry + opportunistic hedge.
 
-    Unlike ``PairedPosition`` which requires both sides simultaneously, an
-    accumulating position buys each side independently whenever its ask price
-    dips below a threshold.  The goal is a combined VWAP well below $1.00
-    across many small fills, mimicking whale accumulation behaviour.
+    The primary side is determined by a Binance momentum signal after
+    ``signal_delay_seconds`` into the market window.  Primary fills are
+    executed aggressively with no price threshold.  The secondary (hedge)
+    side is filled opportunistically when its ask dips below a time-decaying
+    threshold, locking in guaranteed profit at settlement.
 
     Attributes:
         opportunity: The spread opportunity that triggered tracking.
@@ -196,6 +197,8 @@ class AccumulatingPosition:
         entry_time: UTC epoch seconds when the position was first opened.
         is_paper: ``True`` for simulated trades, ``False`` for live.
         budget: Total USDC budget allocated for this market.
+        primary_side: ``"Up"`` or ``"Down"`` once the Binance momentum
+            signal has been read, ``None`` before the signal delay.
 
     """
 
@@ -206,6 +209,7 @@ class AccumulatingPosition:
     entry_time: int
     is_paper: bool = True
     budget: Decimal = Decimal(0)
+    primary_side: str | None = None
 
     @property
     def combined_vwap(self) -> Decimal:
