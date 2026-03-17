@@ -118,9 +118,9 @@ class SpreadCaptureConfig:
             before fills are stopped on existing positions.  Prevents
             chasing near-expiry prices where the outcome is already
             determined and one side has collapsed to near-zero.
-        signal_delay_seconds: Seconds to wait into the market window
-            before reading the Binance momentum signal and determining
-            the primary (directional) side.
+        signal_delay_seconds: Seconds of Binance price data to look back
+            *before* the market window opens when determining the primary
+            (directional) side.  Larger values use more context.
         hedge_start_threshold: Early hedge threshold — only buy the
             secondary side when its ask is below this price.  Tight
             early on to only hedge when cheap.

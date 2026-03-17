@@ -6,8 +6,8 @@ opportunistically hedges the other side when its ask price dips below a
 time-decaying threshold.
 
 Three-phase fill logic:
-  Phase 0 — Signal wait: pause for ``signal_delay_seconds`` then read
-      Binance 1-min candle(s) to determine primary direction.
+  Phase 0 — Signal: on first poll, look back ``signal_delay_seconds``
+      of Binance 1-min candles to determine primary direction.
   Phase 1 — Directional entry: fill the primary side aggressively with
       no price threshold.
   Phase 2 — Opportunistic hedge: fill the secondary side only when
@@ -339,8 +339,8 @@ class AccumulatingTrader:
     async def _attempt_fills(self) -> None:
         """Execute the three-phase fill logic on all open positions.
 
-        Phase 0 — Signal wait: skip positions until ``signal_delay_seconds``
-            have elapsed, then determine the primary side via Binance.
+        Phase 0 — Signal: on first poll, look back at recent Binance
+            candles to determine the primary side.
         Phase 1 — Directional entry: fill the primary side aggressively.
         Phase 2 — Opportunistic hedge: fill the secondary side only when
             ``ask < hedge_threshold(t)``.
@@ -358,11 +358,8 @@ class AccumulatingTrader:
             if self._past_fill_cutoff(pos.opportunity, now):
                 continue
 
-            # Phase 0: determine primary side after signal delay
+            # Phase 0: determine primary side from recent Binance momentum
             if pos.primary_side is None:
-                elapsed = now - pos.opportunity.window_start_ts
-                if elapsed < self.config.signal_delay_seconds:
-                    continue
                 pos.primary_side = await self._determine_primary_side(pos)
                 mode = "LIVE" if self.live else "PAPER"
                 logger.info(
@@ -412,11 +409,11 @@ class AccumulatingTrader:
                     )
 
     async def _determine_primary_side(self, pos: AccumulatingPosition) -> str:
-        """Fetch Binance 1-min candle(s) and return the momentum direction.
+        """Determine the primary side from recent Binance momentum.
 
-        If the spot price rose during the signal window, the primary side
-        is ``"Up"``; if it fell, ``"Down"``.  Falls back to the cheaper
-        side from the opportunity when candle data is unavailable.
+        Look back at the ``signal_delay_seconds`` of Binance 1-min candle
+        data *before* the market window opened.  This gives an immediate
+        signal without waiting, maximising time available for hedge fills.
 
         Args:
             pos: The position with opportunity metadata.
@@ -428,11 +425,12 @@ class AccumulatingTrader:
         if self._binance is not None:
             try:
                 provider = BinanceCandleProvider(self._binance)
+                lookback_start = pos.opportunity.window_start_ts - self.config.signal_delay_seconds
                 candles = await provider.get_candles(
                     pos.opportunity.asset,
                     Interval.M1,
+                    lookback_start,
                     pos.opportunity.window_start_ts,
-                    pos.opportunity.window_start_ts + self.config.signal_delay_seconds,
                 )
                 if candles and candles[-1].close > candles[0].open:
                     return "Up"

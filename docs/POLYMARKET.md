@@ -416,7 +416,7 @@ circuit_breaker_cooldown: 600
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--signal-delay-seconds` | `60` | Seconds to wait into window before reading Binance momentum signal |
+| `--signal-delay-seconds` | `60` | Seconds of Binance data to look back before window opens for momentum signal |
 | `--hedge-start-threshold` | `0.45` | Early hedge: only buy secondary side when ask < this price |
 | `--hedge-end-threshold` | `0.55` | Late hedge: accept up to this price near fill cutoff |
 | `--hedge-start-pct` | `0.20` | Begin hedge fills at this fraction of window elapsed |
