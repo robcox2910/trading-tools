@@ -354,7 +354,8 @@ class SpreadEngine:
     ) -> None:
         """Attempt a fill on the primary (directional) side.
 
-        No price threshold — the primary side is filled aggressively.
+        Capped by ``max_primary_price`` to avoid buying into markets
+        where the outcome is already decided and prices have ballooned.
         Imbalance ratio is still checked to avoid extreme exposure.
 
         Args:
@@ -365,6 +366,9 @@ class SpreadEngine:
             min_order_size: Per-market minimum order size from the CLOB.
 
         """
+        if ask_price > self.config.max_primary_price:
+            return
+
         fill_qty = self._compute_fill_qty(
             pos, side, ask_price, depth, min_order_size, is_primary=True
         )

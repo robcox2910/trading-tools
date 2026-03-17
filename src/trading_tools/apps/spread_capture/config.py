@@ -128,6 +128,9 @@ class SpreadCaptureConfig:
             price for secondary side fills near the fill cutoff.
         hedge_start_pct: Fraction of the market window elapsed before
             hedge fills on the secondary side are considered.
+        max_primary_price: Maximum ask price for the primary (directional)
+            side.  Prevents buying into markets where the outcome is
+            already decided and one side has ballooned to near-$1.00.
 
     """
 
@@ -160,6 +163,7 @@ class SpreadCaptureConfig:
     hedge_start_threshold: Decimal = Decimal("0.50")
     hedge_end_threshold: Decimal = Decimal("0.90")
     hedge_start_pct: Decimal = Decimal("0.20")
+    max_primary_price: Decimal = Decimal("0.60")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "SpreadCaptureConfig":
