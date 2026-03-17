@@ -416,12 +416,13 @@ circuit_breaker_cooldown: 600
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--per-side-ask-threshold` | `0.95` | Maximum ask price to accept for a single side (high default — VWAP cap is the real guard) |
-| `--max-combined-vwap` | `0.97` | Maximum combined VWAP across accumulated fills (must be < 1.0 for profit) |
+| `--signal-delay-seconds` | `60` | Seconds to wait into window before reading Binance momentum signal |
+| `--hedge-start-threshold` | `0.45` | Early hedge: only buy secondary side when ask < this price |
+| `--hedge-end-threshold` | `0.55` | Late hedge: accept up to this price near fill cutoff |
+| `--hedge-start-pct` | `0.20` | Begin hedge fills at this fraction of window elapsed |
 | `--max-imbalance-ratio` | `1.3` | Maximum ratio of tokens held on one side vs the other (whale median is 1.15, P75 is 1.30) |
 | `--initial-fill-size` | `20` | Token quantity for first fill on each side (establishes base position) |
 | `--fill-size-tokens` | `2` | Token quantity for adjustment fills after initial position (uses per-market min order size from API) |
-| `--max-single-side-pct` | `0.50` | Max fraction of budget on one side before the other side has any fills (prevents directional bets) |
 | `--max-fill-age-pct` | `0.80` | Stop filling when market window is past this fraction (whale median fill is at 60%) |
 
 **Spread detection pipeline:**

@@ -44,13 +44,13 @@ _PARAM_MAP: tuple[tuple[str, str, bool], ...] = (
     ("max_book_pct", "max_book_pct", True),
     ("max_drawdown_pct", "max_drawdown_pct", True),
     ("paper_slippage_pct", "paper_slippage_pct", True),
-    ("per_side_ask_threshold", "per_side_ask_threshold", True),
-    ("max_combined_vwap", "max_combined_vwap", True),
     ("max_imbalance_ratio", "max_imbalance_ratio", True),
     ("fill_size_tokens", "fill_size_tokens", True),
     ("initial_fill_size", "initial_fill_size", True),
-    ("max_single_side_pct", "max_single_side_pct", True),
     ("max_fill_age_pct", "max_fill_age_pct", True),
+    ("hedge_start_threshold", "hedge_start_threshold", True),
+    ("hedge_end_threshold", "hedge_end_threshold", True),
+    ("hedge_start_pct", "hedge_start_pct", True),
     # Direct params (int, passed through unchanged)
     ("poll_interval", "poll_interval", False),
     ("max_window", "max_window_seconds", False),
@@ -60,6 +60,7 @@ _PARAM_MAP: tuple[tuple[str, str, bool], ...] = (
     ("circuit_breaker_losses", "circuit_breaker_losses", False),
     ("circuit_breaker_cooldown", "circuit_breaker_cooldown", False),
     ("fee_exponent", "fee_exponent", False),
+    ("signal_delay_seconds", "signal_delay_seconds", False),
 )
 
 
@@ -206,14 +207,6 @@ def spread_capture(
             help="Strategy: 'simultaneous' (both sides at once) or 'accumulate' (per-side)"
         ),
     ] = None,
-    per_side_ask_threshold: Annotated[
-        str | None,
-        typer.Option(help="Buy a side when ask < this price (accumulate strategy, e.g. 0.52)"),
-    ] = None,
-    max_combined_vwap: Annotated[
-        str | None,
-        typer.Option(help="Stop accumulating when combined VWAP would exceed (e.g. 0.995)"),
-    ] = None,
     max_imbalance_ratio: Annotated[
         str | None,
         typer.Option(help="Max qty ratio between legs before pausing heavier side (e.g. 2.0)"),
@@ -226,13 +219,25 @@ def spread_capture(
         str | None,
         typer.Option(help="Initial fill size in tokens for first entry on each side (e.g. 20)"),
     ] = None,
-    max_single_side_pct: Annotated[
-        str | None,
-        typer.Option(help="Max fraction of budget on one side before other has fills (e.g. 0.50)"),
-    ] = None,
     max_fill_age_pct: Annotated[
         str | None,
         typer.Option(help="Stop filling when market window is past this fraction (e.g. 0.70)"),
+    ] = None,
+    signal_delay_seconds: Annotated[
+        int | None,
+        typer.Option(help="Seconds to wait into window before reading Binance signal (e.g. 60)"),
+    ] = None,
+    hedge_start_threshold: Annotated[
+        str | None,
+        typer.Option(help="Early hedge: only buy secondary when ask < this (e.g. 0.45)"),
+    ] = None,
+    hedge_end_threshold: Annotated[
+        str | None,
+        typer.Option(help="Late hedge: accept up to this price near cutoff (e.g. 0.55)"),
+    ] = None,
+    hedge_start_pct: Annotated[
+        str | None,
+        typer.Option(help="Begin hedge fills at this fraction of window elapsed (e.g. 0.20)"),
     ] = None,
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
@@ -276,13 +281,14 @@ def spread_capture(
         circuit_breaker_cooldown=circuit_breaker_cooldown,
         max_drawdown_pct=max_drawdown_pct,
         paper_slippage_pct=paper_slippage_pct,
-        per_side_ask_threshold=per_side_ask_threshold,
-        max_combined_vwap=max_combined_vwap,
         max_imbalance_ratio=max_imbalance_ratio,
         fill_size_tokens=fill_size_tokens,
         initial_fill_size=initial_fill_size,
-        max_single_side_pct=max_single_side_pct,
         max_fill_age_pct=max_fill_age_pct,
+        signal_delay_seconds=signal_delay_seconds,
+        hedge_start_threshold=hedge_start_threshold,
+        hedge_end_threshold=hedge_end_threshold,
+        hedge_start_pct=hedge_start_pct,
     )
 
     if confirm_live:

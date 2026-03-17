@@ -207,3 +207,21 @@ class TestAllOrderIds:
         pos.up_leg.order_ids.append("order_up_1")
         pos.down_leg.order_ids.append("order_down_1")
         assert set(pos.all_order_ids) == {"order_up_1", "order_down_1"}
+
+
+class TestPrimarySide:
+    """Test primary_side attribute."""
+
+    def test_default_is_none(self) -> None:
+        """Primary side is None by default before signal determination."""
+        pos = _make_position()
+        assert pos.primary_side is None
+
+    def test_can_set_primary_side(self) -> None:
+        """Primary side can be set to Up or Down after signal."""
+        pos = _make_position()
+        pos.primary_side = "Up"
+        assert pos.primary_side == "Up"
+
+        pos.primary_side = "Down"
+        assert pos.primary_side == "Down"

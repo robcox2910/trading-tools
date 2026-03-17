@@ -105,10 +105,6 @@ class SpreadCaptureConfig:
         strategy: Trading strategy — ``"simultaneous"`` for the original
             both-sides-at-once approach, ``"accumulate"`` for independent
             per-side fills over time.
-        per_side_ask_threshold: Buy a side when its best ask is below
-            this price.  Only used by the ``"accumulate"`` strategy.
-        max_combined_vwap: Stop accumulating if the combined VWAP of
-            both legs would exceed this value.
         max_imbalance_ratio: Maximum quantity ratio between the heavier
             and lighter legs.  Pause the heavier side until the other
             catches up.
@@ -118,14 +114,20 @@ class SpreadCaptureConfig:
         initial_fill_size: Token quantity for the first fill on each side
             of an accumulating position.  Larger than ``fill_size_tokens``
             to establish a base position quickly.
-        max_single_side_pct: Maximum fraction of the per-market budget
-            that may be spent on one side before the other side has any
-            fills.  Prevents dumping the entire budget into a single
-            directional bet.
         max_fill_age_pct: Maximum fraction of the market window elapsed
             before fills are stopped on existing positions.  Prevents
             chasing near-expiry prices where the outcome is already
             determined and one side has collapsed to near-zero.
+        signal_delay_seconds: Seconds to wait into the market window
+            before reading the Binance momentum signal and determining
+            the primary (directional) side.
+        hedge_start_threshold: Early hedge threshold — only buy the
+            secondary side when its ask is below this price.  Tight
+            early on to only hedge when cheap.
+        hedge_end_threshold: Late hedge threshold — accept up to this
+            price for secondary side fills near the fill cutoff.
+        hedge_start_pct: Fraction of the market window elapsed before
+            hedge fills on the secondary side are considered.
 
     """
 
@@ -150,13 +152,14 @@ class SpreadCaptureConfig:
     single_leg_timeout: int = 10
     rediscovery_interval: int = 30
     strategy: str = "simultaneous"
-    per_side_ask_threshold: Decimal = Decimal("0.95")
-    max_combined_vwap: Decimal = Decimal("0.97")
     max_imbalance_ratio: Decimal = Decimal("1.3")
     fill_size_tokens: Decimal = Decimal(2)
     initial_fill_size: Decimal = Decimal(20)
-    max_single_side_pct: Decimal = Decimal("0.50")
     max_fill_age_pct: Decimal = Decimal("0.80")
+    signal_delay_seconds: int = 60
+    hedge_start_threshold: Decimal = Decimal("0.45")
+    hedge_end_threshold: Decimal = Decimal("0.55")
+    hedge_start_pct: Decimal = Decimal("0.20")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "SpreadCaptureConfig":
