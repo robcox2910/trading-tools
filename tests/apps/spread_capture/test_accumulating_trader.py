@@ -197,8 +197,8 @@ def _make_accum_position(
 class TestSignalDetermination:
     """Test Binance momentum signal and primary side selection."""
 
-    async def test_binance_up_signal_multiple_candles(self) -> None:
-        """Primary side is Up when weighted momentum is positive across candles."""
+    async def test_mean_reversion_bets_against_up_momentum(self) -> None:
+        """Bet Down when recent momentum was Up (mean-reversion)."""
         mock_md = AsyncMock()
         candles = [
             AsyncMock(open=Decimal(50000), close=Decimal(49990)),
@@ -210,10 +210,10 @@ class TestSignalDetermination:
         pos = _make_accum_position(budget=Decimal(50))
 
         result = await engine._determine_primary_side(pos)
-        assert result == "Up"
+        assert result == "Down"
 
-    async def test_binance_down_signal_multiple_candles(self) -> None:
-        """Primary side is Down when weighted momentum is negative."""
+    async def test_mean_reversion_bets_against_down_momentum(self) -> None:
+        """Bet Up when recent momentum was Down (mean-reversion)."""
         mock_md = AsyncMock()
         candles = [
             AsyncMock(open=Decimal(50000), close=Decimal(50010)),
@@ -225,11 +225,12 @@ class TestSignalDetermination:
         pos = _make_accum_position(budget=Decimal(50))
 
         result = await engine._determine_primary_side(pos)
-        assert result == "Down"
+        assert result == "Up"
 
     async def test_recency_weighting_favours_latest(self) -> None:
-        """Recent candle outweighs older candle of equal magnitude."""
+        """Recent candle outweighs older — net down momentum → bet Up."""
         mock_md = AsyncMock()
+        # Candle 1 (w=1): +100, Candle 2 (w=2): -60 → net momentum down → bet Up
         candles = [
             AsyncMock(open=Decimal(50000), close=Decimal(50100)),
             AsyncMock(open=Decimal(50100), close=Decimal(50040)),
@@ -239,7 +240,7 @@ class TestSignalDetermination:
         pos = _make_accum_position(budget=Decimal(50))
 
         result = await engine._determine_primary_side(pos)
-        assert result == "Down"
+        assert result == "Up"
 
     async def test_lookback_window_is_before_market_open(self) -> None:
         """Signal uses candles from before the window, not during it."""

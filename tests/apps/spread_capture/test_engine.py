@@ -167,9 +167,9 @@ class TestPollCycleIntegration:
         assert len(engine.positions) == 1
         pos = engine.positions["cond_test"]
         assert pos.state == PositionState.ACCUMULATING
-        assert pos.primary_side == "Up"
+        assert pos.primary_side == "Down"  # mean-reversion: up momentum → bet down
         # Primary side should have been filled
-        assert pos.up_leg.quantity > ZERO
+        assert pos.down_leg.quantity > ZERO
 
     async def test_poll_cycle_settles_expired(self) -> None:
         """Poll cycle settles positions past window_end."""
