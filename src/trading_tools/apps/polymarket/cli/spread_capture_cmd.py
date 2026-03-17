@@ -51,6 +51,7 @@ _PARAM_MAP: tuple[tuple[str, str, bool], ...] = (
     ("hedge_start_threshold", "hedge_start_threshold", True),
     ("hedge_end_threshold", "hedge_end_threshold", True),
     ("hedge_start_pct", "hedge_start_pct", True),
+    ("max_primary_price", "max_primary_price", True),
     # Direct params (int, passed through unchanged)
     ("poll_interval", "poll_interval", False),
     ("max_window", "max_window_seconds", False),
@@ -239,6 +240,10 @@ def spread_capture(
         str | None,
         typer.Option(help="Begin hedge fills at this fraction of window elapsed (e.g. 0.20)"),
     ] = None,
+    max_primary_price: Annotated[
+        str | None,
+        typer.Option(help="Max ask price for primary side fills (e.g. 0.60)"),
+    ] = None,
     confirm_live: Annotated[  # noqa: FBT002
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
@@ -289,6 +294,7 @@ def spread_capture(
         hedge_start_threshold=hedge_start_threshold,
         hedge_end_threshold=hedge_end_threshold,
         hedge_start_pct=hedge_start_pct,
+        max_primary_price=max_primary_price,
     )
 
     if confirm_live:

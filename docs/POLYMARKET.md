@@ -418,8 +418,9 @@ circuit_breaker_cooldown: 600
 |------|---------|-------------|
 | `--signal-delay-seconds` | `300` | Seconds of Binance data to look back before window opens for momentum signal |
 | `--hedge-start-threshold` | `0.50` | Early hedge: only buy secondary side when ask < this price |
-| `--hedge-end-threshold` | `0.90` | Late hedge: maximum time-decay threshold (also capped by `1.0 - primary_vwap - min_margin`) |
+| `--hedge-end-threshold` | `0.90` | Late hedge: maximum time-decay threshold near fill cutoff |
 | `--hedge-start-pct` | `0.20` | Begin hedge fills at this fraction of window elapsed |
+| `--max-primary-price` | `0.60` | Maximum ask price for primary side fills (prevents buying decided markets) |
 | `--max-imbalance-ratio` | `1.3` | Maximum ratio of tokens held on one side vs the other (whale median is 1.15, P75 is 1.30) |
 | `--initial-fill-size` | `20` | Token quantity for first fill on primary side (establishes base position) |
 | `--fill-size-tokens` | `2` | Token quantity for hedge fills and primary adjustments (whale DCA pattern) |
