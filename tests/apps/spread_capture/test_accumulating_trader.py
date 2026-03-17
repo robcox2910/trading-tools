@@ -313,79 +313,10 @@ class TestMomentumSignal:
 
 @pytest.mark.asyncio
 class TestHedgeThreshold:
-    """Test time-decaying hedge threshold with dynamic cost cap."""
+    """Test time-decaying hedge threshold computation."""
 
-    async def test_time_threshold_at_hedge_start(self) -> None:
-        """Time threshold equals hedge_start_threshold at hedge_start_pct elapsed."""
-        config = _make_config(
-            hedge_start_threshold=Decimal("0.45"),
-            hedge_end_threshold=Decimal("0.90"),
-            hedge_start_pct=Decimal("0.20"),
-            max_fill_age_pct=Decimal("0.80"),
-        )
-        engine = _make_engine(config=config)
-        pos = _make_accum_position(
-            up_price=Decimal("0.30"), up_qty=Decimal(20), budget=Decimal(50), primary_side="Up"
-        )
-
-        now = _WINDOW_START + 60  # 20% elapsed
-        threshold = engine._compute_hedge_threshold(pos, now)
-        assert threshold == Decimal("0.45")
-
-    async def test_cost_cap_limits_threshold(self) -> None:
-        """Dynamic cost cap tightens threshold when primary VWAP is high."""
-        config = _make_config(
-            hedge_start_threshold=Decimal("0.50"),
-            hedge_end_threshold=Decimal("0.90"),
-            hedge_start_pct=Decimal("0.20"),
-            max_fill_age_pct=Decimal("0.80"),
-        )
-        engine = _make_engine(config=config)
-        pos = _make_accum_position(
-            up_price=Decimal("0.60"), up_qty=Decimal(20), budget=Decimal(50), primary_side="Up"
-        )
-
-        now = _WINDOW_START + 150  # 50% elapsed
-        threshold = engine._compute_hedge_threshold(pos, now)
-        assert threshold == Decimal("0.40")
-
-    async def test_cheap_primary_allows_expensive_hedge(self) -> None:
-        """Cheap primary VWAP allows higher hedge prices."""
-        config = _make_config(
-            hedge_start_threshold=Decimal("0.50"),
-            hedge_end_threshold=Decimal("0.90"),
-            hedge_start_pct=Decimal("0.20"),
-            max_fill_age_pct=Decimal("0.80"),
-        )
-        engine = _make_engine(config=config)
-        pos = _make_accum_position(
-            up_price=Decimal("0.20"), up_qty=Decimal(20), budget=Decimal(50), primary_side="Up"
-        )
-
-        now = _WINDOW_START + 240  # 80% elapsed → time threshold = 0.90
-        threshold = engine._compute_hedge_threshold(pos, now)
-        # min(0.90, 0.80) = 0.80
-        assert threshold == Decimal("0.80")
-
-    async def test_threshold_before_hedge_start(self) -> None:
-        """Threshold clamps to hedge_start_threshold before hedge window."""
-        config = _make_config(
-            hedge_start_threshold=Decimal("0.45"),
-            hedge_end_threshold=Decimal("0.90"),
-            hedge_start_pct=Decimal("0.20"),
-            max_fill_age_pct=Decimal("0.80"),
-        )
-        engine = _make_engine(config=config)
-        pos = _make_accum_position(
-            up_price=Decimal("0.30"), up_qty=Decimal(20), budget=Decimal(50), primary_side="Up"
-        )
-
-        now = _WINDOW_START + 30  # 10% elapsed → before hedge_start_pct
-        threshold = engine._compute_hedge_threshold(pos, now)
-        assert threshold == Decimal("0.45")
-
-    async def test_no_primary_fills_uses_end_threshold(self) -> None:
-        """Cost cap defaults to hedge_end_threshold when primary has no fills."""
+    async def test_threshold_at_hedge_start(self) -> None:
+        """Threshold equals hedge_start_threshold at hedge_start_pct elapsed."""
         config = _make_config(
             hedge_start_threshold=Decimal("0.50"),
             hedge_end_threshold=Decimal("0.90"),
@@ -395,9 +326,55 @@ class TestHedgeThreshold:
         engine = _make_engine(config=config)
         pos = _make_accum_position(budget=Decimal(50), primary_side="Up")
 
-        now = _WINDOW_START + 240  # 80% elapsed → time = 0.90, cost_cap = 0.90
+        now = _WINDOW_START + 60  # 20% elapsed
+        threshold = engine._compute_hedge_threshold(pos, now)
+        assert threshold == Decimal("0.50")
+
+    async def test_threshold_at_fill_cutoff(self) -> None:
+        """Threshold equals hedge_end_threshold at max_fill_age_pct elapsed."""
+        config = _make_config(
+            hedge_start_threshold=Decimal("0.50"),
+            hedge_end_threshold=Decimal("0.90"),
+            hedge_start_pct=Decimal("0.20"),
+            max_fill_age_pct=Decimal("0.80"),
+        )
+        engine = _make_engine(config=config)
+        pos = _make_accum_position(budget=Decimal(50), primary_side="Up")
+
+        now = _WINDOW_START + 240  # 80% elapsed
         threshold = engine._compute_hedge_threshold(pos, now)
         assert threshold == Decimal("0.90")
+
+    async def test_threshold_at_midpoint(self) -> None:
+        """Threshold linearly interpolates at the midpoint."""
+        config = _make_config(
+            hedge_start_threshold=Decimal("0.50"),
+            hedge_end_threshold=Decimal("0.90"),
+            hedge_start_pct=Decimal("0.20"),
+            max_fill_age_pct=Decimal("0.80"),
+        )
+        engine = _make_engine(config=config)
+        pos = _make_accum_position(budget=Decimal(50), primary_side="Up")
+
+        # 50% elapsed → normalised = (0.50 - 0.20) / 0.60 = 0.50
+        now = _WINDOW_START + 150
+        threshold = engine._compute_hedge_threshold(pos, now)
+        assert threshold == Decimal("0.70")
+
+    async def test_threshold_before_hedge_start(self) -> None:
+        """Threshold clamps to hedge_start_threshold before hedge window."""
+        config = _make_config(
+            hedge_start_threshold=Decimal("0.50"),
+            hedge_end_threshold=Decimal("0.90"),
+            hedge_start_pct=Decimal("0.20"),
+            max_fill_age_pct=Decimal("0.80"),
+        )
+        engine = _make_engine(config=config)
+        pos = _make_accum_position(budget=Decimal(50), primary_side="Up")
+
+        now = _WINDOW_START + 30  # 10% elapsed → before hedge_start_pct
+        threshold = engine._compute_hedge_threshold(pos, now)
+        assert threshold == Decimal("0.50")
 
 
 @pytest.mark.asyncio

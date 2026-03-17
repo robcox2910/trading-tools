@@ -312,16 +312,16 @@ class SpreadEngine:
         return None
 
     def _compute_hedge_threshold(self, pos: AccumulatingPosition, now: int) -> Decimal:
-        """Compute the hedge threshold for the secondary side.
+        """Compute the time-decaying hedge threshold for the secondary side.
 
-        Use the tighter of two caps:
-        1. Time-decaying threshold: linearly interpolate from
-           ``hedge_start_threshold`` to ``hedge_end_threshold``.
-        2. Cost cap: ``1.0 - primary_vwap`` so the combined VWAP
-           stays at or below break-even.
+        Linearly interpolate from ``hedge_start_threshold`` (tight early)
+        to ``hedge_end_threshold`` (loose near cutoff).  No additional
+        cost cap — whale data shows 37% of hedges settle at combined
+        VWAP > $1.00 and they still come out ahead overall because the
+        small hedge losses are far cheaper than unhedged wipeouts.
 
         Args:
-            pos: The accumulating position (for primary VWAP).
+            pos: The accumulating position (for window metadata).
             now: Current epoch seconds.
 
         Returns:
@@ -331,30 +331,18 @@ class SpreadEngine:
         opp = pos.opportunity
         window_duration = opp.window_end_ts - opp.window_start_ts
         if window_duration <= 0:
-            time_threshold = self.config.hedge_end_threshold
-        else:
-            elapsed_pct = Decimal(str(now - opp.window_start_ts)) / Decimal(str(window_duration))
-            hedge_range = self.config.max_fill_age_pct - self.config.hedge_start_pct
-            if hedge_range <= ZERO:
-                time_threshold = self.config.hedge_end_threshold
-            else:
-                normalised = max(
-                    ZERO, min(ONE, (elapsed_pct - self.config.hedge_start_pct) / hedge_range)
-                )
-                time_threshold = (
-                    self.config.hedge_start_threshold
-                    + (self.config.hedge_end_threshold - self.config.hedge_start_threshold)
-                    * normalised
-                )
+            return self.config.hedge_end_threshold
 
-        # Dynamic cap: allow hedge up to break-even (combined = 1.0).
-        primary_leg = pos.up_leg if pos.primary_side == "Up" else pos.down_leg
-        if primary_leg.quantity > ZERO:
-            cost_cap = ONE - primary_leg.entry_price
-        else:
-            cost_cap = self.config.hedge_end_threshold
+        elapsed_pct = Decimal(str(now - opp.window_start_ts)) / Decimal(str(window_duration))
+        hedge_range = self.config.max_fill_age_pct - self.config.hedge_start_pct
+        if hedge_range <= ZERO:
+            return self.config.hedge_end_threshold
 
-        return min(time_threshold, cost_cap)
+        normalised = max(ZERO, min(ONE, (elapsed_pct - self.config.hedge_start_pct) / hedge_range))
+        return (
+            self.config.hedge_start_threshold
+            + (self.config.hedge_end_threshold - self.config.hedge_start_threshold) * normalised
+        )
 
     async def _try_fill_primary(
         self,
