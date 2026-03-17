@@ -1042,12 +1042,15 @@ class PolymarketClient:
         spread = best_ask - best_bid if bids and asks else _ZERO
         midpoint = (best_bid + best_ask) / _TWO if bids and asks else _ZERO
 
+        min_order_size = _safe_decimal(raw.get("min_order_size", "5"))
+
         return OrderBook(
             token_id=token_id,
             bids=bids,
             asks=asks,
             spread=spread,
             midpoint=midpoint,
+            min_order_size=min_order_size,
         )
 
 
