@@ -10,7 +10,7 @@ from trading_tools.apps.polymarket.cli.spread_capture_cmd import _build_config
 if TYPE_CHECKING:
     from pathlib import Path
 
-_DEFAULT_COMBINED = Decimal("0.98")
+_DEFAULT_COMBINED = Decimal("0.97")
 _CUSTOM_COMBINED = Decimal("0.96")
 _DEFAULT_CAPITAL = Decimal(100)
 _CUSTOM_POLL = 10
