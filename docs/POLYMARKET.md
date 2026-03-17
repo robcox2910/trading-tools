@@ -523,6 +523,66 @@ trading-tools-polymarket grid-backtest --start 2025-01-01 --end 2025-01-31
 
 The grid searches thresholds from 0.55 to 0.95 (step 0.05) and windows from 120s down to 10s (step 10s).
 
+### `backtest-spread` — Backtest Spread Capture Strategy
+
+Replay historical market windows through the spread capture engine using stored order book snapshots and market metadata from the tick database.
+
+```bash
+trading-tools-polymarket backtest-spread \
+  --start 2026-03-01 --end 2026-03-15 \
+  --strategy accumulate \
+  --signal-delay 300 --hedge-start 0.45 --hedge-end 0.65 \
+  --capital 1000 -v
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--start` | *(required)* | Start date `YYYY-MM-DD` |
+| `--end` | *(required)* | End date `YYYY-MM-DD` |
+| `--db-url` | env `TICK_DB_URL` or `sqlite+aiosqlite:///tick_data.db` | SQLAlchemy async DB URL |
+| `--strategy` | `accumulate` | Strategy: `accumulate` |
+| `--series-slug` | `None` | Filter to a specific series slug |
+| `--capital` | `1000.0` | Initial virtual capital in USD |
+| `--signal-delay` | `300` | Seconds of Binance lookback before window |
+| `--hedge-start` | `0.45` | Early hedge threshold |
+| `--hedge-end` | `0.65` | Late hedge threshold |
+| `--hedge-start-pct` | `0.20` | Start hedging at this fraction of window |
+| `--max-fill-age-pct` | `0.80` | Stop fills after this fraction of window |
+| `--max-imbalance` | `3.0` | Max quantity ratio between legs |
+| `--fill-size` | `2.0` | Tokens per adjustment fill |
+| `--initial-fill` | `20.0` | Tokens for first fill on each side |
+| `--poll-interval` | `5` | Seconds between poll cycles during replay |
+| `--slippage` | `0.005` | Paper slippage percentage |
+| `--verbose`, `-v` | `false` | Enable per-window logging |
+
+Requires `market_metadata` and `order_book_snapshots` tables populated by the tick collector.
+
+### `grid-spread` — Grid Search Spread Capture Parameters
+
+Sweep hedge start/end thresholds and signal delay across a grid, replay each combination, and display results as markdown tables.
+
+```bash
+trading-tools-polymarket grid-spread \
+  --start 2026-03-01 --end 2026-03-15 \
+  --hedge-start 0.35,0.40,0.45,0.50 \
+  --hedge-end 0.55,0.60,0.65,0.70,0.80,0.90 \
+  --signal-delay 180,300,420
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--start` | *(required)* | Start date `YYYY-MM-DD` |
+| `--end` | *(required)* | End date `YYYY-MM-DD` |
+| `--db-url` | env `TICK_DB_URL` or `sqlite+aiosqlite:///tick_data.db` | SQLAlchemy async DB URL |
+| `--hedge-start` | `0.35,0.40,0.45,0.50` | Comma-separated hedge start values |
+| `--hedge-end` | `0.55,0.60,0.65,0.70,0.80,0.90` | Comma-separated hedge end values |
+| `--signal-delay` | `180,300,420` | Comma-separated signal delay values (seconds) |
+| `--series-slug` | `None` | Filter to a specific series slug |
+| `--capital` | `1000.0` | Initial virtual capital in USD |
+| `--poll-interval` | `5` | Seconds between poll cycles during replay |
+| `--slippage` | `0.005` | Paper slippage percentage |
+| `--verbose`, `-v` | `false` | Enable per-window logging |
+
 ## Database Support
 
 Both tick collection and whale monitoring support SQLite (default) and PostgreSQL:

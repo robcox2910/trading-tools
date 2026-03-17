@@ -16,15 +16,18 @@ from typing import TYPE_CHECKING, Any
 
 from trading_tools.apps.bot_framework.heartbeat import HeartbeatLogger
 from trading_tools.apps.bot_framework.shutdown import GracefulShutdown
-from trading_tools.apps.tick_collector.models import OrderBookSnapshot, Tick
+from trading_tools.apps.tick_collector.models import MarketMetadata, OrderBookSnapshot, Tick
 from trading_tools.apps.tick_collector.repository import TickRepository
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
+from trading_tools.apps.whale_monitor.correlator import parse_asset, parse_time_window
 from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketError
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from trading_tools.apps.tick_collector.config import CollectorConfig
-    from trading_tools.clients.polymarket.models import OrderBook
+    from trading_tools.clients.polymarket.models import MarketToken, OrderBook
 
 from trading_tools.core.timestamps import FIVE_MINUTES, MS_PER_SECOND, now_ms
 
@@ -210,18 +213,23 @@ class TickCollector:
                 except (PolymarketError, KeyError, ValueError):
                     logger.exception("Series discovery failed")
 
+            metadata_batch: list[MarketMetadata] = []
+
             async def _resolve_one(cid: str) -> list[tuple[str, str]]:
                 """Resolve a single condition ID to (token_id, cid) pairs."""
                 try:
                     market = await client.get_market_tokens(cid)
-                    return [
+                except (PolymarketError, KeyError, ValueError):
+                    logger.exception("Failed to resolve market %s", cid)
+                    return []
+                else:
+                    pairs = [
                         (token.token_id, cid)
                         for token in market.tokens
                         if token.token_id not in self._condition_map
                     ]
-                except (PolymarketError, KeyError, ValueError):
-                    logger.exception("Failed to resolve market %s", cid)
-                    return []
+                    self._maybe_build_metadata(cid, market.question, market.tokens, metadata_batch)
+                    return pairs
 
             results = await asyncio.gather(*(_resolve_one(cid) for cid in condition_ids))
 
@@ -239,6 +247,13 @@ class TickCollector:
                 len(added),
                 len(self._asset_ids),
             )
+
+        if metadata_batch:
+            try:
+                await self._repo.save_market_metadata_batch(metadata_batch)
+                logger.info("Persisted %d market metadata records", len(metadata_batch))
+            except (OSError, ValueError):
+                logger.exception("Failed to persist market metadata")
 
     async def _periodic_discovery(self) -> None:
         """Re-discover markets aligned to 5-minute window boundaries.
@@ -309,6 +324,57 @@ class TickCollector:
             elapsed = time.monotonic() - self._last_flush_time
             if elapsed >= self._config.flush_interval_seconds and self._buffer:
                 await self._flush_buffer()
+
+    def _maybe_build_metadata(
+        self,
+        condition_id: str,
+        title: str,
+        tokens: Sequence[MarketToken],
+        batch: list[MarketMetadata],
+    ) -> None:
+        """Parse market title and build a ``MarketMetadata`` record if parseable.
+
+        Extract asset name and time window from the market title.  If
+        both are parseable, create a metadata record and append it to
+        the batch for later persistence.
+
+        Args:
+            condition_id: Polymarket market condition identifier.
+            title: Full market question text.
+            tokens: Sequence of ``MarketToken`` objects from the market.
+            batch: Mutable list to append the metadata record to.
+
+        """
+        asset = parse_asset(title)
+        if asset is None:
+            return
+
+        now_epoch = int(time.time())
+        window = parse_time_window(title, now_epoch)
+        if window is None:
+            return
+
+        tokens_by_outcome = {t.outcome: t for t in tokens}
+        up_token = tokens_by_outcome.get("Up")
+        down_token = tokens_by_outcome.get("Down")
+        if up_token is None or down_token is None:
+            return
+
+        # Determine series slug from the config that discovered this market
+        series_slug = self._config.series_slugs[0] if self._config.series_slugs else None
+
+        batch.append(
+            MarketMetadata(
+                condition_id=condition_id,
+                asset=asset,
+                title=title,
+                up_token_id=up_token.token_id,
+                down_token_id=down_token.token_id,
+                window_start_ts=window[0],
+                window_end_ts=window[1],
+                series_slug=series_slug,
+            )
+        )
 
     def _serialize_order_book(
         self,
