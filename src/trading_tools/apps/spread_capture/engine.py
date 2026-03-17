@@ -496,10 +496,11 @@ class SpreadEngine:
             qty = (
                 self.config.initial_fill_size
                 if leg.quantity == ZERO
-                else self.config.fill_size_tokens
+                else max(self.config.fill_size_tokens, min_order_size)
             )
         else:
-            qty = self.config.fill_size_tokens
+            # Hedge side: use fill_size_tokens but never below min_order_size
+            qty = max(self.config.fill_size_tokens, min_order_size)
 
         max_from_depth = depth * self.config.max_book_pct
         qty = min(qty, max_from_depth)
