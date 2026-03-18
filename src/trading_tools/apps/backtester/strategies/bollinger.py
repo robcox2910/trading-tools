@@ -43,9 +43,11 @@ class BollingerStrategy:
     the momentum.
     """
 
+    _MIN_PERIOD = 2
+
     def __init__(self, period: int = 20, num_std: float = 2.0) -> None:
         """Initialize the Bollinger Band strategy."""
-        if period < 2:  # noqa: PLR2004
+        if period < self._MIN_PERIOD:
             msg = f"period must be >= 2, got {period}"
             raise ValueError(msg)
         if num_std <= 0:

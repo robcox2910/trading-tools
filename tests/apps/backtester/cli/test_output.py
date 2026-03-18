@@ -235,7 +235,7 @@ class TestRenderRunCharts:
 
         mock_benchmark.assert_called_once()
         figs = mock_show.call_args[0][0]
-        assert len(figs) == 2  # noqa: PLR2004
+        assert len(figs) == 2
 
 
 class TestRenderCompareCharts:
@@ -250,7 +250,7 @@ class TestRenderCompareCharts:
         """Skip charts when no results have trades."""
         results = [_make_result(with_trades=False)]
 
-        render_compare_charts(results, chart=True, chart_output=None)
+        render_compare_charts(results, _chart=True, chart_output=None)
         output = capsys.readouterr().out
 
         assert "No trades" in output
@@ -267,7 +267,7 @@ class TestRenderCompareCharts:
         mock_chart.return_value = MagicMock()
         results = [_make_result()]
 
-        render_compare_charts(results, chart=True, chart_output=None)
+        render_compare_charts(results, _chart=True, chart_output=None)
 
         mock_show.assert_called_once()
 
@@ -282,7 +282,7 @@ class TestRenderCompareCharts:
         mock_chart.return_value = MagicMock()
         results = [_make_result()]
 
-        render_compare_charts(results, chart=True, chart_output=Path("output/compare.html"))
+        render_compare_charts(results, _chart=True, chart_output=Path("output/compare.html"))
 
         mock_save.assert_called_once()
 
@@ -300,7 +300,7 @@ class TestRenderMonteCarloCharts:
         """Display Monte Carlo chart interactively."""
         mock_chart.return_value = MagicMock()
 
-        render_monte_carlo_charts(_make_mc_result(), chart=True, chart_output=None)
+        render_monte_carlo_charts(_make_mc_result(), _chart=True, chart_output=None)
 
         mock_show.assert_called_once()
 
@@ -316,7 +316,7 @@ class TestRenderMonteCarloCharts:
         mock_chart.return_value = MagicMock()
 
         render_monte_carlo_charts(
-            _make_mc_result(), chart=True, chart_output=Path("output/mc.html")
+            _make_mc_result(), _chart=True, chart_output=Path("output/mc.html")
         )
         output = capsys.readouterr().out
 
@@ -337,7 +337,7 @@ class TestRenderWalkForwardCharts:
         """Display walk-forward chart interactively."""
         mock_chart.return_value = MagicMock()
 
-        render_walk_forward_charts(_make_wf_result(), chart=True, chart_output=None)
+        render_walk_forward_charts(_make_wf_result(), _chart=True, chart_output=None)
 
         mock_show.assert_called_once()
 
@@ -353,7 +353,7 @@ class TestRenderWalkForwardCharts:
         mock_chart.return_value = MagicMock()
 
         render_walk_forward_charts(
-            _make_wf_result(), chart=True, chart_output=Path("output/wf.html")
+            _make_wf_result(), _chart=True, chart_output=Path("output/wf.html")
         )
         output = capsys.readouterr().out
 

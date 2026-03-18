@@ -66,15 +66,15 @@ def whale_correlate(
                 condition_id=str(row.condition_id),
                 title=str(row.title),
                 slug=str(row.slug),
-                up_volume=float(row.up_volume),  # type: ignore[arg-type]
-                down_volume=float(row.down_volume),  # type: ignore[arg-type]
-                up_size=float(row.up_size),  # type: ignore[arg-type]
-                down_size=float(row.down_size),  # type: ignore[arg-type]
-                trade_count=int(row.trade_count),  # type: ignore[arg-type]
-                bias_ratio=float(row.bias_ratio),  # type: ignore[arg-type]
+                up_volume=float(str(row.up_volume)),
+                down_volume=float(str(row.down_volume)),
+                up_size=float(str(row.up_size)),
+                down_size=float(str(row.down_size)),
+                trade_count=int(str(row.trade_count)),
+                bias_ratio=float(str(row.bias_ratio)),
                 favoured_side=str(row.favoured_side),
-                first_trade_ts=int(row.first_trade_ts),  # type: ignore[arg-type]
-                last_trade_ts=int(row.last_trade_ts),  # type: ignore[arg-type]
+                first_trade_ts=int(str(row.first_trade_ts)),
+                last_trade_ts=int(str(row.last_trade_ts)),
             )
             for row in markets.itertuples(index=False)
         ]

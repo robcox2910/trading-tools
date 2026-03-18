@@ -197,7 +197,7 @@ class TestStreamReconnect:
         call_count = 0
 
         async def fake_connect_and_listen(
-            asset_ids: list[str],  # noqa: ARG001
+            asset_ids: list[str],
         ) -> AsyncIterator[dict[str, Any]]:
             """Simulate two connect cycles, triggering reconnect on first."""
             nonlocal call_count
@@ -206,11 +206,11 @@ class TestStreamReconnect:
                 # Simulate: caller updates subscription mid-stream
                 feed._reconnect_requested = True
                 return
-                yield  # Make this an async generator  # type: ignore[misc]
+                yield  # Make this an async generator
             # Second call: stop the loop
             feed._closed = True
             return
-            yield  # type: ignore[misc]
+            yield
 
         with patch.object(feed, "_connect_and_listen", side_effect=fake_connect_and_listen):
             sleep_calls: list[float] = []
@@ -224,7 +224,7 @@ class TestStreamReconnect:
                 async for _event in feed.stream(["asset_1"]):
                     pass  # pragma: no cover
 
-        assert call_count == 2  # noqa: PLR2004
+        assert call_count == 2
         assert sleep_calls == []
 
     @pytest.mark.asyncio
@@ -236,7 +236,7 @@ class TestStreamReconnect:
         call_count = 0
 
         async def failing_connect(
-            asset_ids: list[str],  # noqa: ARG001
+            asset_ids: list[str],
         ) -> AsyncIterator[dict[str, Any]]:
             """Raise OSError on first calls, then stop the loop."""
             nonlocal call_count
@@ -246,7 +246,7 @@ class TestStreamReconnect:
                 raise OSError(msg)
             feed._closed = True
             return
-            yield  # type: ignore[misc]
+            yield
 
         with patch.object(feed, "_connect_and_listen", side_effect=failing_connect):
             async for _event in feed.stream(["asset_1"]):
@@ -289,7 +289,7 @@ class TestStreamErrorHandling:
         call_count = 0
 
         async def fake_connect(
-            asset_ids: list[str],  # noqa: ARG001
+            asset_ids: list[str],
         ) -> AsyncIterator[dict[str, Any]]:
             nonlocal call_count
             call_count += 1
@@ -297,13 +297,13 @@ class TestStreamErrorHandling:
                 raise ConnectionClosed(CloseFrame(1000, "normal"), None)
             feed._closed = True
             return
-            yield  # type: ignore[misc]
+            yield
 
         with patch.object(feed, "_connect_and_listen", side_effect=fake_connect):
             async for _event in feed.stream(["asset_1"]):
                 pass  # pragma: no cover
 
-        assert call_count == 2  # noqa: PLR2004
+        assert call_count == 2
 
     @pytest.mark.asyncio
     async def test_os_error_during_stream(self) -> None:
@@ -312,7 +312,7 @@ class TestStreamErrorHandling:
         call_count = 0
 
         async def fake_connect(
-            asset_ids: list[str],  # noqa: ARG001
+            asset_ids: list[str],
         ) -> AsyncIterator[dict[str, Any]]:
             nonlocal call_count
             call_count += 1
@@ -320,13 +320,13 @@ class TestStreamErrorHandling:
                 raise OSError("Connection refused")
             feed._closed = True
             return
-            yield  # type: ignore[misc]
+            yield
 
         with patch.object(feed, "_connect_and_listen", side_effect=fake_connect):
             async for _event in feed.stream(["asset_1"]):
                 pass  # pragma: no cover
 
-        assert call_count == 2  # noqa: PLR2004
+        assert call_count == 2
 
     @pytest.mark.asyncio
     async def test_backoff_delay_doubles(self) -> None:
@@ -335,14 +335,14 @@ class TestStreamErrorHandling:
         call_count = 0
 
         async def fake_connect(
-            asset_ids: list[str],  # noqa: ARG001
+            asset_ids: list[str],
         ) -> AsyncIterator[dict[str, Any]]:
             nonlocal call_count
             call_count += 1
-            if call_count >= 3:  # noqa: PLR2004
+            if call_count >= 3:
                 feed._closed = True
             raise OSError("fail")
-            yield  # type: ignore[misc]
+            yield
 
         sleep_delays: list[float] = []
         original_sleep = asyncio.sleep
@@ -359,7 +359,7 @@ class TestStreamErrorHandling:
                 pass  # pragma: no cover
 
         # First delay is base, second is doubled
-        assert len(sleep_delays) >= 2  # noqa: PLR2004
+        assert len(sleep_delays) >= 2
         assert sleep_delays[1] > sleep_delays[0]
 
     @pytest.mark.asyncio
@@ -368,11 +368,11 @@ class TestStreamErrorHandling:
         feed = MarketFeed(reconnect_base_delay=0.01)
 
         async def fake_connect(
-            asset_ids: list[str],  # noqa: ARG001
+            asset_ids: list[str],
         ) -> AsyncIterator[dict[str, Any]]:
             feed._closed = True
             raise ConnectionClosed(CloseFrame(1000, "normal"), None)
-            yield  # type: ignore[misc]
+            yield
 
         event_count = 0
         with patch.object(feed, "_connect_and_listen", side_effect=fake_connect):
@@ -387,11 +387,11 @@ class TestStreamErrorHandling:
         feed = MarketFeed(reconnect_base_delay=0.01)
 
         async def fake_connect(
-            asset_ids: list[str],  # noqa: ARG001
+            asset_ids: list[str],
         ) -> AsyncIterator[dict[str, Any]]:
             feed._closed = True
             raise OSError("Connection refused")
-            yield  # type: ignore[misc]
+            yield
 
         event_count = 0
         with patch.object(feed, "_connect_and_listen", side_effect=fake_connect):

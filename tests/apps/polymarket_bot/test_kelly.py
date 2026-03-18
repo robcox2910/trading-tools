@@ -90,7 +90,7 @@ class TestKellyFractionExtremePrices:
         self,
         estimated_prob: Decimal,
         market_price: Decimal,
-        description: str,  # noqa: ARG002
+        description: str,
     ) -> None:
         """Return a positive fraction when market price is near zero with positive edge."""
         result = kelly_fraction(estimated_prob, market_price)
@@ -109,7 +109,7 @@ class TestKellyFractionExtremePrices:
         self,
         estimated_prob: Decimal,
         market_price: Decimal,
-        description: str,  # noqa: ARG002
+        description: str,
     ) -> None:
         """Handle market prices near 1.0 without division errors."""
         result = kelly_fraction(estimated_prob, market_price)

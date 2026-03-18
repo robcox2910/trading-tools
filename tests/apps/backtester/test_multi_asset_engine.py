@@ -38,9 +38,9 @@ class StubMultiProvider:
     async def get_candles(
         self,
         symbol: str,
-        interval: Interval,  # noqa: ARG002
-        start_ts: int,  # noqa: ARG002
-        end_ts: int,  # noqa: ARG002
+        interval: Interval,
+        start_ts: int,
+        end_ts: int,
     ) -> list[Candle]:
         """Return pre-configured candles for the given symbol."""
         return self._candles.get(symbol, [])

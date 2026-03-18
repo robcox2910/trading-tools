@@ -5,6 +5,7 @@ signal determination, fill execution, and settlement via mock ports.
 """
 
 from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -28,9 +29,9 @@ _CAPITAL = Decimal(100)
 _EXPECTED_POLL_COUNT_2 = 2
 
 
-def _make_config(**overrides: object) -> SpreadCaptureConfig:
+def _make_config(**overrides: Any) -> SpreadCaptureConfig:
     """Create a config with accumulate strategy defaults for testing."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "capital": _CAPITAL,
         "max_position_pct": Decimal("0.10"),
         "max_open_positions": 10,
@@ -51,12 +52,12 @@ def _make_config(**overrides: object) -> SpreadCaptureConfig:
         "min_spread_margin": Decimal("0.01"),
     }
     defaults.update(overrides)
-    return SpreadCaptureConfig(**defaults)  # type: ignore[arg-type]
+    return SpreadCaptureConfig(**defaults)
 
 
-def _make_opportunity(**overrides: object) -> SpreadOpportunity:
+def _make_opportunity(**overrides: Any) -> SpreadOpportunity:
     """Create a SpreadOpportunity with sensible defaults."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "condition_id": "cond_test",
         "title": "BTC Up or Down?",
         "asset": "BTC-USD",
@@ -72,7 +73,7 @@ def _make_opportunity(**overrides: object) -> SpreadOpportunity:
         "down_ask_depth": Decimal(100),
     }
     defaults.update(overrides)
-    return SpreadOpportunity(**defaults)  # type: ignore[arg-type]
+    return SpreadOpportunity(**defaults)
 
 
 def _make_order_book(ask_price: Decimal, depth: Decimal = Decimal(100)) -> OrderBook:
@@ -100,8 +101,8 @@ class _MockExecution:
 
     async def execute_fill(
         self,
-        token_id: str,  # noqa: ARG002
-        side: str,  # noqa: ARG002
+        token_id: str,
+        side: str,
         price: Decimal,
         quantity: Decimal,
     ) -> FillResult:
@@ -158,7 +159,7 @@ class TestPollCycleIntegration:
 
         engine = SpreadEngine(
             config=_make_config(),
-            execution=_MockExecution(),  # type: ignore[arg-type]
+            execution=_MockExecution(),
             market_data=mock_md,
             mode_label="TEST",
         )
@@ -183,7 +184,7 @@ class TestPollCycleIntegration:
 
         engine = SpreadEngine(
             config=_make_config(),
-            execution=_MockExecution(),  # type: ignore[arg-type]
+            execution=_MockExecution(),
             market_data=mock_md,
             mode_label="TEST",
         )
@@ -218,7 +219,7 @@ class TestPollCycleIntegration:
 
         engine = SpreadEngine(
             config=config,
-            execution=_MockExecution(),  # type: ignore[arg-type]
+            execution=_MockExecution(),
             market_data=mock_md,
             mode_label="TEST",
         )
@@ -235,7 +236,7 @@ class TestPollCycleIntegration:
 
         engine = SpreadEngine(
             config=_make_config(),
-            execution=_MockExecution(),  # type: ignore[arg-type]
+            execution=_MockExecution(),
             market_data=mock_md,
             mode_label="TEST",
         )

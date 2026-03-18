@@ -282,11 +282,11 @@ class TestLiveTradingEngine:
         event_count = 0
         low_balance = Decimal("850.00")
 
-        async def feed_with_loss(asset_ids: list[str]) -> Any:  # noqa: ARG001
+        async def feed_with_loss(asset_ids: list[str]) -> Any:
             nonlocal event_count
             for event in events:
                 event_count += 1
-                if event_count == 2:  # noqa: PLR2004
+                if event_count == 2:
                     # Simulate balance drop after first event
                     engine._portfolio._balance_manager._balance = low_balance
                 yield event

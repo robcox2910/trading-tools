@@ -1,6 +1,7 @@
 """Tests for the DirectionalTrader orchestration wrapper."""
 
 from decimal import Decimal
+from typing import Any
 from unittest.mock import MagicMock
 
 from trading_tools.apps.directional.config import DirectionalConfig
@@ -11,9 +12,11 @@ class _FakeClient:
     """Minimal fake client for construction tests."""
 
 
-def _make_trader(**kwargs: object) -> DirectionalTrader:
+def _make_trader(**kwargs: Any) -> DirectionalTrader:
     """Create a DirectionalTrader with default config and fake client."""
-    config = DirectionalConfig(**({"capital": Decimal(100)} | kwargs))  # type: ignore[arg-type]
+    defaults: dict[str, Any] = {"capital": Decimal(100)}
+    defaults.update(kwargs)
+    config = DirectionalConfig(**defaults)
     return DirectionalTrader(config=config, client=_FakeClient())  # type: ignore[arg-type]
 
 

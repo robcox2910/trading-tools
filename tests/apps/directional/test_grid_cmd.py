@@ -51,7 +51,7 @@ class TestBuildGrid:
             signal_lookback=1200,
         )
         assert "w_whale" in grid
-        assert len(grid["w_whale"]) == 2  # noqa: PLR2004
+        assert len(grid["w_whale"]) == 2
         assert "w_momentum" not in grid  # single value, not swept
 
     def test_single_value_params_set_on_config(self) -> None:
@@ -66,7 +66,7 @@ class TestBuildGrid:
         )
         assert config.w_whale == Decimal("0.50")
         assert "min_edge" in grid
-        assert len(grid["min_edge"]) == 3  # noqa: PLR2004
+        assert len(grid["min_edge"]) == 3
 
     def test_empty_grid_when_all_single(self) -> None:
         """Return empty grid when all params are single-value."""

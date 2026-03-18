@@ -235,7 +235,7 @@ async def run_directional_backtest(
 
 async def _replay_window(
     config: DirectionalConfig,
-    repo: TickRepository,  # noqa: ARG001
+    _repo: TickRepository,
     meta: MarketMetadata,
     candles: dict[str, list[Candle]],
     acc: _CalibrationAccumulator,

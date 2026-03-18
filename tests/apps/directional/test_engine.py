@@ -1,6 +1,7 @@
 """Tests for the directional trading engine."""
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -93,10 +94,10 @@ def _build_engine(
     markets: list[MarketOpportunity] | None = None,
     candles: list[Candle] | None = None,
     outcome: str | None = "Up",
-    config_overrides: dict[str, object] | None = None,
+    config_overrides: dict[str, Any] | None = None,
 ) -> tuple[DirectionalEngine, BacktestExecution, ReplayMarketData]:
     """Build a DirectionalEngine with backtest adapters pre-loaded."""
-    config_kwargs: dict[str, object] = {
+    config_kwargs: dict[str, Any] = {
         "capital": capital,
         "min_edge": Decimal("0.01"),
         "kelly_fraction": Decimal("0.5"),
@@ -104,7 +105,7 @@ def _build_engine(
     }
     if config_overrides:
         config_kwargs.update(config_overrides)
-    config = DirectionalConfig(**config_kwargs)  # type: ignore[arg-type]
+    config = DirectionalConfig(**config_kwargs)
 
     execution = BacktestExecution(capital=capital)
     market_data = ReplayMarketData()
@@ -226,7 +227,7 @@ class TestEvaluateAndEnter:
             config_overrides={"max_open_positions": 2},
         )
         await engine.poll_cycle(_ENTRY_TIME)
-        assert len(engine.positions) <= 2  # noqa: PLR2004
+        assert len(engine.positions) <= 2
 
 
 class TestSettlement:
@@ -259,7 +260,8 @@ class TestSettlement:
         """Unresolved outcome results in full loss."""
         engine, _, _ = _build_engine(outcome=None)
         # Need to clear the outcome
-        engine.market_data._outcomes.clear()  # type: ignore[union-attr]
+        assert isinstance(engine.market_data, ReplayMarketData)
+        engine.market_data._outcomes.clear()
         await engine.poll_cycle(_ENTRY_TIME)
 
         await engine.poll_cycle(_WINDOW_END)

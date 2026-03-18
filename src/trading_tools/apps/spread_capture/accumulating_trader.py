@@ -32,6 +32,7 @@ from .adapters import LiveExecution, LiveMarketData, PaperExecution
 from .engine import SpreadEngine
 from .market_scanner import MarketScanner
 from .models import AccumulatingPosition, PositionState, SpreadResult
+from .ports import ExecutionPort
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -180,6 +181,7 @@ class AccumulatingTrader:
         """
         mode_label = "LIVE" if self.live else "PAPER"
 
+        execution: ExecutionPort
         if self.live and self._executor is not None and self._balance_manager is not None:
             execution = LiveExecution(
                 executor=self._executor,
@@ -193,7 +195,7 @@ class AccumulatingTrader:
                 ),
             )
         else:
-            execution = PaperExecution(  # type: ignore[assignment]
+            execution = PaperExecution(
                 base_capital=self.config.capital,
                 slippage_pct=self.config.paper_slippage_pct,
                 compound_profits=self.config.compound_profits,

@@ -122,7 +122,7 @@ def render_run_charts(
 def render_compare_charts(
     results: list[BacktestResult],
     *,
-    chart: bool,  # noqa: ARG001
+    _chart: bool,
     chart_output: Path | None,
 ) -> None:
     """Build and display/save charts for the compare command."""
@@ -142,7 +142,7 @@ def render_compare_charts(
 def render_monte_carlo_charts(
     mc_result: MonteCarloResult,
     *,
-    chart: bool,  # noqa: ARG001
+    _chart: bool,
     chart_output: Path | None,
 ) -> None:
     """Build and display/save charts for the monte-carlo command."""
@@ -157,7 +157,7 @@ def render_monte_carlo_charts(
 def render_walk_forward_charts(
     wf_result: WalkForwardResult,
     *,
-    chart: bool,  # noqa: ARG001
+    _chart: bool,
     chart_output: Path | None,
 ) -> None:
     """Build and display/save charts for the walk-forward command."""

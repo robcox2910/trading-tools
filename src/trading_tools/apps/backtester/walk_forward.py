@@ -14,6 +14,7 @@ strategy per fold is the one with the highest value of a chosen metric
 import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any, cast
 
 from trading_tools.apps.backtester._providers import CachedProvider
 from trading_tools.apps.backtester.engine import BacktestEngine
@@ -125,7 +126,7 @@ async def run_walk_forward(
             strategy_params=strategy_params,
         )
 
-        best_strategy = build_strategy(best_name, **strategy_params)  # type: ignore[arg-type]
+        best_strategy = build_strategy(best_name, **cast("dict[str, Any]", strategy_params))
         test_provider = CachedProvider(test_candles)
         test_engine = BacktestEngine(
             provider=test_provider,
@@ -190,7 +191,7 @@ async def _find_best_strategy(
     provider = CachedProvider(candles)
 
     async def _eval(name: str) -> tuple[str, BacktestResult]:
-        strategy = build_strategy(name, **strategy_params)  # type: ignore[arg-type]
+        strategy = build_strategy(name, **cast("dict[str, Any]", strategy_params))
         engine = BacktestEngine(
             provider=provider,
             strategy=strategy,

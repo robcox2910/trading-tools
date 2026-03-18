@@ -185,13 +185,11 @@ def whale_copy(
         str | None,
         typer.Option(help="Max session drawdown as fraction (e.g. 0.20)"),
     ] = None,
-    confirm_live: Annotated[  # noqa: FBT002
+    confirm_live: Annotated[
         bool,
         typer.Option("--confirm-live", help="Enable LIVE trading with real orders"),
     ] = False,
-    verbose: Annotated[  # noqa: FBT002
-        bool, typer.Option("--verbose", "-v", help="Enable DEBUG logging")
-    ] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Enable DEBUG logging")] = False,
 ) -> None:
     """Mirror whale directional positioning on Up/Down markets.
 

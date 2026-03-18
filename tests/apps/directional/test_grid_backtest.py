@@ -85,7 +85,7 @@ class TestRunDirectionalGrid:
             end_ts=_END_TS,
             param_grid={"min_edge": [Decimal("0.03"), Decimal("0.05")]},
         )
-        assert len(result.cells) == 2  # noqa: PLR2004
+        assert len(result.cells) == 2
         assert all(c.total_trades == 0 for c in result.cells)
 
     @pytest.mark.asyncio
@@ -105,7 +105,7 @@ class TestRunDirectionalGrid:
                 "w_whale": [Decimal("0.40"), Decimal("0.50"), Decimal("0.60")],
             },
         )
-        assert len(result.cells) == 6  # 2 x 3  # noqa: PLR2004
+        assert len(result.cells) == 6  # 2 x 3
 
     @pytest.mark.asyncio
     async def test_cells_sorted_by_brier_score(self) -> None:
@@ -122,4 +122,4 @@ class TestRunDirectionalGrid:
             param_grid={"min_edge": [Decimal("0.03"), Decimal("0.05"), Decimal("0.07")]},
         )
         # All zero brier scores (no trades) → sorted arbitrarily but consistently
-        assert len(result.cells) == 3  # noqa: PLR2004
+        assert len(result.cells) == 3

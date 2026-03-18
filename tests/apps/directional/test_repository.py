@@ -89,7 +89,7 @@ class TestDirectionalResultRepository:
             await repo.save_result(record)
 
         rows = await repo.get_results(_SETTLED_AT, _SETTLED_AT + 150)
-        assert len(rows) == 2  # noqa: PLR2004
+        assert len(rows) == 2
         await repo.close()
 
     @pytest.mark.asyncio

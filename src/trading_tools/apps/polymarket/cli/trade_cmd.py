@@ -60,7 +60,7 @@ def trade(
     order_type: Annotated[
         str, typer.Option("--type", help="Order type: limit or market")
     ] = "limit",
-    no_confirm: Annotated[  # noqa: FBT002
+    no_confirm: Annotated[
         bool, typer.Option("--no-confirm", help="Skip confirmation prompt")
     ] = False,
 ) -> None:
@@ -300,7 +300,7 @@ _MIN_REDEEM_SIZE = Decimal(5)
 
 
 def redeem(
-    no_confirm: Annotated[  # noqa: FBT002
+    no_confirm: Annotated[
         bool, typer.Option("--no-confirm", help="Skip confirmation prompt")
     ] = False,
 ) -> None:

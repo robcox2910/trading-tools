@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from py_clob_client.exceptions import PolyApiException  # type: ignore[import-untyped]
+from py_clob_client.exceptions import PolyApiException
 
 from trading_tools.clients.polymarket import _clob_adapter
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError

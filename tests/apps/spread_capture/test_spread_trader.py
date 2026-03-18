@@ -1,6 +1,7 @@
 """Tests for SpreadTrader core trading engine."""
 
 from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -31,9 +32,9 @@ _ZERO_FEE = Decimal("0.0")
 _DEFAULT_FEE_EXPONENT = 2
 
 
-def _make_config(**overrides: object) -> SpreadCaptureConfig:
+def _make_config(**overrides: Any) -> SpreadCaptureConfig:
     """Create a SpreadCaptureConfig with test defaults."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "capital": _CAPITAL,
         "max_position_pct": _MAX_POS_PCT,
         "max_combined_cost": Decimal("0.98"),
@@ -49,12 +50,12 @@ def _make_config(**overrides: object) -> SpreadCaptureConfig:
         "fee_exponent": _DEFAULT_FEE_EXPONENT,
     }
     defaults.update(overrides)
-    return SpreadCaptureConfig(**defaults)  # type: ignore[arg-type]
+    return SpreadCaptureConfig(**defaults)
 
 
-def _make_opportunity(**overrides: object) -> SpreadOpportunity:
+def _make_opportunity(**overrides: Any) -> SpreadOpportunity:
     """Create a SpreadOpportunity with sensible defaults."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "condition_id": "cond_a",
         "title": "Bitcoin Up or Down?",
         "asset": "BTC-USD",
@@ -68,14 +69,14 @@ def _make_opportunity(**overrides: object) -> SpreadOpportunity:
         "window_end_ts": _WINDOW_END,
     }
     defaults.update(overrides)
-    return SpreadOpportunity(**defaults)  # type: ignore[arg-type]
+    return SpreadOpportunity(**defaults)
 
 
-def _make_trader(**overrides: object) -> SpreadTrader:
+def _make_trader(**overrides: Any) -> SpreadTrader:
     """Create a SpreadTrader with mock client and sensible defaults."""
-    config = overrides.pop("config", _make_config())  # type: ignore[arg-type]
-    client = overrides.pop("client", AsyncMock())  # type: ignore[arg-type]
-    return SpreadTrader(config=config, live=False, client=client, **overrides)  # type: ignore[arg-type]
+    config = overrides.pop("config", _make_config())
+    client = overrides.pop("client", AsyncMock())
+    return SpreadTrader(config=config, live=False, client=client, **overrides)
 
 
 @pytest.mark.asyncio
