@@ -22,6 +22,7 @@ from trading_tools.apps.polymarket.cli.tick_collector_cmd import tick_collect
 from trading_tools.apps.polymarket.cli.trade_cmd import balance, cancel, orders, redeem, trade
 from trading_tools.apps.polymarket.cli.whale_add_cmd import whale_add
 from trading_tools.apps.polymarket.cli.whale_analyse_cmd import whale_analyse
+from trading_tools.apps.polymarket.cli.whale_copy_cmd import whale_copy
 from trading_tools.apps.polymarket.cli.whale_correlate_cmd import whale_correlate
 from trading_tools.apps.polymarket.cli.whale_markets_cmd import whale_markets
 from trading_tools.apps.polymarket.cli.whale_monitor_cmd import whale_monitor
@@ -52,5 +53,6 @@ app.command(name="backtest-spread")(backtest_spread)
 app.command(name="grid-spread")(grid_spread)
 app.command(name="directional-backtest")(directional_backtest)
 app.command(name="directional")(directional)
+app.command(name="whale-copy")(whale_copy)
 
 __all__ = ["app"]

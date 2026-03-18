@@ -21,6 +21,8 @@ Some commands require no authentication (market queries), while trading and bot 
 | Directional bot (paper) | No |
 | Directional bot (live) | Yes |
 | Directional backtest | No |
+| Whale copy bot (paper) | No (requires WHALE_DB_URL) |
+| Whale copy bot (live) | Yes |
 
 ## Market Queries
 
@@ -523,6 +525,56 @@ Output includes standard metrics (P&L, win rate, avg P&L) plus calibration metri
 - **Brier score**: Mean squared error of probability predictions (< 0.25 = better than random)
 - **Avg P(win) when correct**: Confidence when the algorithm was right
 - **Avg P(win) when incorrect**: Confidence when the algorithm was wrong
+
+## Whale Copy Bot
+
+The whale copy bot mirrors the net directional positioning of tracked whale traders in real time. Unlike the spread capture strategy (which locks in a signal early), this bot re-reads the whale's current direction every poll cycle and buys tokens on whichever side they currently favour. If the whale flips mid-window, both sides can accumulate tokens — winning tokens pay $1.00, losing tokens pay $0.00.
+
+### `whale-copy` — Mirror Whale Directional Positioning
+
+```bash
+# Paper mode (default) — mirror whales on 5m crypto markets
+trading-tools-polymarket whale-copy --series-slugs crypto-5m --capital 1000
+
+# With custom conviction threshold and fill size
+trading-tools-polymarket whale-copy \
+  --series-slugs crypto-5m \
+  --capital 500 \
+  --min-conviction 2.0 \
+  --fill-size 10 \
+  --max-price 0.55
+
+# Live mode
+trading-tools-polymarket whale-copy \
+  --series-slugs crypto-5m \
+  --capital 1000 \
+  --confirm-live
+```
+
+Requires `WHALE_DB_URL` environment variable (whale addresses loaded from database). Optionally set `SPREAD_DB_URL` or `WHALE_DB_URL` for result persistence.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--series-slugs` | `btc-updown-5m,eth-updown-5m,xrp-updown-5m,sol-updown-5m` | Comma-separated series slugs or `crypto-5m` shortcut |
+| `--config` | `None` | Path to YAML config file (CLI flags override) |
+| `--poll-interval` | `5` | Seconds between scan cycles |
+| `--capital` | `1000` | Starting capital in USDC (paper mode) |
+| `--fill-size` | `5` | Tokens per fill (must meet min order size) |
+| `--max-price` | `0.60` | Maximum ask price to buy |
+| `--min-conviction` | `1.5` | Minimum whale dollar ratio on favoured side |
+| `--max-position-pct` | `0.10` | Max fraction of capital per market |
+| `--max-open-positions` | `10` | Max concurrent positions |
+| `--circuit-breaker-losses` | `5` | Consecutive losses to trigger cooldown |
+| `--circuit-breaker-cooldown` | `300` | Seconds to pause after circuit breaker |
+| `--max-drawdown-pct` | `0.20` | Max session drawdown as fraction |
+| `--confirm-live` | `False` | Enable live trading with real orders |
+| `-v` / `--verbose` | `False` | Enable DEBUG logging |
+
+**Logging keywords for CloudWatch/log monitoring:**
+- `WHALE-DIRECTION` — whale's current favoured side each poll
+- `WHALE-FLIP` — whale changed direction mid-window
+- `FILL` — token purchase on the favoured side
+- `CLOSE` — position settled with P&L
 
 ## Backtesting Polymarket Strategies
 

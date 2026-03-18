@@ -69,6 +69,11 @@ trading-tools/
 │   │   │   ├── accumulating_trader.py # Thin wrapper: directional entry + opportunistic hedge
 │   │   │   ├── backtest_runner.py   # Replay engine: feed historical windows through SpreadEngine
 │   │   │   └── grid_backtest.py     # Parameter sweep over hedge thresholds and signal delay
+│   │   ├── whale_copy/              # Whale copy trading bot — mirror whale directional positioning
+│   │   │   ├── config.py            # WhaleCopyConfig (frozen dataclass, YAML + CLI)
+│   │   │   ├── models.py            # WhalePosition — tracks position with dynamic whale_side
+│   │   │   ├── signal.py            # WhaleSignalClient — real-time Polymarket Data API queries
+│   │   │   └── trader.py            # WhaleCopyTrader — polling loop, fill logic, settlement
 │   │   └── directional/             # Directional trading algorithm for crypto Up/Down markets
 │   │       ├── config.py            # DirectionalConfig (frozen dataclass, YAML + CLI)
 │   │       ├── models.py            # MarketOpportunity, FeatureVector, DirectionalPosition, DirectionalResult (ORM)
