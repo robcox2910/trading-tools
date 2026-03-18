@@ -202,7 +202,33 @@ def _make_accum_position(
 
 @pytest.mark.asyncio
 class TestSignalDetermination:
-    """Test Binance momentum signal and primary side selection."""
+    """Test whale copy-trading signal with Binance fallback."""
+
+    async def test_whale_signal_takes_priority(self) -> None:
+        """Copy whale's directional bet when available."""
+        mock_md = _default_mock_market_data()
+        mock_md.get_whale_signal = AsyncMock(return_value="Down")
+        # Binance says Up momentum → mean-reversion would pick Down too,
+        # but whale signal should take priority regardless
+        mock_md.get_binance_candles = AsyncMock(return_value=[])
+        engine = _make_engine(market_data=mock_md)
+        pos = _make_accum_position(budget=Decimal(50))
+
+        result = await engine._determine_primary_side(pos)
+        assert result == "Down"
+
+    async def test_falls_back_to_binance_when_no_whale(self) -> None:
+        """Use Binance mean-reversion when whale has no trades."""
+        mock_md = _default_mock_market_data()
+        mock_md.get_whale_signal = AsyncMock(return_value=None)
+        # Up momentum → mean-reversion → bet Down
+        candles = [AsyncMock(open=Decimal(50000), close=Decimal(50100))]
+        mock_md.get_binance_candles = AsyncMock(return_value=candles)
+        engine = _make_engine(market_data=mock_md)
+        pos = _make_accum_position(budget=Decimal(50))
+
+        result = await engine._determine_primary_side(pos)
+        assert result == "Down"
 
     async def test_mean_reversion_bets_against_up_momentum(self) -> None:
         """Bet Down when recent momentum was Up (mean-reversion)."""
