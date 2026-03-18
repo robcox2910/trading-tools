@@ -43,15 +43,21 @@ class WhaleSignalClient:
     whale_addresses: tuple[str, ...]
     _client: httpx.AsyncClient = field(default_factory=_default_client, repr=False)
 
-    async def get_direction(self, condition_id: str) -> tuple[str | None, Decimal]:
+    async def get_direction(
+        self, condition_id: str, window_start_ts: int = 0
+    ) -> tuple[str | None, Decimal]:
         """Query whale BUY trades on a market and return the favoured direction.
 
         Fetch recent trades for each tracked whale address, filter to
-        BUY trades matching the condition ID, and aggregate dollar
-        volume by outcome.
+        BUY trades matching the condition ID that occurred within the
+        current market window, and aggregate dollar volume by outcome.
 
         Args:
             condition_id: Polymarket market condition identifier.
+            window_start_ts: Only count trades at or after this epoch
+                second.  Pass the market's ``window_start_ts`` to
+                ignore historical trades from previous windows on the
+                same condition ID.  Defaults to 0 (no filtering).
 
         Returns:
             Tuple of ``(favoured_side, conviction_ratio)``.
@@ -82,6 +88,10 @@ class WhaleSignalClient:
 
             for trade in trades:
                 if trade.get("side") != "BUY":
+                    continue
+                # Filter to current window only
+                trade_ts = int(trade.get("timestamp", 0))
+                if trade_ts < window_start_ts:
                     continue
                 outcome = trade.get("outcome", "")
                 size = Decimal(str(trade.get("size", 0)))
