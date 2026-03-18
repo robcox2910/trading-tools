@@ -22,6 +22,7 @@ from trading_tools.core.models import ZERO
 if TYPE_CHECKING:
     from trading_tools.apps.directional.config import DirectionalConfig
     from trading_tools.apps.tick_collector.repository import TickRepository
+    from trading_tools.apps.whale_monitor.repository import WhaleRepository
     from trading_tools.core.models import Candle
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,7 @@ async def run_directional_grid(
     *,
     candles_by_asset: dict[str, list[Candle]] | None = None,
     series_slug: str | None = None,
+    whale_repo: WhaleRepository | None = None,
 ) -> DirectionalGridResult:
     """Sweep parameter combinations and collect performance metrics.
 
@@ -98,6 +100,7 @@ async def run_directional_grid(
             to sweep (e.g. ``{"w_whale": [0.3, 0.4, 0.5]}``).
         candles_by_asset: Pre-loaded Binance candles keyed by asset.
         series_slug: Filter metadata to a specific series slug.
+        whale_repo: Whale trade repository for directional signals.
 
     Returns:
         Grid result with cells sorted by Brier score ascending.
@@ -128,6 +131,7 @@ async def run_directional_grid(
             end_ts=end_ts,
             candles_by_asset=candles_by_asset,
             series_slug=series_slug,
+            whale_repo=whale_repo,
         )
 
         total_windows = result.total_windows

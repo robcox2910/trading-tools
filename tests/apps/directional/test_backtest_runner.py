@@ -10,9 +10,11 @@ from trading_tools.apps.directional.backtest_runner import (
     _determine_outcome,
     _empty_result,
     _metadata_to_opportunity,
+    _snapshot_to_order_book,
     run_directional_backtest,
 )
 from trading_tools.apps.directional.config import DirectionalConfig
+from trading_tools.apps.tick_collector.models import OrderBookSnapshot
 from trading_tools.core.models import ZERO, Candle, Interval
 
 _BASE_TS = 1_710_000_000
@@ -121,6 +123,44 @@ class TestEmptyResult:
         assert result.brier_score == ZERO
 
 
+class TestSnapshotToOrderBook:
+    """Test order book snapshot conversion."""
+
+    def test_converts_json_to_order_levels(self) -> None:
+        """Parse bids/asks JSON arrays into OrderLevel tuples."""
+        snapshot = OrderBookSnapshot()
+        snapshot.token_id = "tok_1"
+        snapshot.timestamp = 1_710_000_000_000
+        snapshot.bids_json = "[[0.48, 100], [0.47, 200]]"
+        snapshot.asks_json = "[[0.52, 150], [0.53, 250]]"
+        snapshot.spread = 0.04
+        snapshot.midpoint = 0.50
+
+        book = _snapshot_to_order_book(snapshot)
+        assert book.token_id == "tok_1"
+        assert len(book.bids) == 2
+        assert len(book.asks) == 2
+        assert book.bids[0].price == Decimal("0.48")
+        assert book.bids[0].size == Decimal(100)
+        assert book.asks[0].price == Decimal("0.52")
+        assert book.spread == Decimal("0.04")
+        assert book.midpoint == Decimal("0.5")
+
+    def test_handles_empty_levels(self) -> None:
+        """Handle empty bid/ask arrays."""
+        snapshot = OrderBookSnapshot()
+        snapshot.token_id = "tok_2"
+        snapshot.timestamp = 1_710_000_000_000
+        snapshot.bids_json = "[]"
+        snapshot.asks_json = "[]"
+        snapshot.spread = 0.0
+        snapshot.midpoint = 0.50
+
+        book = _snapshot_to_order_book(snapshot)
+        assert len(book.bids) == 0
+        assert len(book.asks) == 0
+
+
 class TestRunDirectionalBacktest:
     """Test the full backtest runner with mocked repository."""
 
@@ -155,7 +195,7 @@ class TestRunDirectionalBacktest:
 
         repo = AsyncMock()
         repo.get_market_metadata_in_range = AsyncMock(return_value=[meta])
-        repo.get_order_book_snapshots_in_range = AsyncMock(return_value=[])
+        repo.get_nearest_book_snapshot = AsyncMock(return_value=None)
 
         result = await run_directional_backtest(
             config=config,
@@ -167,3 +207,38 @@ class TestRunDirectionalBacktest:
         assert result.total_windows == 1
         assert result.skipped == 1
         assert result.total_trades == 0
+
+    @pytest.mark.asyncio
+    async def test_loads_whale_signal_when_repo_provided(self) -> None:
+        """Pass whale signal to replay adapter when whale_repo is given."""
+        config = DirectionalConfig()
+        meta = AsyncMock()
+        meta.condition_id = "cond_1"
+        meta.title = "BTC Up or Down?"
+        meta.asset = "BTC-USD"
+        meta.up_token_id = "up_tok"
+        meta.down_token_id = "down_tok"
+        meta.window_start_ts = _BASE_TS
+        meta.window_end_ts = _WINDOW_END
+
+        repo = AsyncMock()
+        repo.get_market_metadata_in_range = AsyncMock(return_value=[meta])
+        repo.get_nearest_book_snapshot = AsyncMock(return_value=None)
+
+        whale_repo = AsyncMock()
+        whale_repo.get_whale_signal = AsyncMock(return_value="Up")
+
+        # Provide candles so the window doesn't skip due to no outcome
+        candles = [_make_candle(_BASE_TS, Decimal(100), Decimal(101))]
+
+        result = await run_directional_backtest(
+            config=config,
+            repo=repo,
+            start_ts=_BASE_TS,
+            end_ts=_WINDOW_END,
+            candles_by_asset={"BTC-USD": candles},
+            whale_repo=whale_repo,
+        )
+        whale_repo.get_whale_signal.assert_called_once_with("cond_1")
+        # Window was processed (not skipped due to missing candles)
+        assert result.total_windows == 1

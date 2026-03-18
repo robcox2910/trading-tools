@@ -24,11 +24,13 @@ from trading_tools.apps.polymarket.backtest_common import (
     parse_date,
 )
 from trading_tools.apps.tick_collector.repository import TickRepository
+from trading_tools.apps.whale_monitor.repository import WhaleRepository
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.core.models import Candle, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
 _DEFAULT_DB_URL = os.environ.get("TICK_DB_URL", "sqlite+aiosqlite:///tick_data.db")
+_DEFAULT_WHALE_DB_URL = os.environ.get("WHALE_DB_URL", "")
 
 
 async def fetch_binance_candles(
@@ -96,6 +98,9 @@ def directional_backtest(
     db_url: Annotated[
         str, typer.Option(help="SQLAlchemy async DB URL for tick data")
     ] = _DEFAULT_DB_URL,
+    whale_db_url: Annotated[
+        str, typer.Option(help="DB URL for whale trades (defaults to --db-url)")
+    ] = _DEFAULT_WHALE_DB_URL,
     series_slug: Annotated[
         str | None, typer.Option("--series-slug", help="Filter to a specific series slug")
     ] = None,
@@ -152,8 +157,12 @@ def directional_backtest(
     typer.echo(f"Signal lookback: {signal_lookback}s")
     typer.echo("")
 
+    # Resolve whale DB URL: explicit flag > env var > same as tick DB
+    resolved_whale_url = whale_db_url or db_url
+
     async def _run() -> None:
         repo = TickRepository(db_url)
+        w_repo = WhaleRepository(resolved_whale_url)
         try:
             metadata_list = await repo.get_market_metadata_in_range(
                 start_ts, end_ts, series_slug=series_slug
@@ -175,9 +184,11 @@ def directional_backtest(
                 end_ts=end_ts,
                 candles_by_asset=candles_by_asset,
                 series_slug=series_slug,
+                whale_repo=w_repo,
             )
         finally:
             await repo.close()
+            await w_repo.close()
 
         _display_result(result)
 
