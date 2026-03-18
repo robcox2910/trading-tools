@@ -341,7 +341,7 @@ async def _replay_window(
         if signal is not None:
             replay_md.set_whale_signal(meta.condition_id, signal)
 
-    execution = BacktestExecution(capital=config.capital + acc.total_pnl)
+    execution = BacktestExecution(capital=config.capital)
     estimator = ProbabilityEstimator(config)
 
     engine = DirectionalEngine(
