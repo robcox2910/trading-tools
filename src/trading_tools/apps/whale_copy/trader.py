@@ -40,6 +40,7 @@ from trading_tools.core.models import ONE, ZERO, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
 if TYPE_CHECKING:
+    from trading_tools.apps.spread_capture.repository import SpreadResultRepository
     from trading_tools.apps.whale_copy.signal import WhaleSignalClient
     from trading_tools.clients.polymarket.client import PolymarketClient
 
@@ -95,7 +96,7 @@ class WhaleCopyTrader:
     _redeemer: PositionRedeemer | None = field(default=None, init=False, repr=False)
     _executor: OrderExecutor | None = field(default=None, init=False, repr=False)
     _balance_manager: BalanceManager | None = field(default=None, init=False, repr=False)
-    _repo: object | None = field(default=None, init=False, repr=False)
+    _repo: SpreadResultRepository | None = field(default=None, init=False, repr=False)
     _consecutive_losses: int = field(default=0, init=False, repr=False)
     _circuit_breaker_until: int = field(default=0, init=False, repr=False)
     _session_start_capital: Decimal = field(default=ZERO, init=False, repr=False)
@@ -174,7 +175,7 @@ class WhaleCopyTrader:
             if self._binance is not None:  # pyright: ignore[reportUnnecessaryComparison]
                 await self._binance.close()
 
-    def set_repo(self, repo: object) -> None:
+    def set_repo(self, repo: SpreadResultRepository) -> None:
         """Attach a database repository for persisting settled trade results.
 
         Args:
@@ -726,13 +727,8 @@ class WhaleCopyTrader:
         if self._repo is None:
             return
         try:
-            from trading_tools.apps.spread_capture.repository import (
-                SpreadResultRepository,
-            )
-
-            if isinstance(self._repo, SpreadResultRepository):
-                record = SpreadResultRecord.from_spread_result(result)
-                await self._repo.save_result(record)
+            record = SpreadResultRecord.from_spread_result(result)
+            await self._repo.save_result(record)
         except (OSError, ValueError, KeyError):
             logger.exception(
                 "Failed to persist result for %s",

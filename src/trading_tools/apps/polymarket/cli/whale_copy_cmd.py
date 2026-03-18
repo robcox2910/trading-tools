@@ -21,6 +21,7 @@ from trading_tools.apps.polymarket.cli._helpers import (
     parse_series_slugs,
     require_whale_db_url,
 )
+from trading_tools.apps.spread_capture.repository import SpreadResultRepository
 from trading_tools.apps.whale_copy.config import WhaleCopyConfig
 from trading_tools.apps.whale_copy.signal import WhaleSignalClient
 from trading_tools.apps.whale_copy.trader import WhaleCopyTrader
@@ -124,13 +125,9 @@ async def _run_trader(config: WhaleCopyConfig, *, live: bool) -> None:
     signal_client = WhaleSignalClient(whale_addresses=whale_addresses)
     client = build_authenticated_client()
 
-    repo = None
+    repo: SpreadResultRepository | None = None
     db_url = os.environ.get("SPREAD_DB_URL", "") or os.environ.get("WHALE_DB_URL", "")
     if db_url:
-        from trading_tools.apps.spread_capture.repository import (
-            SpreadResultRepository,
-        )
-
         repo = SpreadResultRepository(db_url)
         await repo.init_db()
         _logger.info("Result persistence enabled")
