@@ -81,19 +81,19 @@ def _build_grid(
     param_grid: dict[str, list[object]] = {}
     w_whale_list = _parse_decimal_list(w_whale_vals)
     if len(w_whale_list) > 1:
-        param_grid["w_whale"] = w_whale_list  # type: ignore[assignment]
+        param_grid["w_whale"] = list(w_whale_list)
 
     w_mom_list = _parse_decimal_list(w_momentum_vals)
     if len(w_mom_list) > 1:
-        param_grid["w_momentum"] = w_mom_list  # type: ignore[assignment]
+        param_grid["w_momentum"] = list(w_mom_list)
 
     min_edge_list = _parse_decimal_list(min_edge_vals)
     if len(min_edge_list) > 1:
-        param_grid["min_edge"] = min_edge_list  # type: ignore[assignment]
+        param_grid["min_edge"] = list(min_edge_list)
 
     entry_start_list = _parse_int_list(entry_start_vals)
     if len(entry_start_list) > 1:
-        param_grid["entry_window_start"] = entry_start_list  # type: ignore[assignment]
+        param_grid["entry_window_start"] = list(entry_start_list)
 
     base_config = DirectionalConfig(
         capital=Decimal(str(capital)),
@@ -130,7 +130,7 @@ def directional_grid(
     ] = "60,120,180",
     signal_lookback: Annotated[int, typer.Option(help="Seconds of Binance candle lookback")] = 1200,
     top_n: Annotated[int, typer.Option(help="Show top N results")] = 20,
-    verbose: Annotated[  # noqa: FBT002
+    verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable per-window logging")
     ] = False,
 ) -> None:

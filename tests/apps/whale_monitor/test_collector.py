@@ -313,7 +313,7 @@ class TestPollWhale:
 
         count = await monitor._poll_whale(mock_client, _ADDRESS)
 
-        assert count == 3  # noqa: PLR2004
+        assert count == 3
         assert mock_client.get.await_count == _POLL_COUNT_2
 
 
@@ -359,7 +359,7 @@ class TestWhaleMonitorEndToEnd:
         mock_response.json.return_value = [make_raw_trade()]
         mock_response.raise_for_status = MagicMock()
 
-        async def mock_sleep(delay: float) -> None:  # noqa: ARG001
+        async def mock_sleep(delay: float) -> None:
             # Request shutdown on every sleep call to ensure the loop exits
             monitor._shutdown.request()
 
@@ -396,7 +396,7 @@ class TestWhaleMonitorEndToEnd:
 
         call_count = 0
 
-        async def fast_sleep(delay: float) -> None:  # noqa: ARG001
+        async def fast_sleep(delay: float) -> None:
             nonlocal call_count
             call_count += 1
             if call_count > 1:

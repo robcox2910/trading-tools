@@ -392,9 +392,9 @@ class TestPolymarketClient:
         async def mock_events(
             *,
             slug: str = "",
-            title_contains: str = "",  # noqa: ARG001
-            active: bool = True,  # noqa: ARG001
-            limit: int = 5,  # noqa: ARG001
+            title_contains: str = "",
+            active: bool = True,
+            limit: int = 5,
         ) -> list[dict[str, Any]]:
             # Slugs will have epoch suffix due to -5m pattern
             if slug.startswith("btc-updown-5m-"):

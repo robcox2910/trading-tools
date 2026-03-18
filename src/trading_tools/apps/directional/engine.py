@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from trading_tools.apps.spread_capture.fees import compute_poly_fee
 from trading_tools.core.models import ONE, ZERO
@@ -337,7 +337,7 @@ class DirectionalEngine:
                 self._record_loss(now)
 
             if self.config.compound_profits and hasattr(self.execution, "add_capital"):
-                self.execution.add_capital(pos.cost_basis + pnl)  # type: ignore[union-attr]
+                cast("Any", self.execution).add_capital(pos.cost_basis + pnl)
 
             available = self.execution.get_capital()
             self._high_water_mark = max(self._high_water_mark, available)

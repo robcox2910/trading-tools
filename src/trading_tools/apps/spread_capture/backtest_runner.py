@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from trading_tools.apps.spread_capture.adapters import (
     BacktestExecution,
@@ -20,6 +20,7 @@ from trading_tools.apps.spread_capture.adapters import (
 )
 from trading_tools.apps.spread_capture.engine import SpreadEngine
 from trading_tools.apps.spread_capture.models import SpreadOpportunity
+from trading_tools.apps.spread_capture.ports import ExecutionPort, MarketDataPort
 from trading_tools.core.models import ZERO
 
 if TYPE_CHECKING:
@@ -233,11 +234,14 @@ async def run_spread_backtest(
 
         engine = SpreadEngine(
             config=config,
-            execution=BacktestExecution(  # type: ignore[arg-type]
-                capital=config.capital + total_pnl,
-                slippage_pct=config.paper_slippage_pct,
+            execution=cast(
+                ExecutionPort,
+                BacktestExecution(
+                    capital=config.capital + total_pnl,
+                    slippage_pct=config.paper_slippage_pct,
+                ),
             ),
-            market_data=replay_md,  # type: ignore[arg-type]
+            market_data=cast(MarketDataPort, replay_md),
             mode_label="BACKTEST",
         )
         engine.init_capital()

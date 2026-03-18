@@ -11,7 +11,7 @@ import logging
 import os
 import time
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -38,6 +38,9 @@ _TWO = Decimal(2)
 _USDC_DECIMALS = Decimal("1e6")
 _CLOB_TIMEOUT = 30.0
 """Timeout in seconds for CLOB adapter calls via ``asyncio.to_thread``."""
+
+_POLYMARKET_EVENT_PREFIX = "https://polymarket.com/event/"
+_MIN_CONDITION_ID_LEN = 10
 
 
 async def _to_thread_with_timeout(func: Any, *args: Any, timeout: float = _CLOB_TIMEOUT) -> Any:
@@ -123,6 +126,16 @@ class PolymarketClient:
             limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
         )
         self._clob_lock = asyncio.Lock()
+
+    @property
+    def gamma(self) -> GammaClient:
+        """Return the Gamma metadata API client.
+
+        Returns:
+            The underlying ``GammaClient`` instance.
+
+        """
+        return self._gamma
 
     @staticmethod
     def _check_data_response(response: httpx.Response, context: str) -> None:
@@ -422,11 +435,11 @@ class PolymarketClient:
             rows: list[dict[str, object]] = response.json()
             profiles.extend(
                 TraderProfile(
-                    rank=int(r.get("rank") or 0),  # type: ignore[arg-type]
+                    rank=int(str(r.get("rank") or 0)),
                     proxy_wallet=str(r["proxyWallet"]).lower(),
                     name=str(r.get("userName") or ""),
-                    pnl=float(r.get("pnl") or 0),  # type: ignore[arg-type]
-                    volume=float(r.get("vol") or 0),  # type: ignore[arg-type]
+                    pnl=float(str(r.get("pnl") or 0)),
+                    volume=float(str(r.get("vol") or 0)),
                 )
                 for r in rows
                 if r.get("proxyWallet")
@@ -542,9 +555,6 @@ class PolymarketClient:
                 API returns an error.
 
         """
-        _POLYMARKET_EVENT_PREFIX = "https://polymarket.com/event/"  # noqa: N806
-        _MIN_CONDITION_ID_LEN = 10  # noqa: N806
-
         stripped = market.strip()
         if stripped.startswith(_POLYMARKET_EVENT_PREFIX):
             stripped = stripped[len(_POLYMARKET_EVENT_PREFIX) :].rstrip("/")
@@ -1070,11 +1080,11 @@ def _parse_json_or_list(raw: Any) -> list[str]:
     """
     if isinstance(raw, str):
         try:
-            return json.loads(raw)  # type: ignore[no-any-return]
+            return cast("list[str]", json.loads(raw))
         except (json.JSONDecodeError, TypeError):
             return []
     if isinstance(raw, list):
-        return [str(item) for item in raw]  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
+        return [str(item) for item in cast("list[object]", raw)]
     return []
 
 

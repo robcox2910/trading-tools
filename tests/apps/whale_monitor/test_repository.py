@@ -108,7 +108,7 @@ class TestWhaleRepository:
         await repo.add_whale(_ADDRESS_B, _LABEL_B)
 
         whales = await repo.get_active_whales()
-        assert len(whales) == 2  # noqa: PLR2004
+        assert len(whales) == 2
 
     @pytest.mark.asyncio
     async def test_save_and_count(self, repo: WhaleRepository) -> None:
@@ -158,7 +158,7 @@ class TestWhaleRepository:
         await repo.save_trades(trades)
 
         result = await repo.get_trades(_ADDRESS_A, start_ts=0, end_ts=_BASE_TS + 1000)
-        assert len(result) == 2  # noqa: PLR2004
+        assert len(result) == 2
         assert all(t.whale_address == _ADDRESS_A for t in result)
 
     @pytest.mark.asyncio
@@ -202,7 +202,7 @@ class TestWhaleRepository:
 
         count_a = await repo.get_trade_count(_ADDRESS_A)
         count_b = await repo.get_trade_count(_ADDRESS_B)
-        assert count_a == 2  # noqa: PLR2004
+        assert count_a == 2
         assert count_b == 1
 
     @pytest.mark.asyncio

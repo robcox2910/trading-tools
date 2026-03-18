@@ -45,7 +45,7 @@ def bot_live(
     max_loss_pct: Annotated[
         float, typer.Option(help="Max drawdown fraction before auto-stop (0-1)")
     ] = 0.10,
-    market_orders: Annotated[  # noqa: FBT002
+    market_orders: Annotated[
         bool, typer.Option("--market-orders/--limit-orders", help="Use FOK market or GTC limit")
     ] = True,
     period: Annotated[int, typer.Option(help="Rolling window period (mean reversion)")] = 20,
@@ -61,17 +61,17 @@ def bot_live(
     snipe_window: Annotated[
         int, typer.Option(help="Seconds before market end to start sniping")
     ] = 60,
-    confirm_live: Annotated[  # noqa: FBT002
+    confirm_live: Annotated[
         bool, typer.Option("--confirm-live", help="Required flag to enable live trading")
     ] = False,
-    auto_redeem: Annotated[  # noqa: FBT002
+    auto_redeem: Annotated[
         bool,
         typer.Option(
             "--auto-redeem/--no-auto-redeem",
             help="Redeem winning tokens on-chain via CTF contract on rotation",
         ),
     ] = True,
-    verbose: Annotated[  # noqa: FBT002
+    verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable tick-by-tick logging")
     ] = False,
 ) -> None:

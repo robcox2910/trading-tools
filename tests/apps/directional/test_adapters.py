@@ -139,7 +139,7 @@ class TestReplayMarketData:
         adapter.set_candles("BTC-USD", [c1, c2, c3])
         result = await adapter.get_binance_candles("BTC-USD", 150, 250)
         assert len(result) == 1
-        assert result[0].timestamp == 200  # noqa: PLR2004
+        assert result[0].timestamp == 200
 
     @pytest.mark.asyncio
     async def test_resolve_outcome(self) -> None:

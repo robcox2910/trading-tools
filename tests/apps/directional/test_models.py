@@ -1,6 +1,7 @@
 """Tests for directional trading data models."""
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -23,9 +24,9 @@ _SETTLED_AT = 1_710_000_300
 _PNL = Decimal("7.00")
 
 
-def _make_opportunity(**overrides: object) -> MarketOpportunity:
+def _make_opportunity(**overrides: Any) -> MarketOpportunity:
     """Create a MarketOpportunity with sensible defaults."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "condition_id": "cond_btc_001",
         "title": "Bitcoin Up or Down?",
         "asset": "BTC-USD",
@@ -37,12 +38,12 @@ def _make_opportunity(**overrides: object) -> MarketOpportunity:
         "down_price": _DOWN_PRICE,
     }
     defaults.update(overrides)
-    return MarketOpportunity(**defaults)  # type: ignore[arg-type]
+    return MarketOpportunity(**defaults)
 
 
-def _make_features(**overrides: object) -> FeatureVector:
+def _make_features(**overrides: Any) -> FeatureVector:
     """Create a FeatureVector with sensible defaults."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "momentum": Decimal("0.30"),
         "volatility_regime": Decimal("-0.10"),
         "volume_profile": Decimal("0.20"),
@@ -51,7 +52,7 @@ def _make_features(**overrides: object) -> FeatureVector:
         "price_change_pct": Decimal("0.25"),
     }
     defaults.update(overrides)
-    return FeatureVector(**defaults)  # type: ignore[arg-type]
+    return FeatureVector(**defaults)
 
 
 class TestMarketOpportunity:

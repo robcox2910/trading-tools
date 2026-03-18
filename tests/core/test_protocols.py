@@ -13,10 +13,10 @@ class FakeProvider:
 
     async def get_candles(
         self,
-        symbol: str,  # noqa: ARG002
-        interval: Interval,  # noqa: ARG002
-        start_ts: int,  # noqa: ARG002
-        end_ts: int,  # noqa: ARG002
+        symbol: str,
+        interval: Interval,
+        start_ts: int,
+        end_ts: int,
     ) -> list[Candle]:
         """Return empty candle list."""
         return []
@@ -30,7 +30,7 @@ class FakeStrategy:
         """Return strategy name."""
         return "fake"
 
-    def on_candle(self, candle: Candle, history: list[Candle]) -> Signal | None:  # noqa: ARG002
+    def on_candle(self, candle: Candle, history: list[Candle]) -> Signal | None:
         """Return no signal."""
         return None
 

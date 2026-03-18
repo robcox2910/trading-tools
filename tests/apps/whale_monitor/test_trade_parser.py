@@ -38,8 +38,8 @@ class TestParseWhaleTrade:
         assert result.side == "BUY"
         assert result.asset_id == "token_001"
         assert result.condition_id == "cond_001"
-        assert result.size == 100.5  # noqa: PLR2004
-        assert result.price == 0.65  # noqa: PLR2004
+        assert result.size == 100.5
+        assert result.price == 0.65
         assert result.slug == "will-btc-hit-100k"
         assert result.outcome == "Yes"
         assert result.collected_at == _COLLECTED_AT

@@ -187,7 +187,7 @@ def mock_feed(events: list[dict[str, Any]]) -> MagicMock:
     """
     feed = MagicMock()
 
-    async def mock_stream(asset_ids: list[str]) -> Any:  # noqa: ARG001
+    async def mock_stream(asset_ids: list[str]) -> Any:
         for event in events:
             yield event
 

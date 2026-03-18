@@ -73,7 +73,6 @@ select = [
     "PTH",    # flake8-use-pathlib
     "SIM",    # flake8-simplify
     "TID",    # flake8-tidy-imports
-    "TCH",    # flake8-type-checking
     "S",      # flake8-bandit (security)
     "PERF",   # Perflint (performance)
     "FURB",   # refurb (modernization)
@@ -106,11 +105,16 @@ max-returns = 8
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = [
-    "S101",   # Use of assert
-    "S105",   # Possible hardcoded password assigned to variable
-    "S106",   # Possible hardcoded password assigned to argument
-    "S107",   # Possible hardcoded password assigned to function default
+    "S101",    # Use of assert
+    "S105",    # Possible hardcoded password assigned to variable
+    "S106",    # Possible hardcoded password assigned to argument
+    "S107",    # Possible hardcoded password assigned to function default
+    "PLR2004", # Magic values in test assertions are self-evident
+    "ARG001",  # Unused args in test stubs (fast_sleep, mock_stream, etc.)
+    "ARG002",  # Unused args in protocol test implementations
 ]
+"src/trading_tools/apps/*/cli/*.py" = ["FBT002"]  # Typer requires bool defaults
+"src/trading_tools/apps/backtester/monte_carlo.py" = ["S311"]  # Intentional PRNG
 
 [tool.ruff.format]
 quote-style = "double"
@@ -151,6 +155,7 @@ include = ["src", "tests"]
 exclude = ["src/users"]
 venvPath = "."
 venv = ".venv"
+reportMissingTypeStubs = false
 
 [[tool.pyright.executionEnvironments]]
 root = "tests"

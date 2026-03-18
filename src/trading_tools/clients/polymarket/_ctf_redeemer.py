@@ -11,7 +11,7 @@ signing EOA must be the owner of the proxy wallet.
 """
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from web3 import Web3
 from web3.exceptions import Web3Exception
@@ -95,14 +95,17 @@ def _encode_redeem_calldata(condition_id: str) -> bytes:
             status_code=None,
         ) from exc
 
-    return ctf.encode_abi(  # type: ignore[no-any-return]
-        "redeemPositions",
-        [
-            Web3.to_checksum_address(USDC_E_ADDRESS),
-            _PARENT_COLLECTION_ID,
-            cid_bytes,
-            _INDEX_SETS,
-        ],
+    return cast(
+        bytes,
+        ctf.encode_abi(
+            "redeemPositions",
+            [
+                Web3.to_checksum_address(USDC_E_ADDRESS),
+                _PARENT_COLLECTION_ID,
+                cid_bytes,
+                _INDEX_SETS,
+            ],
+        ),
     )
 
 

@@ -29,9 +29,7 @@ class TestWhaleSignalClient:
         self, whale_addresses: tuple[str, ...], condition_id: str
     ) -> None:
         """Return (None, ZERO) when no whale trades exist."""
-        transport = httpx.MockTransport(
-            lambda request: httpx.Response(200, json=[])  # noqa: ARG005
-        )
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=[]))
         async_client = httpx.AsyncClient(
             transport=transport, base_url="https://data-api.polymarket.com"
         )
@@ -49,9 +47,7 @@ class TestWhaleSignalClient:
             {"side": "BUY", "outcome": "Up", "size": "100", "price": "0.50"},
             {"side": "BUY", "outcome": "Down", "size": "20", "price": "0.50"},
         ]
-        transport = httpx.MockTransport(
-            lambda request: httpx.Response(200, json=trades)  # noqa: ARG005
-        )
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
         async_client = httpx.AsyncClient(
             transport=transport, base_url="https://data-api.polymarket.com"
         )
@@ -71,9 +67,7 @@ class TestWhaleSignalClient:
             {"side": "BUY", "outcome": "Up", "size": "10", "price": "0.40"},
             {"side": "BUY", "outcome": "Down", "size": "100", "price": "0.60"},
         ]
-        transport = httpx.MockTransport(
-            lambda request: httpx.Response(200, json=trades)  # noqa: ARG005
-        )
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
         async_client = httpx.AsyncClient(
             transport=transport, base_url="https://data-api.polymarket.com"
         )
@@ -95,9 +89,7 @@ class TestWhaleSignalClient:
             {"side": "SELL", "outcome": "Up", "size": "1000", "price": "0.50"},
             {"side": "BUY", "outcome": "Down", "size": "10", "price": "0.50"},
         ]
-        transport = httpx.MockTransport(
-            lambda request: httpx.Response(200, json=trades)  # noqa: ARG005
-        )
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
         async_client = httpx.AsyncClient(
             transport=transport, base_url="https://data-api.polymarket.com"
         )
@@ -113,7 +105,7 @@ class TestWhaleSignalClient:
     ) -> None:
         """Return (None, ZERO) when API returns an error."""
         transport = httpx.MockTransport(
-            lambda request: httpx.Response(500, json={"error": "internal"})  # noqa: ARG005
+            lambda _request: httpx.Response(500, json={"error": "internal"})
         )
         async_client = httpx.AsyncClient(
             transport=transport, base_url="https://data-api.polymarket.com"
@@ -128,9 +120,7 @@ class TestWhaleSignalClient:
     @pytest.mark.asyncio
     async def test_close(self, whale_addresses: tuple[str, ...]) -> None:
         """Verify close disposes the httpx client."""
-        transport = httpx.MockTransport(
-            lambda request: httpx.Response(200, json=[])  # noqa: ARG005
-        )
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=[]))
         async_client = httpx.AsyncClient(
             transport=transport, base_url="https://data-api.polymarket.com"
         )
@@ -147,9 +137,7 @@ class TestWhaleSignalClient:
         trades = [
             {"side": "BUY", "outcome": "Up", "size": "50", "price": "0.40"},
         ]
-        transport = httpx.MockTransport(
-            lambda request: httpx.Response(200, json=trades)  # noqa: ARG005
-        )
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
         async_client = httpx.AsyncClient(
             transport=transport, base_url="https://data-api.polymarket.com"
         )
@@ -173,9 +161,7 @@ class TestWhaleSignalClient:
             # Current window trade
             {"side": "BUY", "outcome": "Down", "size": "10", "price": "0.50", "timestamp": 1050},
         ]
-        transport = httpx.MockTransport(
-            lambda request: httpx.Response(200, json=trades)  # noqa: ARG005
-        )
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
         async_client = httpx.AsyncClient(
             transport=transport, base_url="https://data-api.polymarket.com"
         )
@@ -194,9 +180,7 @@ class TestWhaleSignalClient:
         trades = [
             {"side": "BUY", "outcome": "Up", "size": "100", "price": "0.50", "timestamp": 500},
         ]
-        transport = httpx.MockTransport(
-            lambda request: httpx.Response(200, json=trades)  # noqa: ARG005
-        )
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
         async_client = httpx.AsyncClient(
             transport=transport, base_url="https://data-api.polymarket.com"
         )

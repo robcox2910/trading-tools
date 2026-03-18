@@ -110,7 +110,7 @@ def directional_backtest(
     poll_interval: Annotated[
         int, typer.Option(help="Seconds between poll cycles during replay")
     ] = 3,
-    verbose: Annotated[  # noqa: FBT002
+    verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable per-window logging")
     ] = False,
 ) -> None:

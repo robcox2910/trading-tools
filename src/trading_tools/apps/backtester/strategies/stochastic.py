@@ -55,6 +55,8 @@ class StochasticStrategy:
     and starts ticking down (overbought + %K crossing below %D).
     """
 
+    _PERCENT_MAX = 100
+
     def __init__(
         self,
         k_period: int = 14,
@@ -69,7 +71,7 @@ class StochasticStrategy:
         if d_period < 1:
             msg = f"d_period must be >= 1, got {d_period}"
             raise ValueError(msg)
-        if not (0 < oversold < overbought < 100):  # noqa: PLR2004
+        if not (0 < oversold < overbought < self._PERCENT_MAX):
             msg = f"Need 0 < oversold ({oversold}) < overbought ({overbought}) < 100"
             raise ValueError(msg)
         self._k_period = k_period

@@ -50,7 +50,7 @@ class TestAnalyseTrades:
         ]
         analysis = analyse_trades(_ADDRESS, trades)
 
-        assert analysis.buy_count == 2  # noqa: PLR2004
+        assert analysis.buy_count == 2
         assert analysis.sell_count == 1
 
     def test_unique_markets(self) -> None:
@@ -73,7 +73,7 @@ class TestAnalyseTrades:
         ]
         analysis = analyse_trades(_ADDRESS, trades)
 
-        assert analysis.outcome_breakdown["Up"] == 2  # noqa: PLR2004
+        assert analysis.outcome_breakdown["Up"] == 2
         assert analysis.outcome_breakdown["Down"] == 1
 
     def test_top_markets(self) -> None:
@@ -106,7 +106,7 @@ class TestAnalyseTrades:
         ]
         analysis = analyse_trades(_ADDRESS, trades)
 
-        assert analysis.market_breakdown["BTC Up/Down"] == 2  # noqa: PLR2004
+        assert analysis.market_breakdown["BTC Up/Down"] == 2
         assert analysis.market_breakdown["ETH Up/Down"] == 1
 
 

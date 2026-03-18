@@ -1,6 +1,7 @@
 """Tests for MarketScanner spread opportunity discovery."""
 
 from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -62,7 +63,7 @@ def _mock_market(
     )
 
 
-def _make_scanner(**overrides: object) -> MarketScanner:
+def _make_scanner(**overrides: Any) -> MarketScanner:
     """Create a MarketScanner with mock client and sensible defaults."""
     client = AsyncMock()
     client.discover_series_markets = AsyncMock(return_value=[("cond_a", "2025-03-10T23:05:00Z")])
@@ -75,7 +76,7 @@ def _make_scanner(**overrides: object) -> MarketScanner:
         )
 
     client.get_order_book = AsyncMock(side_effect=_get_order_book)
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "client": client,
         "series_slugs": ("btc-updown-5m",),
         "max_combined_cost": _MAX_COMBINED,
@@ -87,7 +88,7 @@ def _make_scanner(**overrides: object) -> MarketScanner:
         "fee_exponent": _DEFAULT_FEE_EXPONENT,
     }
     defaults.update(overrides)
-    return MarketScanner(**defaults)  # type: ignore[arg-type]
+    return MarketScanner(**defaults)
 
 
 @pytest.mark.asyncio
@@ -152,8 +153,8 @@ class TestMarketScanner:
             await scanner.scan(set())
 
         # Verify get_order_book was called for both tokens
-        calls: list[object] = scanner.client.get_order_book.call_args_list  # type: ignore[attr-defined]
-        token_ids: set[str] = {c.args[0] for c in calls}  # type: ignore[union-attr]
+        calls = scanner.client.get_order_book.call_args_list  # type: ignore[attr-defined]
+        token_ids: set[str] = {c.args[0] for c in calls if c is not None}
         assert token_ids == {"up_tok", "down_tok"}
 
     async def test_skips_open_positions(self) -> None:

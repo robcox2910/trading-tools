@@ -55,7 +55,7 @@ def backtest_spread(
         int, typer.Option(help="Seconds between poll cycles during replay")
     ] = 5,
     slippage: Annotated[float, typer.Option(help="Paper slippage percentage (e.g. 0.005)")] = 0.005,
-    verbose: Annotated[  # noqa: FBT002
+    verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable per-window logging")
     ] = False,
 ) -> None:
