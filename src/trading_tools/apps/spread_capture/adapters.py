@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from trading_tools.apps.bot_framework.balance_manager import BalanceManager
     from trading_tools.apps.bot_framework.order_executor import OrderExecutor
     from trading_tools.apps.tick_collector.models import OrderBookSnapshot
+    from trading_tools.apps.whale_monitor.repository import WhaleRepository
     from trading_tools.clients.binance.client import BinanceClient
     from trading_tools.clients.polymarket.client import PolymarketClient
 
@@ -317,6 +318,7 @@ class LiveMarketData:
     client: PolymarketClient
     binance: BinanceClient
     live: bool = False
+    whale_repo: WhaleRepository | None = None
 
     async def get_order_books(
         self,
@@ -400,6 +402,26 @@ class LiveMarketData:
                 logger.debug("Failed to check redeemable positions, falling back to Binance")
 
         return await self._resolve_via_binance(opportunity)
+
+    async def get_whale_signal(self, condition_id: str, since_ts: int) -> str | None:
+        """Query the whale trade DB for a directional signal on this market.
+
+        Args:
+            condition_id: Polymarket market condition identifier.
+            since_ts: Only consider trades after this epoch timestamp.
+
+        Returns:
+            ``"Up"`` or ``"Down"`` if whales have a clear directional
+            bet, ``None`` if no whale repo or no activity.
+
+        """
+        if self.whale_repo is None:
+            return None
+        try:
+            return await self.whale_repo.get_whale_signal(condition_id, since_ts)
+        except Exception:
+            logger.debug("Failed to query whale signal for %s", condition_id[:12])
+            return None
 
     async def _resolve_via_binance(self, opp: SpreadOpportunity) -> str | None:
         """Determine which side won via Binance spot price movement.
@@ -534,6 +556,23 @@ class ReplayMarketData:
 
         """
         return self.outcome
+
+    async def get_whale_signal(
+        self,
+        condition_id: str,  # noqa: ARG002
+        since_ts: int,  # noqa: ARG002
+    ) -> str | None:
+        """Return ``None`` — no whale data available in backtest mode.
+
+        Args:
+            condition_id: Unused in backtest.
+            since_ts: Unused in backtest.
+
+        Returns:
+            Always ``None``.
+
+        """
+        return None
 
     @staticmethod
     def _nearest_book(
