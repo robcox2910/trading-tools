@@ -102,6 +102,9 @@ class DirectionalConfig:
             feature.
         w_rsi: Estimator weight for the RSI signal feature.
         w_price_change: Estimator weight for the price change feature.
+        min_token_price: Minimum token price to buy.  Skip tokens the
+            market has already written off (e.g. $0.06 with 30s left
+            means 94% decided against this side).
 
     """
 
@@ -110,6 +113,7 @@ class DirectionalConfig:
     max_position_pct: Decimal = Decimal("0.15")
     kelly_fraction: Decimal = Decimal("0.5")
     min_edge: Decimal = Decimal("0.05")
+    min_token_price: Decimal = Decimal("0.15")
     entry_window_start: int = 30
     entry_window_end: int = 10
     signal_lookback_seconds: int = 1200

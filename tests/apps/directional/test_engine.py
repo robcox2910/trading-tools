@@ -195,6 +195,18 @@ class TestEvaluateAndEnter:
         assert len(engine.positions) == 0
 
     @pytest.mark.asyncio
+    async def test_no_entry_when_token_price_below_min(self) -> None:
+        """Skip entry when token price is below min_token_price (market decided)."""
+        engine, _, _ = _build_engine(
+            markets=[
+                _make_opportunity("cond_1", up_price=Decimal("0.06"), down_price=Decimal("0.94"))
+            ],
+            config_overrides={"min_token_price": Decimal("0.15")},
+        )
+        await engine.poll_cycle(_ENTRY_TIME)
+        assert len(engine.positions) == 0
+
+    @pytest.mark.asyncio
     async def test_position_has_features(self) -> None:
         """Position stores the feature vector used at entry."""
         engine, _, _ = _build_engine()

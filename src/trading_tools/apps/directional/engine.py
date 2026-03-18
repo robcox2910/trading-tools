@@ -197,6 +197,15 @@ class DirectionalEngine:
             token_id = market.down_token_id
             token_price = market.down_price
 
+        if token_price < self.config.min_token_price:
+            logger.debug(
+                "Skipping %s: token_price %.4f < min %.4f (market already decided)",
+                market.condition_id[:12],
+                token_price,
+                self.config.min_token_price,
+            )
+            return
+
         edge = p_win - token_price
         if edge < self.config.min_edge:
             logger.debug(
