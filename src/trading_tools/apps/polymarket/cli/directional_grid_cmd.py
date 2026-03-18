@@ -25,8 +25,10 @@ from trading_tools.apps.polymarket.backtest_common import (
 )
 from trading_tools.apps.polymarket.cli.directional_backtest_cmd import fetch_binance_candles
 from trading_tools.apps.tick_collector.repository import TickRepository
+from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
 _DEFAULT_DB_URL = os.environ.get("TICK_DB_URL", "sqlite+aiosqlite:///tick_data.db")
+_DEFAULT_WHALE_DB_URL = os.environ.get("WHALE_DB_URL", "")
 
 
 def _parse_decimal_list(value: str) -> list[Decimal]:
@@ -112,6 +114,9 @@ def directional_grid(
     db_url: Annotated[
         str, typer.Option(help="SQLAlchemy async DB URL for tick data")
     ] = _DEFAULT_DB_URL,
+    whale_db_url: Annotated[
+        str, typer.Option(help="DB URL for whale trades (defaults to --db-url)")
+    ] = _DEFAULT_WHALE_DB_URL,
     series_slug: Annotated[
         str | None, typer.Option("--series-slug", help="Filter to a specific series slug")
     ] = None,
@@ -178,8 +183,12 @@ def directional_grid(
         typer.echo(f"  {name}: {vals}")
     typer.echo("")
 
+    # Resolve whale DB URL: explicit flag > env var > same as tick DB
+    resolved_whale_url = whale_db_url or db_url
+
     async def _run() -> None:
         repo = TickRepository(db_url)
+        w_repo = WhaleRepository(resolved_whale_url)
         try:
             # Discover assets and pre-fetch candles
             metadata_list = await repo.get_market_metadata_in_range(
@@ -203,9 +212,11 @@ def directional_grid(
                 param_grid=param_grid,
                 candles_by_asset=candles_by_asset,
                 series_slug=series_slug,
+                whale_repo=w_repo,
             )
         finally:
             await repo.close()
+            await w_repo.close()
 
         typer.echo("")
         typer.echo(format_grid_table(result, top_n=top_n))

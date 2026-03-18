@@ -8,6 +8,8 @@ Track calibration via Brier score alongside standard win/loss metrics.
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
@@ -24,8 +26,9 @@ from .models import MarketOpportunity
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from trading_tools.apps.tick_collector.models import MarketMetadata
+    from trading_tools.apps.tick_collector.models import MarketMetadata, OrderBookSnapshot
     from trading_tools.apps.tick_collector.repository import TickRepository
+    from trading_tools.apps.whale_monitor.repository import WhaleRepository
     from trading_tools.core.models import Candle
 
     from .config import DirectionalConfig
@@ -186,6 +189,33 @@ def _make_default_book(token_id: str) -> OrderBook:
     )
 
 
+def _snapshot_to_order_book(snapshot: OrderBookSnapshot) -> OrderBook:
+    """Convert a database ``OrderBookSnapshot`` to an ``OrderBook``.
+
+    Parse the JSON bid/ask arrays into typed ``OrderLevel`` tuples.
+
+    Args:
+        snapshot: Order book snapshot from the tick collector database.
+
+    Returns:
+        An ``OrderBook`` with parsed levels, spread, and midpoint.
+
+    """
+    bids_raw: list[list[float]] = json.loads(snapshot.bids_json)
+    asks_raw: list[list[float]] = json.loads(snapshot.asks_json)
+
+    bids = tuple(OrderLevel(price=Decimal(str(b[0])), size=Decimal(str(b[1]))) for b in bids_raw)
+    asks = tuple(OrderLevel(price=Decimal(str(a[0])), size=Decimal(str(a[1]))) for a in asks_raw)
+
+    return OrderBook(
+        token_id=snapshot.token_id,
+        bids=bids,
+        asks=asks,
+        spread=Decimal(str(snapshot.spread)),
+        midpoint=Decimal(str(snapshot.midpoint)),
+    )
+
+
 async def run_directional_backtest(
     config: DirectionalConfig,
     repo: TickRepository,
@@ -194,6 +224,7 @@ async def run_directional_backtest(
     *,
     candles_by_asset: dict[str, list[Candle]] | None = None,
     series_slug: str | None = None,
+    whale_repo: WhaleRepository | None = None,
 ) -> DirectionalBacktestResult:
     """Run a directional backtest over a date range.
 
@@ -209,6 +240,8 @@ async def run_directional_backtest(
         candles_by_asset: Pre-loaded Binance candles keyed by asset.
             When ``None``, no candles are available and windows are skipped.
         series_slug: Filter metadata to a specific series slug.
+        whale_repo: Whale trade repository for directional signals.
+            When ``None``, whale signals are omitted (weight is dead).
 
     Returns:
         Aggregate backtest result with performance and calibration metrics.
@@ -228,19 +261,24 @@ async def run_directional_backtest(
     acc = _CalibrationAccumulator()
 
     for meta in metadata_list:
-        await _replay_window(config, repo, meta, candles, acc)
+        await _replay_window(config, repo, meta, candles, acc, whale_repo=whale_repo)
 
     return _build_result(config.capital, len(metadata_list), acc)
 
 
 async def _replay_window(
     config: DirectionalConfig,
-    _repo: TickRepository,
+    repo: TickRepository,
     meta: MarketMetadata,
     candles: dict[str, list[Candle]],
     acc: _CalibrationAccumulator,
+    *,
+    whale_repo: WhaleRepository | None = None,
 ) -> None:
     """Replay a single market window through the engine.
+
+    Load real order book snapshots and whale signals from the database
+    when available, falling back to defaults when data is missing.
 
     Args:
         config: Algorithm configuration.
@@ -248,6 +286,7 @@ async def _replay_window(
         meta: Market metadata for this window.
         candles: Pre-loaded candles keyed by asset.
         acc: Accumulator for metrics.
+        whale_repo: Whale repository for directional signals.
 
     """
     opp = _metadata_to_opportunity(meta)
@@ -262,15 +301,45 @@ async def _replay_window(
         acc.skipped += 1
         return
 
+    # Load real order book snapshots near entry evaluation time
+    entry_eval_ts = meta.window_end_ts - config.entry_window_start
+    entry_eval_ms = entry_eval_ts * _MS_PER_SECOND
+
+    up_snapshot = await repo.get_nearest_book_snapshot(
+        meta.up_token_id, entry_eval_ms, tolerance_ms=30_000
+    )
+    down_snapshot = await repo.get_nearest_book_snapshot(
+        meta.down_token_id, entry_eval_ms, tolerance_ms=30_000
+    )
+
+    up_book = (
+        _snapshot_to_order_book(up_snapshot)
+        if up_snapshot
+        else _make_default_book(meta.up_token_id)
+    )
+    down_book = (
+        _snapshot_to_order_book(down_snapshot)
+        if down_snapshot
+        else _make_default_book(meta.down_token_id)
+    )
+
+    # Update market prices from real order book data
+    if up_snapshot or down_snapshot:
+        up_price = up_book.asks[0].price if up_book.asks else up_book.midpoint
+        down_price = down_book.asks[0].price if down_book.asks else down_book.midpoint
+        opp = dataclasses.replace(opp, up_price=up_price, down_price=down_price)
+
     replay_md = ReplayMarketData()
     replay_md.set_markets([opp])
     replay_md.set_candles(meta.asset, asset_candles)
     replay_md.set_outcome(meta.condition_id, outcome)
-
-    # Set default order books (real snapshots used in future enhancement)
-    up_book = _make_default_book(meta.up_token_id)
-    down_book = _make_default_book(meta.down_token_id)
     replay_md.set_order_books(meta.condition_id, up_book, down_book)
+
+    # Load whale signal if repository is available
+    if whale_repo is not None:
+        signal = await whale_repo.get_whale_signal(meta.condition_id)
+        if signal is not None:
+            replay_md.set_whale_signal(meta.condition_id, signal)
 
     execution = BacktestExecution(capital=config.capital + acc.total_pnl)
     estimator = ProbabilityEstimator(config)

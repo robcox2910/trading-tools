@@ -519,6 +519,7 @@ trading-tools-polymarket directional-backtest \
 | `--signal-lookback` | `300` | Binance candle lookback seconds |
 | `--series-slug` | — | Filter to a specific series slug |
 | `--db-url` | `$TICK_DB_URL` | Database URL for tick data |
+| `--whale-db-url` | `$WHALE_DB_URL` | DB URL for whale trades (defaults to `--db-url`) |
 | `-v` / `--verbose` | `False` | Enable per-window logging |
 
 Output includes standard metrics (P&L, win rate, avg P&L) plus calibration metrics:
