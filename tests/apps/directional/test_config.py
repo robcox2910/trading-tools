@@ -66,6 +66,7 @@ class TestDefaults:
             + config.w_book_imbalance
             + config.w_rsi
             + config.w_price_change
+            + config.w_whale
         )
         assert total == Decimal(1)
 

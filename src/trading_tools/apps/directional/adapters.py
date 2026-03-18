@@ -180,6 +180,7 @@ class ReplayMarketData:
         self._order_books: dict[str, tuple[OrderBook, OrderBook]] = {}
         self._candles: dict[str, list[Candle]] = {}
         self._outcomes: dict[str, str] = {}
+        self._whale_signals: dict[str, str] = {}
 
     def set_markets(self, markets: list[MarketOpportunity]) -> None:
         """Register markets to return from ``get_active_markets``.
@@ -225,6 +226,16 @@ class ReplayMarketData:
 
         """
         self._outcomes[condition_id] = outcome
+
+    def set_whale_signal(self, condition_id: str, direction: str) -> None:
+        """Register a whale directional signal for a market.
+
+        Args:
+            condition_id: Market condition ID.
+            direction: ``"Up"`` or ``"Down"``.
+
+        """
+        self._whale_signals[condition_id] = direction
 
     async def get_active_markets(
         self,
@@ -284,6 +295,21 @@ class ReplayMarketData:
         """
         all_candles = self._candles.get(asset, [])
         return [c for c in all_candles if start_ts <= c.timestamp <= end_ts]
+
+    async def get_whale_signal(
+        self,
+        condition_id: str,
+    ) -> str | None:
+        """Return pre-loaded whale signal for a market.
+
+        Args:
+            condition_id: Market condition ID.
+
+        Returns:
+            ``"Up"`` or ``"Down"`` if registered, ``None`` otherwise.
+
+        """
+        return self._whale_signals.get(condition_id)
 
     async def resolve_outcome(
         self,

@@ -63,6 +63,7 @@ class ProbabilityEstimator:
             ("book_imbalance", config.w_book_imbalance),
             ("rsi_signal", config.w_rsi),
             ("price_change_pct", config.w_price_change),
+            ("whale_signal", config.w_whale),
         )
 
     def estimate(self, features: FeatureVector) -> Decimal:

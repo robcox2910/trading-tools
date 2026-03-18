@@ -182,7 +182,9 @@ class DirectionalEngine:
             market.up_token_id, market.down_token_id
         )
 
-        features = extract_features(candles, up_book, down_book)
+        whale_direction = await self.market_data.get_whale_signal(market.condition_id)
+
+        features = extract_features(candles, up_book, down_book, whale_direction=whale_direction)
         p_up = self.estimator.estimate(features)
 
         # Determine predicted side and the relevant token/price

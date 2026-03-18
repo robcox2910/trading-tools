@@ -226,6 +226,27 @@ def compute_price_change(candles: Sequence[Candle]) -> Decimal:
     return _clamp(scaled)
 
 
+def compute_whale_signal(whale_direction: str | None) -> Decimal:
+    """Convert a whale directional signal to a normalised feature value.
+
+    Map the whale's net positioning (from the whale_trades DB) to a
+    ``[-1, 1]`` signal.  ``"Up"`` maps to ``1``, ``"Down"`` maps to
+    ``-1``, and ``None`` (no whale activity) maps to ``0``.
+
+    Args:
+        whale_direction: ``"Up"``, ``"Down"``, or ``None``.
+
+    Returns:
+        Whale signal in ``[-1, 1]``.
+
+    """
+    if whale_direction == "Up":
+        return ONE
+    if whale_direction == "Down":
+        return -ONE
+    return ZERO
+
+
 def extract_features(
     candles: Sequence[Candle],
     up_book: OrderBook,
@@ -234,6 +255,7 @@ def extract_features(
     atr_period: int = 14,
     rsi_period: int = 14,
     volume_recent_bars: int = 5,
+    whale_direction: str | None = None,
 ) -> FeatureVector:
     """Extract all features from market data and return a ``FeatureVector``.
 
@@ -248,9 +270,11 @@ def extract_features(
         atr_period: Period for ATR in volatility regime computation.
         rsi_period: Period for RSI computation.
         volume_recent_bars: Recent bars for volume profile.
+        whale_direction: Whale net positioning (``"Up"``, ``"Down"``,
+            or ``None``).
 
     Returns:
-        A ``FeatureVector`` with all six features populated.
+        A ``FeatureVector`` with all seven features populated.
 
     """
     return FeatureVector(
@@ -260,4 +284,5 @@ def extract_features(
         book_imbalance=compute_book_imbalance(up_book, down_book),
         rsi_signal=compute_rsi_signal(candles, period=rsi_period),
         price_change_pct=compute_price_change(candles),
+        whale_signal=compute_whale_signal(whale_direction),
     )
