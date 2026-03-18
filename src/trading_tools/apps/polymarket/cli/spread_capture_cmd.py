@@ -309,7 +309,7 @@ def spread_capture(
     async def _run() -> None:
         client = build_authenticated_client()
         repo: SpreadResultRepository | None = None
-        whale_repo: WhaleRepository | None = None
+        whale_addresses: tuple[str, ...] = ()
 
         # Persist results when SPREAD_DB_URL or WHALE_DB_URL is configured
         db_url = os.environ.get("SPREAD_DB_URL", "") or os.environ.get("WHALE_DB_URL", "")
@@ -317,15 +317,23 @@ def spread_capture(
             repo = SpreadResultRepository(db_url)
             await repo.init_db()
             _logger.info("Spread result persistence enabled")
+
+            # Load whale addresses for real-time copy-trading signal
             whale_repo = WhaleRepository(db_url)
-            _logger.info("Whale copy-trading signal enabled")
+            whales = await whale_repo.get_active_whales()
+            whale_addresses = tuple(w.address for w in whales)
+            await whale_repo.close()
+            if whale_addresses:
+                _logger.info(
+                    "Whale copy-trading signal enabled for %d whales", len(whale_addresses)
+                )
 
         if config.strategy == "accumulate":
             trader: SpreadTrader | AccumulatingTrader = AccumulatingTrader(
                 config=config,
                 live=confirm_live,
                 client=client,
-                whale_repo=whale_repo,
+                whale_addresses=whale_addresses,
             )
         else:
             trader = SpreadTrader(

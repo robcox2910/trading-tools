@@ -160,16 +160,15 @@ class WhaleRepository:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def get_whale_signal(self, condition_id: str, since_ts: int) -> str | None:
+    async def get_whale_signal(self, condition_id: str) -> str | None:
         """Return the whale's directional bet for a market.
 
-        Query BUY trades for the given condition_id since ``since_ts``,
-        group by outcome, and return the outcome with the larger total
-        dollar volume (size * price).
+        Query ALL BUY trades for the given condition_id (each condition_id
+        is unique to one market window), group by outcome, and return the
+        outcome with the larger total dollar volume (size * price).
 
         Args:
             condition_id: Polymarket market condition identifier.
-            since_ts: Only consider trades after this epoch timestamp.
 
         Returns:
             ``"Up"`` or ``"Down"`` if a whale has a clear directional
@@ -184,7 +183,6 @@ class WhaleRepository:
             .where(
                 WhaleTrade.condition_id == condition_id,
                 WhaleTrade.side == "BUY",
-                WhaleTrade.timestamp >= since_ts,
             )
             .group_by(WhaleTrade.outcome)
             .order_by(func.sum(WhaleTrade.size * WhaleTrade.price).desc())
