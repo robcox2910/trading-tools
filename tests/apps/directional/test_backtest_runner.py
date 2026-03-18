@@ -239,6 +239,7 @@ class TestRunDirectionalBacktest:
             candles_by_asset={"BTC-USD": candles},
             whale_repo=whale_repo,
         )
-        whale_repo.get_whale_signal.assert_called_once_with("cond_1")
+        entry_eval_ts = _WINDOW_END - config.entry_window_start
+        whale_repo.get_whale_signal.assert_called_once_with("cond_1", before_ts=entry_eval_ts)
         # Window was processed (not skipped due to missing candles)
         assert result.total_windows == 1
