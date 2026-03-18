@@ -160,3 +160,49 @@ class TestWhaleSignalClient:
         assert side == "Up"
         # Two whales each return 50*0.4=20, total=40, down=0 → conviction = total volume
         assert conviction == Decimal(40)
+
+    @pytest.mark.asyncio
+    async def test_window_start_filters_old_trades(
+        self, whale_addresses: tuple[str, ...], condition_id: str
+    ) -> None:
+        """Ignore trades with timestamps before window_start_ts."""
+        _window_start = 1000
+        trades = [
+            # Old trade before window — should be ignored
+            {"side": "BUY", "outcome": "Up", "size": "500", "price": "0.50", "timestamp": 900},
+            # Current window trade
+            {"side": "BUY", "outcome": "Down", "size": "10", "price": "0.50", "timestamp": 1050},
+        ]
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json=trades)  # noqa: ARG005
+        )
+        async_client = httpx.AsyncClient(
+            transport=transport, base_url="https://data-api.polymarket.com"
+        )
+        client = WhaleSignalClient(whale_addresses=whale_addresses, _client=async_client)
+
+        side, _conviction = await client.get_direction(condition_id, window_start_ts=_window_start)
+
+        # Only the Down trade at ts=1050 should count; Up trade at ts=900 filtered out
+        assert side == "Down"
+
+    @pytest.mark.asyncio
+    async def test_no_trades_in_window(
+        self, whale_addresses: tuple[str, ...], condition_id: str
+    ) -> None:
+        """Return (None, ZERO) when all trades are before window start."""
+        trades = [
+            {"side": "BUY", "outcome": "Up", "size": "100", "price": "0.50", "timestamp": 500},
+        ]
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json=trades)  # noqa: ARG005
+        )
+        async_client = httpx.AsyncClient(
+            transport=transport, base_url="https://data-api.polymarket.com"
+        )
+        client = WhaleSignalClient(whale_addresses=whale_addresses, _client=async_client)
+
+        side, conviction = await client.get_direction(condition_id, window_start_ts=1000)
+
+        assert side is None
+        assert conviction == ZERO

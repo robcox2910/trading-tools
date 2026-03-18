@@ -284,8 +284,10 @@ class WhaleCopyTrader:
             if pos.total_cost_basis >= pos.budget:
                 continue
 
-            # Query whale direction
-            favoured_side, conviction = await self.signal_client.get_direction(opp.condition_id)
+            # Query whale direction — only trades within this window
+            favoured_side, conviction = await self.signal_client.get_direction(
+                opp.condition_id, window_start_ts=opp.window_start_ts
+            )
 
             if favoured_side is None:
                 logger.debug("No whale activity on %s", cid[:12])
