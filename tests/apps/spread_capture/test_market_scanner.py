@@ -1,7 +1,7 @@
 """Tests for MarketScanner spread opportunity discovery."""
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -153,8 +153,9 @@ class TestMarketScanner:
             await scanner.scan(set())
 
         # Verify get_order_book was called for both tokens
-        calls = scanner.client.get_order_book.call_args_list  # type: ignore[attr-defined]
-        token_ids: set[str] = {c.args[0] for c in calls if c is not None}
+        raw_calls = scanner.client.get_order_book.call_args_list  # type: ignore[attr-defined]
+        calls = cast("list[tuple[tuple[str], dict[str, object]]]", raw_calls)
+        token_ids: set[str] = {c[0][0] for c in calls}
         assert token_ids == {"up_tok", "down_tok"}
 
     async def test_skips_open_positions(self) -> None:
