@@ -3,13 +3,19 @@
 Query the Polymarket Data API for whale BUY trades on a given market
 and compute the net directional signal (which side has more dollar
 volume) with a conviction ratio.
+
+Fetch each whale's recent trades **once per refresh** and cache them
+so that multiple ``get_direction`` calls within the same poll cycle
+reuse the same data instead of hitting the API N times per position.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Any
 
 import httpx
 
@@ -19,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 _DATA_API_BASE = "https://data-api.polymarket.com"
 _TRADE_LIMIT = 100
+_CACHE_TTL_SECONDS = 4
 
 
 def _default_client() -> httpx.AsyncClient:
@@ -26,14 +33,19 @@ def _default_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=_DATA_API_BASE, timeout=10.0)
 
 
+def _empty_cache() -> dict[str, list[dict[str, Any]]]:
+    """Return an empty trade cache for dataclass default_factory."""
+    return {}
+
+
 @dataclass
 class WhaleSignalClient:
     """Query whale trade activity to determine directional consensus.
 
-    Aggregate BUY dollar volume (size * price) by outcome across all
-    tracked whale addresses for a given market condition.  Return the
-    favoured side and the conviction ratio (dollar volume on favoured
-    side divided by the other side).
+    Fetch each whale's recent trades once per poll cycle (cached for
+    ``_CACHE_TTL_SECONDS``), then filter client-side by condition ID and
+    window timestamp.  This avoids redundant API calls when the trader
+    queries multiple positions in the same cycle.
 
     Attributes:
         whale_addresses: Tuple of tracked whale wallet addresses.
@@ -42,38 +54,23 @@ class WhaleSignalClient:
 
     whale_addresses: tuple[str, ...]
     _client: httpx.AsyncClient = field(default_factory=_default_client, repr=False)
+    _trade_cache: dict[str, list[dict[str, Any]]] = field(default_factory=_empty_cache, repr=False)
+    _cache_time: float = field(default=0.0, repr=False)
 
-    async def get_direction(
-        self, condition_id: str, window_start_ts: int = 0
-    ) -> tuple[str | None, Decimal]:
-        """Query whale BUY trades on a market and return the favoured direction.
+    async def refresh(self) -> None:
+        """Fetch recent trades for all whale addresses and cache them.
 
-        Fetch recent trades for each tracked whale address, filter to
-        BUY trades matching the condition ID that occurred within the
-        current market window, and aggregate dollar volume by outcome.
-
-        Args:
-            condition_id: Polymarket market condition identifier.
-            window_start_ts: Only count trades at or after this epoch
-                second.  Pass the market's ``window_start_ts`` to
-                ignore historical trades from previous windows on the
-                same condition ID.  Defaults to 0 (no filtering).
-
-        Returns:
-            Tuple of ``(favoured_side, conviction_ratio)``.
-            ``favoured_side`` is ``"Up"`` or ``"Down"`` based on which
-            outcome has higher dollar volume.  ``conviction_ratio`` is
-            the ratio of dollar volume on the favoured side to the other.
-            Returns ``(None, ZERO)`` if no whale trades found.
-
+        Call once per poll cycle before any ``get_direction`` calls.
+        Subsequent ``get_direction`` calls will use the cached data
+        until ``_CACHE_TTL_SECONDS`` elapses.
         """
-        up_volume = ZERO
-        down_volume = ZERO
+        now = time.monotonic()
+        if now - self._cache_time < _CACHE_TTL_SECONDS and self._trade_cache:
+            return
 
+        self._trade_cache.clear()
         for address in self.whale_addresses:
             try:
-                # The Data API ignores conditionId when user is set,
-                # so fetch recent trades and filter client-side.
                 resp = await self._client.get(
                     "/trades",
                     params={
@@ -82,11 +79,37 @@ class WhaleSignalClient:
                     },
                 )
                 resp.raise_for_status()
-                trades = resp.json()
+                self._trade_cache[address] = resp.json()
             except (httpx.HTTPError, ValueError):
                 logger.debug("Failed to fetch trades for whale %s", address[:10])
-                continue
+                self._trade_cache[address] = []
 
+        self._cache_time = now
+
+    async def get_direction(
+        self, condition_id: str, window_start_ts: int = 0
+    ) -> tuple[str | None, Decimal]:
+        """Return the whale consensus direction for a market from cached trades.
+
+        If the cache is stale or empty, refresh it first.  Then filter
+        cached trades by condition ID, BUY side, and window timestamp.
+
+        Args:
+            condition_id: Polymarket market condition identifier.
+            window_start_ts: Only count trades at or after this epoch
+                second.  Defaults to 0 (no filtering).
+
+        Returns:
+            Tuple of ``(favoured_side, conviction_ratio)``.
+            Returns ``(None, ZERO)`` if no matching whale trades found.
+
+        """
+        await self.refresh()
+
+        up_volume = ZERO
+        down_volume = ZERO
+
+        for trades in self._trade_cache.values():
             for trade in trades:
                 if trade.get("side") != "BUY":
                     continue
@@ -118,5 +141,6 @@ class WhaleSignalClient:
         return favoured, ratio
 
     async def close(self) -> None:
-        """Close the underlying httpx client."""
+        """Close the underlying httpx client and clear the cache."""
+        self._trade_cache.clear()
         await self._client.aclose()
