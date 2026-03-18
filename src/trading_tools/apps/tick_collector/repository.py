@@ -207,6 +207,38 @@ class TickRepository:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
+    async def get_all_book_snapshots_in_range(
+        self,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[OrderBookSnapshot]:
+        """Fetch all order book snapshots across all tokens in a time range.
+
+        Return every snapshot between ``start_ms`` and ``end_ms`` inclusive,
+        ordered by token_id then timestamp.  Designed for bulk pre-fetching
+        to avoid per-window DB round-trips in grid search backtests.
+
+        Args:
+            start_ms: Inclusive lower bound (epoch milliseconds).
+            end_ms: Inclusive upper bound (epoch milliseconds).
+
+        Returns:
+            List of all ``OrderBookSnapshot`` rows in the range, sorted by
+            ``(token_id, timestamp)``.
+
+        """
+        stmt = (
+            select(OrderBookSnapshot)
+            .where(
+                OrderBookSnapshot.timestamp >= start_ms,
+                OrderBookSnapshot.timestamp <= end_ms,
+            )
+            .order_by(OrderBookSnapshot.token_id, OrderBookSnapshot.timestamp)
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
     async def get_nearest_book_snapshot(
         self,
         token_id: str,

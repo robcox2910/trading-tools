@@ -205,6 +205,39 @@ class WhaleRepository:
                 return top_outcome
             return None
 
+    async def get_buy_trades_for_conditions(
+        self,
+        condition_ids: set[str],
+    ) -> list[WhaleTrade]:
+        """Fetch all BUY trades for a set of condition IDs in one query.
+
+        Return every BUY-side whale trade matching any of the given
+        ``condition_ids``, ordered by ``(condition_id, timestamp)``.  Designed
+        for bulk pre-fetching to avoid per-window DB round-trips in grid
+        search backtests.
+
+        Args:
+            condition_ids: Set of Polymarket condition identifiers to query.
+
+        Returns:
+            List of matching ``WhaleTrade`` rows sorted by
+            ``(condition_id, timestamp)``.
+
+        """
+        if not condition_ids:
+            return []
+        stmt = (
+            select(WhaleTrade)
+            .where(
+                WhaleTrade.condition_id.in_(condition_ids),
+                WhaleTrade.side == "BUY",
+            )
+            .order_by(WhaleTrade.condition_id, WhaleTrade.timestamp)
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
     async def get_trade_count(self, address: str | None = None) -> int:
         """Return the total number of whale trade records.
 

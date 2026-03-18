@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from trading_tools.apps.directional.backtest_runner import run_directional_backtest
+from trading_tools.apps.directional.backtest_runner import (
+    BookSnapshotCache,
+    WhaleTradeCache,
+    run_directional_backtest,
+)
 from trading_tools.core.models import ZERO
 
 if TYPE_CHECKING:
@@ -117,8 +121,30 @@ async def run_directional_grid(
         ", ".join(param_names),
     )
 
+    # Pre-fetch shared data once instead of per-combo
+    metadata_list = await repo.get_market_metadata_in_range(
+        start_ts, end_ts, series_slug=series_slug
+    )
+    logger.info("Grid pre-fetch: %d market windows", len(metadata_list))
+
+    # Bulk-load order book snapshots for the entire time range
+    _ms_per_second = 1000
+    start_ms = start_ts * _ms_per_second
+    end_ms = end_ts * _ms_per_second
+    all_snapshots = await repo.get_all_book_snapshots_in_range(start_ms, end_ms)
+    snapshot_cache = BookSnapshotCache(all_snapshots)
+    logger.info("Grid pre-fetch: %d order book snapshots cached", len(all_snapshots))
+
+    # Bulk-load whale trades for all condition IDs
+    whale_cache: WhaleTradeCache | None = None
+    if whale_repo is not None:
+        condition_ids = {m.condition_id for m in metadata_list}
+        all_trades = await whale_repo.get_buy_trades_for_conditions(condition_ids)
+        whale_cache = WhaleTradeCache(all_trades)
+        logger.info("Grid pre-fetch: %d whale BUY trades cached", len(all_trades))
+
     cells: list[DirectionalGridCell] = []
-    total_windows = 0
+    total_windows = len(metadata_list)
 
     for i, combo in enumerate(combos):
         overrides = dict(zip(param_names, combo, strict=True))
@@ -131,10 +157,10 @@ async def run_directional_grid(
             end_ts=end_ts,
             candles_by_asset=candles_by_asset,
             series_slug=series_slug,
-            whale_repo=whale_repo,
+            metadata_list=metadata_list,
+            snapshot_cache=snapshot_cache,
+            whale_cache=whale_cache,
         )
-
-        total_windows = result.total_windows
 
         cell = DirectionalGridCell(
             params=overrides,
