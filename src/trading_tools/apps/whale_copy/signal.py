@@ -72,11 +72,12 @@ class WhaleSignalClient:
 
         for address in self.whale_addresses:
             try:
+                # The Data API ignores conditionId when user is set,
+                # so fetch recent trades and filter client-side.
                 resp = await self._client.get(
                     "/trades",
                     params={
                         "user": address,
-                        "conditionId": condition_id,
                         "limit": _TRADE_LIMIT,
                     },
                 )
@@ -89,7 +90,8 @@ class WhaleSignalClient:
             for trade in trades:
                 if trade.get("side") != "BUY":
                     continue
-                # Filter to current window only
+                if trade.get("conditionId") != condition_id:
+                    continue
                 trade_ts = int(trade.get("timestamp", 0))
                 if trade_ts < window_start_ts:
                     continue

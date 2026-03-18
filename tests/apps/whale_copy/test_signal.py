@@ -10,6 +10,8 @@ import pytest
 from trading_tools.apps.whale_copy.signal import WhaleSignalClient
 from trading_tools.core.models import ZERO
 
+_CID = "0xcondition123"
+
 
 class TestWhaleSignalClient:
     """Test whale directional signal aggregation from the Data API."""
@@ -22,7 +24,7 @@ class TestWhaleSignalClient:
     @pytest.fixture
     def condition_id(self) -> str:
         """Return a sample condition ID."""
-        return "0xcondition123"
+        return _CID
 
     @pytest.mark.asyncio
     async def test_no_trades_returns_none(
@@ -44,8 +46,8 @@ class TestWhaleSignalClient:
     async def test_up_favoured(self, whale_addresses: tuple[str, ...], condition_id: str) -> None:
         """Return Up when whales have more dollar volume on Up side."""
         trades = [
-            {"side": "BUY", "outcome": "Up", "size": "100", "price": "0.50"},
-            {"side": "BUY", "outcome": "Down", "size": "20", "price": "0.50"},
+            {"side": "BUY", "outcome": "Up", "size": "100", "price": "0.50", "conditionId": _CID},
+            {"side": "BUY", "outcome": "Down", "size": "20", "price": "0.50", "conditionId": _CID},
         ]
         transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
         async_client = httpx.AsyncClient(
@@ -64,8 +66,8 @@ class TestWhaleSignalClient:
     async def test_down_favoured(self, whale_addresses: tuple[str, ...], condition_id: str) -> None:
         """Return Down when whales have more dollar volume on Down side."""
         trades = [
-            {"side": "BUY", "outcome": "Up", "size": "10", "price": "0.40"},
-            {"side": "BUY", "outcome": "Down", "size": "100", "price": "0.60"},
+            {"side": "BUY", "outcome": "Up", "size": "10", "price": "0.40", "conditionId": _CID},
+            {"side": "BUY", "outcome": "Down", "size": "100", "price": "0.60", "conditionId": _CID},
         ]
         transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
         async_client = httpx.AsyncClient(
@@ -86,8 +88,8 @@ class TestWhaleSignalClient:
     ) -> None:
         """Ignore SELL trades when computing directional signal."""
         trades = [
-            {"side": "SELL", "outcome": "Up", "size": "1000", "price": "0.50"},
-            {"side": "BUY", "outcome": "Down", "size": "10", "price": "0.50"},
+            {"side": "SELL", "outcome": "Up", "size": "1000", "price": "0.50", "conditionId": _CID},
+            {"side": "BUY", "outcome": "Down", "size": "10", "price": "0.50", "conditionId": _CID},
         ]
         transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
         async_client = httpx.AsyncClient(
@@ -135,7 +137,7 @@ class TestWhaleSignalClient:
     ) -> None:
         """When only one side has volume, conviction equals that side's dollar volume."""
         trades = [
-            {"side": "BUY", "outcome": "Up", "size": "50", "price": "0.40"},
+            {"side": "BUY", "outcome": "Up", "size": "50", "price": "0.40", "conditionId": _CID},
         ]
         transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
         async_client = httpx.AsyncClient(
@@ -146,7 +148,7 @@ class TestWhaleSignalClient:
         side, conviction = await client.get_direction(condition_id)
 
         assert side == "Up"
-        # Two whales each return 50*0.4=20, total=40, down=0 → conviction = total volume
+        # Two whales each return 50*0.4=20, total=40, down=0 -> conviction = total volume
         assert conviction == Decimal(40)
 
     @pytest.mark.asyncio
@@ -157,9 +159,23 @@ class TestWhaleSignalClient:
         _window_start = 1000
         trades = [
             # Old trade before window — should be ignored
-            {"side": "BUY", "outcome": "Up", "size": "500", "price": "0.50", "timestamp": 900},
+            {
+                "side": "BUY",
+                "outcome": "Up",
+                "size": "500",
+                "price": "0.50",
+                "conditionId": _CID,
+                "timestamp": 900,
+            },
             # Current window trade
-            {"side": "BUY", "outcome": "Down", "size": "10", "price": "0.50", "timestamp": 1050},
+            {
+                "side": "BUY",
+                "outcome": "Down",
+                "size": "10",
+                "price": "0.50",
+                "conditionId": _CID,
+                "timestamp": 1050,
+            },
         ]
         transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
         async_client = httpx.AsyncClient(
@@ -178,7 +194,14 @@ class TestWhaleSignalClient:
     ) -> None:
         """Return (None, ZERO) when all trades are before window start."""
         trades = [
-            {"side": "BUY", "outcome": "Up", "size": "100", "price": "0.50", "timestamp": 500},
+            {
+                "side": "BUY",
+                "outcome": "Up",
+                "size": "100",
+                "price": "0.50",
+                "conditionId": _CID,
+                "timestamp": 500,
+            },
         ]
         transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
         async_client = httpx.AsyncClient(
@@ -190,3 +213,29 @@ class TestWhaleSignalClient:
 
         assert side is None
         assert conviction == ZERO
+
+    @pytest.mark.asyncio
+    async def test_wrong_condition_id_filtered_out(
+        self, whale_addresses: tuple[str, ...], condition_id: str
+    ) -> None:
+        """Ignore trades with a different condition ID (client-side filter)."""
+        trades = [
+            {
+                "side": "BUY",
+                "outcome": "Up",
+                "size": "100",
+                "price": "0.50",
+                "conditionId": "0xdifferent_market",
+            },
+            {"side": "BUY", "outcome": "Down", "size": "10", "price": "0.50", "conditionId": _CID},
+        ]
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=trades))
+        async_client = httpx.AsyncClient(
+            transport=transport, base_url="https://data-api.polymarket.com"
+        )
+        client = WhaleSignalClient(whale_addresses=whale_addresses, _client=async_client)
+
+        side, _conviction = await client.get_direction(condition_id)
+
+        # Only the Down trade with matching CID should count
+        assert side == "Down"
