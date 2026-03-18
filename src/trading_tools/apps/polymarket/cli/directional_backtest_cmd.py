@@ -31,7 +31,7 @@ from trading_tools.data.providers.binance import BinanceCandleProvider
 _DEFAULT_DB_URL = os.environ.get("TICK_DB_URL", "sqlite+aiosqlite:///tick_data.db")
 
 
-async def _fetch_candles(
+async def fetch_binance_candles(
     assets: list[str], start_ts: int, end_ts: int, lookback: int
 ) -> dict[str, list[Candle]]:
     """Pre-fetch Binance 1-min candles for each asset in the date range.
@@ -164,7 +164,7 @@ def directional_backtest(
                 f"{len(assets)} assets: {', '.join(assets)}"
             )
 
-            candles_by_asset = await _fetch_candles(
+            candles_by_asset = await fetch_binance_candles(
                 assets, start_ts, end_ts, config.signal_lookback_seconds
             )
 
