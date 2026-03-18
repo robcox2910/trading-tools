@@ -344,6 +344,7 @@ sudo systemctl restart tick-collector whale-monitor trading-bot-paper spread-cap
 | `trading-bot-live` | Live trading bot (late snipe strategy, disabled by default) |
 | `spread-capture-paper` | Spread capture paper bot (dual-side spread capture) |
 | `spread-capture-live` | Spread capture live bot (dual-side spread capture, real orders) |
+| `directional-paper` | Directional trading bot paper (buy predicted winning side) |
 
 **Useful commands:**
 
@@ -370,6 +371,7 @@ All services log to `/var/log/trading-tools/`. Logs are **not** in journald — 
 | `trading-bot-live` | `/var/log/trading-tools/trading-bot-live.log` |
 | `spread-capture-paper` | `/var/log/trading-tools/spread-capture-paper.log` |
 | `spread-capture-live` | `/var/log/trading-tools/spread-capture-live.log` |
+| `directional-paper` | `/var/log/trading-tools/directional-paper.log` |
 
 ```bash
 # Follow a log
