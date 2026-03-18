@@ -36,7 +36,6 @@ from .models import AccumulatingPosition, PositionState, SpreadResult
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from trading_tools.apps.whale_monitor.repository import WhaleRepository
     from trading_tools.clients.polymarket.client import PolymarketClient
 
     from .config import SpreadCaptureConfig
@@ -66,7 +65,7 @@ class AccumulatingTrader:
     config: SpreadCaptureConfig
     live: bool = False
     client: PolymarketClient | None = None
-    whale_repo: WhaleRepository | None = None
+    whale_addresses: tuple[str, ...] = ()
     _scanner: MarketScanner | None = field(default=None, repr=False)
     _binance: BinanceClient | None = field(default=None, repr=False)
     _engine: SpreadEngine | None = field(default=None, init=False, repr=False)
@@ -220,7 +219,7 @@ class AccumulatingTrader:
             client=self.client,
             binance=self._binance,
             live=self.live,
-            whale_repo=self.whale_repo,
+            _whale_addresses=self.whale_addresses,
         )
 
         return SpreadEngine(

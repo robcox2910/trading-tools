@@ -37,7 +37,6 @@ if TYPE_CHECKING:
     from trading_tools.apps.bot_framework.balance_manager import BalanceManager
     from trading_tools.apps.bot_framework.order_executor import OrderExecutor
     from trading_tools.apps.tick_collector.models import OrderBookSnapshot
-    from trading_tools.apps.whale_monitor.repository import WhaleRepository
     from trading_tools.clients.binance.client import BinanceClient
     from trading_tools.clients.polymarket.client import PolymarketClient
 
@@ -318,7 +317,7 @@ class LiveMarketData:
     client: PolymarketClient
     binance: BinanceClient
     live: bool = False
-    whale_repo: WhaleRepository | None = None
+    _whale_addresses: tuple[str, ...] = ()
 
     async def get_order_books(
         self,
@@ -404,24 +403,69 @@ class LiveMarketData:
         return await self._resolve_via_binance(opportunity)
 
     async def get_whale_signal(self, condition_id: str, since_ts: int) -> str | None:
-        """Query the whale trade DB for a directional signal on this market.
+        """Query the Polymarket Data API for whale trades on this market.
+
+        Fetch recent trades for each tracked whale address, filter for
+        BUY trades on the given condition_id, and return the outcome
+        with the larger total dollar volume across all whales.
 
         Args:
             condition_id: Polymarket market condition identifier.
-            since_ts: Only consider trades after this epoch timestamp.
+            since_ts: Unused (kept for protocol compatibility).
 
         Returns:
             ``"Up"`` or ``"Down"`` if whales have a clear directional
-            bet, ``None`` if no whale repo or no activity.
+            bet, ``None`` if no whale addresses configured or no activity.
 
         """
-        if self.whale_repo is None:
+        _ = since_ts
+        if not self._whale_addresses:
             return None
         try:
-            return await self.whale_repo.get_whale_signal(condition_id, since_ts)
+            return await self._fetch_whale_signal_from_api(condition_id)
         except Exception:
             logger.debug("Failed to query whale signal for %s", condition_id[:12])
             return None
+
+    async def _fetch_whale_signal_from_api(self, condition_id: str) -> str | None:
+        """Hit the Polymarket Data API directly for real-time whale trades.
+
+        Args:
+            condition_id: Market condition identifier.
+
+        Returns:
+            ``"Up"`` or ``"Down"``, or ``None`` if no whale activity.
+
+        """
+        dollar_vol: dict[str, float] = {}
+
+        async with httpx.AsyncClient(timeout=5.0) as http:
+            for address in self._whale_addresses:
+                resp = await http.get(
+                    "https://data-api.polymarket.com/trades",
+                    params={
+                        "user": address,
+                        "conditionId": condition_id,
+                        "limit": 100,
+                    },
+                )
+                if resp.status_code != 200:  # noqa: PLR2004
+                    continue
+                for trade in resp.json():
+                    if trade.get("side", "").upper() != "BUY":
+                        continue
+                    outcome = trade.get("outcome", "")
+                    size = float(trade.get("size", 0))
+                    price = float(trade.get("price", 0))
+                    dollar_vol[outcome] = dollar_vol.get(outcome, 0.0) + size * price
+
+        if not dollar_vol:
+            return None
+
+        top = max(dollar_vol, key=dollar_vol.get)  # type: ignore[arg-type]
+        if top in ("Up", "Down"):
+            return top
+        return None
 
     async def _resolve_via_binance(self, opp: SpreadOpportunity) -> str | None:
         """Determine which side won via Binance spot price movement.

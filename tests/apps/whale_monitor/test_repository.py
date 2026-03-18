@@ -233,13 +233,13 @@ class TestWhaleRepository:
             _make_trade(transaction_hash="tx_down1", outcome="Down", size=30, price=0.45),
         ]
         await repo.save_trades(trades)
-        result = await repo.get_whale_signal(_CONDITION_A, _BASE_TS - 1)
+        result = await repo.get_whale_signal(_CONDITION_A)
         assert result == "Up"
 
     @pytest.mark.asyncio
     async def test_whale_signal_none_when_no_trades(self, repo: WhaleRepository) -> None:
         """Return None when no whale trades exist for the market."""
-        result = await repo.get_whale_signal("nonexistent", _BASE_TS)
+        result = await repo.get_whale_signal("nonexistent")
         assert result is None
 
     @pytest.mark.asyncio
