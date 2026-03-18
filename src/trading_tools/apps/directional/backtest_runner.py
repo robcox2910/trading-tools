@@ -335,9 +335,9 @@ async def _replay_window(
     replay_md.set_outcome(meta.condition_id, outcome)
     replay_md.set_order_books(meta.condition_id, up_book, down_book)
 
-    # Load whale signal if repository is available
+    # Load whale signal if repository is available (time-bounded to prevent look-ahead)
     if whale_repo is not None:
-        signal = await whale_repo.get_whale_signal(meta.condition_id)
+        signal = await whale_repo.get_whale_signal(meta.condition_id, before_ts=entry_eval_ts)
         if signal is not None:
             replay_md.set_whale_signal(meta.condition_id, signal)
 
