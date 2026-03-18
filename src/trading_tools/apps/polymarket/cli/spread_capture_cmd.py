@@ -28,6 +28,7 @@ from trading_tools.apps.spread_capture.accumulating_trader import AccumulatingTr
 from trading_tools.apps.spread_capture.config import SpreadCaptureConfig
 from trading_tools.apps.spread_capture.repository import SpreadResultRepository
 from trading_tools.apps.spread_capture.spread_trader import SpreadTrader
+from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
 _logger = logging.getLogger(__name__)
 
@@ -308,6 +309,7 @@ def spread_capture(
     async def _run() -> None:
         client = build_authenticated_client()
         repo: SpreadResultRepository | None = None
+        whale_repo: WhaleRepository | None = None
 
         # Persist results when SPREAD_DB_URL or WHALE_DB_URL is configured
         db_url = os.environ.get("SPREAD_DB_URL", "") or os.environ.get("WHALE_DB_URL", "")
@@ -316,11 +318,16 @@ def spread_capture(
             await repo.init_db()
             _logger.info("Spread result persistence enabled")
 
+            # Reuse same DB for whale signal queries (whale_trades table)
+            whale_repo = WhaleRepository(db_url)
+            _logger.info("Whale copy-trading signal enabled")
+
         if config.strategy == "accumulate":
             trader: SpreadTrader | AccumulatingTrader = AccumulatingTrader(
                 config=config,
                 live=confirm_live,
                 client=client,
+                whale_repo=whale_repo,
             )
         else:
             trader = SpreadTrader(

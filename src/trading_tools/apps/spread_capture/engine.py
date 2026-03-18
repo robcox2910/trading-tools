@@ -251,12 +251,14 @@ class SpreadEngine:
                     )
 
     async def _determine_primary_side(self, pos: AccumulatingPosition) -> str:
-        """Determine the primary side via mean-reversion on recent Binance data.
+        """Determine the primary side by copying the whale's directional bet.
 
-        Look back ``signal_delay_seconds`` of 1-min candles before the
-        market window opened and bet *against* the recent move.  On
-        5-min windows crypto tends to mean-revert: a sharp move up
-        triggers selling and vice versa.
+        Priority:
+        1. Whale signal — if a tracked whale has BUY trades on this market,
+           copy their largest side.  This is the 79%-accurate signal from
+           the whale correlator analysis.
+        2. Binance mean-reversion fallback — bet against recent momentum.
+        3. Cheaper side from current CLOB prices.
 
         Args:
             pos: The position with opportunity metadata.
@@ -265,6 +267,21 @@ class SpreadEngine:
             ``"Up"`` or ``"Down"``.
 
         """
+        # Priority 1: copy the whale
+        whale_side = await self.market_data.get_whale_signal(
+            pos.opportunity.condition_id,
+            pos.opportunity.window_start_ts,
+        )
+        if whale_side is not None:
+            logger.info(
+                "WHALE-SIGNAL %s side=%s asset=%s",
+                pos.opportunity.condition_id[:12],
+                whale_side,
+                pos.opportunity.asset,
+            )
+            return whale_side
+
+        # Priority 2: Binance mean-reversion
         try:
             lookback_start = pos.opportunity.window_start_ts - self.config.signal_delay_seconds
             candles = await self.market_data.get_binance_candles(
@@ -275,7 +292,6 @@ class SpreadEngine:
             if candles:
                 direction = self._compute_momentum_signal(candles)
                 if direction is not None:
-                    # Mean-reversion: bet against the recent move
                     return "Down" if direction == "Up" else "Up"
         except Exception:
             logger.debug(
@@ -283,7 +299,7 @@ class SpreadEngine:
                 pos.opportunity.asset,
             )
 
-        # Fallback: pick the cheaper side from the opportunity
+        # Priority 3: pick the cheaper side
         return "Up" if pos.opportunity.up_price < pos.opportunity.down_price else "Down"
 
     @staticmethod

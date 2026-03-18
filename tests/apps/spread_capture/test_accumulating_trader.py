@@ -146,11 +146,18 @@ class _MockExecution:
         return self._capital
 
 
+def _default_mock_market_data() -> AsyncMock:
+    """Create a mock MarketDataPort with whale signal returning None."""
+    md = AsyncMock()
+    md.get_whale_signal = AsyncMock(return_value=None)
+    return md
+
+
 def _make_engine(**overrides: object) -> SpreadEngine:
     """Create a SpreadEngine with mock adapters and sensible defaults."""
     config = overrides.pop("config", _make_config())  # type: ignore[arg-type]
     execution = overrides.pop("execution", _MockExecution())  # type: ignore[arg-type]
-    market_data = overrides.pop("market_data", AsyncMock())  # type: ignore[arg-type]
+    market_data = overrides.pop("market_data", _default_mock_market_data())  # type: ignore[arg-type]
     return SpreadEngine(
         config=config,  # type: ignore[arg-type]
         execution=execution,  # type: ignore[arg-type]
@@ -199,7 +206,7 @@ class TestSignalDetermination:
 
     async def test_mean_reversion_bets_against_up_momentum(self) -> None:
         """Bet Down when recent momentum was Up (mean-reversion)."""
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         candles = [
             AsyncMock(open=Decimal(50000), close=Decimal(49990)),
             AsyncMock(open=Decimal(49990), close=Decimal(49990)),
@@ -214,7 +221,7 @@ class TestSignalDetermination:
 
     async def test_mean_reversion_bets_against_down_momentum(self) -> None:
         """Bet Up when recent momentum was Down (mean-reversion)."""
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         candles = [
             AsyncMock(open=Decimal(50000), close=Decimal(50010)),
             AsyncMock(open=Decimal(50010), close=Decimal(50010)),
@@ -229,7 +236,7 @@ class TestSignalDetermination:
 
     async def test_recency_weighting_favours_latest(self) -> None:
         """Recent candle outweighs older — net down momentum → bet Up."""
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         # Candle 1 (w=1): +100, Candle 2 (w=2): -60 → net momentum down → bet Up
         candles = [
             AsyncMock(open=Decimal(50000), close=Decimal(50100)),
@@ -245,7 +252,7 @@ class TestSignalDetermination:
     async def test_lookback_window_is_before_market_open(self) -> None:
         """Signal uses candles from before the window, not during it."""
         config = _make_config(signal_delay_seconds=120)
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         mock_candle = AsyncMock(open=Decimal(50000), close=Decimal(50100))
         mock_md.get_binance_candles = AsyncMock(return_value=[mock_candle])
         engine = _make_engine(config=config, market_data=mock_md)
@@ -261,7 +268,7 @@ class TestSignalDetermination:
 
     async def test_fallback_to_cheaper_side(self) -> None:
         """Fall back to the cheaper opportunity side when Binance unavailable."""
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         mock_md.get_binance_candles = AsyncMock(side_effect=Exception("no data"))
         engine = _make_engine(market_data=mock_md)
         pos = _make_accum_position(budget=Decimal(50))
@@ -271,7 +278,7 @@ class TestSignalDetermination:
 
     async def test_fallback_when_flat(self) -> None:
         """Fall back when all candles are flat (weighted sum is zero)."""
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         candles = [
             AsyncMock(open=Decimal(50000), close=Decimal(50000)),
             AsyncMock(open=Decimal(50000), close=Decimal(50000)),
@@ -468,7 +475,7 @@ class TestSettlement:
     async def test_settlement_paired_pnl(self) -> None:
         """Paired settlement: winning_qty * 1.0 - total_cost - fees."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         mock_md.resolve_outcome = AsyncMock(return_value="Up")
         engine = _make_engine(config=config, market_data=mock_md)
 
@@ -494,7 +501,7 @@ class TestSettlement:
     async def test_settlement_unpaired_winner(self) -> None:
         """Excess tokens on winning side add bonus profit."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         mock_md.resolve_outcome = AsyncMock(return_value="Up")
         engine = _make_engine(config=config, market_data=mock_md)
 
@@ -520,7 +527,7 @@ class TestSettlement:
     async def test_settlement_unpaired_loser(self) -> None:
         """Excess tokens on losing side add to the loss."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         mock_md.resolve_outcome = AsyncMock(return_value="Down")
         engine = _make_engine(config=config, market_data=mock_md)
 
@@ -547,7 +554,7 @@ class TestSettlement:
     async def test_settlement_only_one_side_wins(self) -> None:
         """Single-side position wins when that side is the winner."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         mock_md.resolve_outcome = AsyncMock(return_value="Up")
         engine = _make_engine(config=config, market_data=mock_md)
 
@@ -568,7 +575,7 @@ class TestSettlement:
     async def test_settlement_only_one_side_loses(self) -> None:
         """Single-side position loses when other side wins."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         mock_md.resolve_outcome = AsyncMock(return_value="Down")
         engine = _make_engine(config=config, market_data=mock_md)
 
@@ -589,7 +596,7 @@ class TestSettlement:
     async def test_unknown_outcome_paired(self) -> None:
         """Unknown outcome with both sides uses paired qty as conservative estimate."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         mock_md.resolve_outcome = AsyncMock(return_value=None)
         engine = _make_engine(config=config, market_data=mock_md)
 
@@ -719,7 +726,7 @@ class TestDatabasePersistence:
     async def test_persist_result_on_settle(self) -> None:
         """Settled positions are persisted via the repository."""
         config = _make_config(fee_rate=_ZERO_FEE)
-        mock_md = AsyncMock()
+        mock_md = _default_mock_market_data()
         mock_md.resolve_outcome = AsyncMock(return_value="Up")
         engine = _make_engine(config=config, market_data=mock_md)
         mock_repo = AsyncMock()
