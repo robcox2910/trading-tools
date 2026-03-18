@@ -337,8 +337,8 @@ class DirectionalEngine:
             if self.config.compound_profits and hasattr(self.execution, "add_capital"):
                 self.execution.add_capital(pos.cost_basis + pnl)  # type: ignore[union-attr]
 
-            cap = self.execution.total_capital()
-            self._high_water_mark = max(self._high_water_mark, cap)
+            available = self.execution.get_capital()
+            self._high_water_mark = max(self._high_water_mark, available)
 
             logger.info(
                 "[%s] CLOSE %s %s | winner=%s | pnl=$%.4f | capital=$%.2f",
@@ -347,7 +347,7 @@ class DirectionalEngine:
                 pos.opportunity.asset,
                 winning_side,
                 pnl,
-                cap,
+                available,
             )
 
             if self._repo is not None:
