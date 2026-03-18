@@ -197,3 +197,14 @@ class TestReplayMarketData:
         )
         result = await adapter.get_binance_candles("BTC-USD", 150, 250)
         assert result == [c2]
+
+    async def test_whale_signal_returns_none(self) -> None:
+        """Replay adapter always returns None for whale signal."""
+        adapter = ReplayMarketData(
+            opportunities=[],
+            up_books={},
+            down_books={},
+            candles={},
+        )
+        result = await adapter.get_whale_signal("cond_1", 1000)
+        assert result is None
