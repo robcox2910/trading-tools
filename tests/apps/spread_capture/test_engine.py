@@ -149,6 +149,7 @@ class TestPollCycleIntegration:
         down_book = _make_order_book(Decimal("0.47"))
 
         mock_md = AsyncMock()
+        mock_md.get_whale_signal = AsyncMock(return_value=None)
         mock_md.get_opportunities = AsyncMock(return_value=[opp])
         mock_md.get_order_books = AsyncMock(return_value=(up_book, down_book))
         mock_md.get_binance_candles = AsyncMock(
@@ -176,6 +177,7 @@ class TestPollCycleIntegration:
         opp = _make_opportunity(window_end_ts=_NOW - 1)
 
         mock_md = AsyncMock()
+        mock_md.get_whale_signal = AsyncMock(return_value=None)
         mock_md.get_opportunities = AsyncMock(return_value=[])
         mock_md.resolve_outcome = AsyncMock(return_value="Up")
 
@@ -211,6 +213,7 @@ class TestPollCycleIntegration:
         opp2 = _make_opportunity(condition_id="cond_2")
 
         mock_md = AsyncMock()
+        mock_md.get_whale_signal = AsyncMock(return_value=None)
         mock_md.get_opportunities = AsyncMock(return_value=[opp1, opp2])
 
         engine = SpreadEngine(
@@ -227,6 +230,7 @@ class TestPollCycleIntegration:
     async def test_poll_count_increments(self) -> None:
         """Each poll_cycle increments the poll counter."""
         mock_md = AsyncMock()
+        mock_md.get_whale_signal = AsyncMock(return_value=None)
         mock_md.get_opportunities = AsyncMock(return_value=[])
 
         engine = SpreadEngine(

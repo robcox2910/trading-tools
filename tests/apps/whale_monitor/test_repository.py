@@ -26,6 +26,7 @@ def _make_trade(
     size: float = 50.0,
     price: float = 0.72,
     condition_id: str = _CONDITION_A,
+    outcome: str = "Up",
 ) -> WhaleTrade:
     """Create a WhaleTrade instance for testing.
 
@@ -37,6 +38,7 @@ def _make_trade(
         size: Token quantity.
         price: Execution price.
         condition_id: Market condition ID.
+        outcome: Outcome label.
 
     Returns:
         A new WhaleTrade instance.
@@ -53,7 +55,7 @@ def _make_trade(
         timestamp=timestamp,
         title="Test Market",
         slug="test-market",
-        outcome="Up",
+        outcome=outcome,
         outcome_index=0,
         collected_at=_COLLECTED_AT,
     )
@@ -221,6 +223,24 @@ class TestWhaleRepository:
         await repo.init_db()
         count = await repo.get_trade_count()
         assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_whale_signal_returns_favoured_side(self, repo: WhaleRepository) -> None:
+        """Return the outcome with the larger BUY dollar volume."""
+        trades = [
+            _make_trade(transaction_hash="tx_up1", outcome="Up", size=100, price=0.50),
+            _make_trade(transaction_hash="tx_up2", outcome="Up", size=50, price=0.55),
+            _make_trade(transaction_hash="tx_down1", outcome="Down", size=30, price=0.45),
+        ]
+        await repo.save_trades(trades)
+        result = await repo.get_whale_signal(_CONDITION_A, _BASE_TS - 1)
+        assert result == "Up"
+
+    @pytest.mark.asyncio
+    async def test_whale_signal_none_when_no_trades(self, repo: WhaleRepository) -> None:
+        """Return None when no whale trades exist for the market."""
+        result = await repo.get_whale_signal("nonexistent", _BASE_TS)
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_close(self, repo: WhaleRepository) -> None:

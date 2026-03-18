@@ -157,3 +157,24 @@ class MarketDataPort(Protocol):
 
         """
         ...  # pragma: no cover
+
+    async def get_whale_signal(
+        self,
+        condition_id: str,
+        since_ts: int,
+    ) -> str | None:
+        """Return the whale's directional bet for a market, if any.
+
+        Query recent whale BUY trades for the given market and return
+        the outcome side with the larger total dollar volume.
+
+        Args:
+            condition_id: Polymarket market condition identifier.
+            since_ts: Only consider trades after this epoch timestamp.
+
+        Returns:
+            ``"Up"`` or ``"Down"`` if a whale has a clear directional
+            bet, ``None`` if no whale activity.
+
+        """
+        ...  # pragma: no cover
