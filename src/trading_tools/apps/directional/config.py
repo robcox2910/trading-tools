@@ -112,7 +112,7 @@ class DirectionalConfig:
     min_edge: Decimal = Decimal("0.05")
     entry_window_start: int = 30
     entry_window_end: int = 10
-    signal_lookback_seconds: int = 300
+    signal_lookback_seconds: int = 1200
     fee_rate: Decimal = Decimal("0.25")
     fee_exponent: int = 2
     compound_profits: bool = True

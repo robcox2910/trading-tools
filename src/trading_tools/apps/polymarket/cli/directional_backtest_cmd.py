@@ -14,15 +14,80 @@ from typing import Annotated
 
 import typer
 
-from trading_tools.apps.directional.backtest_runner import run_directional_backtest
+from trading_tools.apps.directional.backtest_runner import (
+    DirectionalBacktestResult,
+    run_directional_backtest,
+)
 from trading_tools.apps.directional.config import DirectionalConfig
 from trading_tools.apps.polymarket.backtest_common import (
     configure_verbose_logging,
     parse_date,
 )
 from trading_tools.apps.tick_collector.repository import TickRepository
+from trading_tools.clients.binance.client import BinanceClient
+from trading_tools.core.models import Candle, Interval
+from trading_tools.data.providers.binance import BinanceCandleProvider
 
 _DEFAULT_DB_URL = os.environ.get("TICK_DB_URL", "sqlite+aiosqlite:///tick_data.db")
+
+
+async def _fetch_candles(
+    assets: list[str], start_ts: int, end_ts: int, lookback: int
+) -> dict[str, list[Candle]]:
+    """Pre-fetch Binance 1-min candles for each asset in the date range.
+
+    Args:
+        assets: Unique asset names (e.g. ``["BTC-USD", "ETH-USD"]``).
+        start_ts: Start epoch seconds.
+        end_ts: End epoch seconds.
+        lookback: Extra seconds before start for feature extraction.
+
+    Returns:
+        Mapping from asset name to list of 1-min candles.
+
+    """
+    candles_by_asset: dict[str, list[Candle]] = {}
+    binance = BinanceClient()
+    provider = BinanceCandleProvider(binance)
+    try:
+        for asset_name in assets:
+            typer.echo(f"Fetching Binance candles for {asset_name}...")
+            asset_candles = await provider.get_candles(
+                symbol=asset_name,
+                interval=Interval.M1,
+                start_ts=start_ts - lookback,
+                end_ts=end_ts,
+            )
+            candles_by_asset[asset_name] = asset_candles
+            typer.echo(f"  Got {len(asset_candles)} candles")
+    finally:
+        await binance.close()
+    return candles_by_asset
+
+
+def _display_result(result: DirectionalBacktestResult) -> None:
+    """Display backtest results to the terminal.
+
+    Args:
+        result: Completed backtest result.
+
+    """
+    typer.echo("--- Directional Backtest Results ---")
+    typer.echo(f"Windows replayed: {result.total_windows}")
+    typer.echo(f"Trades entered:   {result.total_trades}")
+    typer.echo(f"Skipped:          {result.skipped}")
+    typer.echo(f"Initial capital:  ${result.initial_capital:.2f}")
+    typer.echo(f"Final capital:    ${result.final_capital:.2f}")
+    typer.echo(f"P&L: ${result.total_pnl:.2f} ({result.return_pct:.2f}%)")
+    typer.echo(f"Wins: {result.wins}  Losses: {result.losses}")
+    if result.win_rate > 0:
+        typer.echo(f"Win rate: {result.win_rate * Decimal(100):.1f}%")
+    typer.echo(f"Avg P&L per trade: ${result.avg_pnl:.4f}")
+    typer.echo("")
+    typer.echo("--- Calibration ---")
+    typer.echo(f"Brier score:           {result.brier_score:.4f}")
+    typer.echo(f"Avg P(win) when correct:   {result.avg_p_when_correct:.4f}")
+    typer.echo(f"Avg P(win) when incorrect: {result.avg_p_when_incorrect:.4f}")
 
 
 def directional_backtest(
@@ -41,7 +106,7 @@ def directional_backtest(
     ] = 0.5,
     entry_start: Annotated[int, typer.Option(help="Seconds before close to start entries")] = 30,
     entry_end: Annotated[int, typer.Option(help="Seconds before close to stop entries")] = 10,
-    signal_lookback: Annotated[int, typer.Option(help="Seconds of Binance candle lookback")] = 300,
+    signal_lookback: Annotated[int, typer.Option(help="Seconds of Binance candle lookback")] = 1200,
     poll_interval: Annotated[
         int, typer.Option(help="Seconds between poll cycles during replay")
     ] = 3,
@@ -90,31 +155,30 @@ def directional_backtest(
     async def _run() -> None:
         repo = TickRepository(db_url)
         try:
+            metadata_list = await repo.get_market_metadata_in_range(
+                start_ts, end_ts, series_slug=series_slug
+            )
+            assets = sorted({m.asset for m in metadata_list})
+            typer.echo(
+                f"Found {len(metadata_list)} windows across "
+                f"{len(assets)} assets: {', '.join(assets)}"
+            )
+
+            candles_by_asset = await _fetch_candles(
+                assets, start_ts, end_ts, config.signal_lookback_seconds
+            )
+
             result = await run_directional_backtest(
                 config=config,
                 repo=repo,
                 start_ts=start_ts,
                 end_ts=end_ts,
+                candles_by_asset=candles_by_asset,
                 series_slug=series_slug,
             )
         finally:
             await repo.close()
 
-        typer.echo("--- Directional Backtest Results ---")
-        typer.echo(f"Windows replayed: {result.total_windows}")
-        typer.echo(f"Trades entered:   {result.total_trades}")
-        typer.echo(f"Skipped:          {result.skipped}")
-        typer.echo(f"Initial capital:  ${result.initial_capital:.2f}")
-        typer.echo(f"Final capital:    ${result.final_capital:.2f}")
-        typer.echo(f"P&L: ${result.total_pnl:.2f} ({result.return_pct:.2f}%)")
-        typer.echo(f"Wins: {result.wins}  Losses: {result.losses}")
-        if result.win_rate > 0:
-            typer.echo(f"Win rate: {result.win_rate * Decimal(100):.1f}%")
-        typer.echo(f"Avg P&L per trade: ${result.avg_pnl:.4f}")
-        typer.echo("")
-        typer.echo("--- Calibration ---")
-        typer.echo(f"Brier score:           {result.brier_score:.4f}")
-        typer.echo(f"Avg P(win) when correct:   {result.avg_p_when_correct:.4f}")
-        typer.echo(f"Avg P(win) when incorrect: {result.avg_p_when_incorrect:.4f}")
+        _display_result(result)
 
     asyncio.run(_run())
