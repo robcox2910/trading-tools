@@ -66,7 +66,7 @@ class LiveMarketData:
             max_combined_cost=_PER_SIDE_THRESHOLD,
             min_spread_margin=Decimal(0),
             max_window_seconds=0,
-            max_entry_age_pct=Decimal("0.90"),
+            max_entry_age_pct=Decimal(0),
             rediscovery_interval=30,
         )
 
