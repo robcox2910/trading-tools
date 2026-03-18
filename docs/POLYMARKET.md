@@ -18,6 +18,9 @@ Some commands require no authentication (market queries), while trading and bot 
 | Whale monitoring | No |
 | Spread capture bot (paper) | No |
 | Spread capture bot (live) | Yes |
+| Directional bot (paper) | No |
+| Directional bot (live) | Yes |
+| Directional backtest | No |
 
 ## Market Queries
 
@@ -455,6 +458,71 @@ FROM copy_results
 WHERE is_paper = true
 GROUP BY outcome;
 ```
+
+## Directional Trading Bot
+
+The directional trading bot buys only the predicted winning side of binary crypto Up/Down markets using momentum, volatility, volume, and order-book features to estimate P(Up). Positions are sized via Kelly criterion. Fully independent from the spread capture bot.
+
+### `directional` — Run Directional Paper/Live Trading
+
+```bash
+# Paper mode (default)
+trading-tools-polymarket directional --capital 100 --min-edge 0.05 -v
+
+# With custom entry window and Kelly fraction
+trading-tools-polymarket directional \
+  --capital 200 \
+  --min-edge 0.03 \
+  --kelly-fraction 0.3 \
+  --entry-start 30 \
+  --entry-end 10 \
+  --series-slugs crypto-5m
+
+# Live mode (real orders)
+trading-tools-polymarket directional --capital 50 --confirm-live
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--capital` | `100` | Starting USDC capital (paper mode) |
+| `--min-edge` | `0.05` | Minimum probability edge to enter |
+| `--kelly-fraction` | `0.5` | Fractional Kelly multiplier (0.5 = half-Kelly) |
+| `--max-position-pct` | `0.15` | Maximum fraction of capital per trade |
+| `--entry-start` | `30` | Seconds before close to start entries |
+| `--entry-end` | `10` | Seconds before close to stop entries |
+| `--signal-lookback` | `300` | Seconds of Binance candle lookback |
+| `--series-slugs` | `btc-updown-5m,eth-updown-5m` | Series to scan (supports `crypto-5m` shortcut) |
+| `--max-open-positions` | `10` | Maximum concurrent positions |
+| `--config` | — | Path to YAML config file |
+| `--confirm-live` | `False` | Enable live trading with real orders |
+| `-v` / `--verbose` | `False` | Enable DEBUG logging |
+
+### `directional-backtest` — Backtest Directional Algorithm
+
+```bash
+trading-tools-polymarket directional-backtest \
+  --start 2026-03-01 --end 2026-03-06 \
+  --capital 1000 --min-edge 0.05 -v
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--start` | — | Start date (YYYY-MM-DD, required) |
+| `--end` | — | End date (YYYY-MM-DD, required) |
+| `--capital` | `1000` | Initial virtual capital |
+| `--min-edge` | `0.05` | Minimum probability edge |
+| `--kelly-fraction` | `0.5` | Fractional Kelly multiplier |
+| `--entry-start` | `30` | Seconds before close to start entries |
+| `--entry-end` | `10` | Seconds before close to stop entries |
+| `--signal-lookback` | `300` | Binance candle lookback seconds |
+| `--series-slug` | — | Filter to a specific series slug |
+| `--db-url` | `$TICK_DB_URL` | Database URL for tick data |
+| `-v` / `--verbose` | `False` | Enable per-window logging |
+
+Output includes standard metrics (P&L, win rate, avg P&L) plus calibration metrics:
+- **Brier score**: Mean squared error of probability predictions (< 0.25 = better than random)
+- **Avg P(win) when correct**: Confidence when the algorithm was right
+- **Avg P(win) when incorrect**: Confidence when the algorithm was wrong
 
 ## Backtesting Polymarket Strategies
 

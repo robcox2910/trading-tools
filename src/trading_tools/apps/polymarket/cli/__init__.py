@@ -10,6 +10,8 @@ from trading_tools.apps.polymarket.cli.backtest_ticks_cmd import backtest_ticks
 from trading_tools.apps.polymarket.cli.book_cmd import book
 from trading_tools.apps.polymarket.cli.bot_cmd import bot
 from trading_tools.apps.polymarket.cli.bot_live_cmd import bot_live
+from trading_tools.apps.polymarket.cli.directional_backtest_cmd import directional_backtest
+from trading_tools.apps.polymarket.cli.directional_cmd import directional
 from trading_tools.apps.polymarket.cli.grid_backtest_cmd import grid_backtest
 from trading_tools.apps.polymarket.cli.markets_cmd import markets
 from trading_tools.apps.polymarket.cli.odds_cmd import odds
@@ -48,5 +50,7 @@ app.command(name="spread-capture")(spread_capture)
 app.command(name="whale-correlate")(whale_correlate)
 app.command(name="backtest-spread")(backtest_spread)
 app.command(name="grid-spread")(grid_spread)
+app.command(name="directional-backtest")(directional_backtest)
+app.command(name="directional")(directional)
 
 __all__ = ["app"]

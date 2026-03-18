@@ -57,18 +57,31 @@ trading-tools/
 │   │   │   ├── leaderboard.py       # Discover profitable traders via leaderboard or market enumeration
 │   │   │   ├── collector.py         # Shared trade-fetching utilities
 │   │   │   └── config.py            # Whale monitor configuration dataclasses
-│   │   └── spread_capture/          # Real-time spread capture bot + backtester
-│   │       ├── config.py            # SpreadCaptureConfig (frozen dataclass)
-│   │       ├── models.py            # SpreadOpportunity, SideLeg, PairedPosition, SpreadResult, SpreadResultRecord (ORM)
+│   │   ├── spread_capture/          # Real-time spread capture bot + backtester
+│   │   │   ├── config.py            # SpreadCaptureConfig (frozen dataclass)
+│   │   │   ├── models.py            # SpreadOpportunity, SideLeg, PairedPosition, SpreadResult, SpreadResultRecord (ORM)
+│   │   │   ├── ports.py             # ExecutionPort and MarketDataPort protocols + FillResult
+│   │   │   ├── adapters.py          # Live, Paper, Backtest execution + Live/Replay market data adapters
+│   │   │   ├── engine.py            # SpreadEngine — pure decision logic (no I/O)
+│   │   │   ├── repository.py        # Async SQLAlchemy repository for persisting closed trade results
+│   │   │   ├── market_scanner.py    # Incremental polling and signal detection
+│   │   │   ├── spread_trader.py     # Thin wrapper: simultaneous both-sides strategy
+│   │   │   ├── accumulating_trader.py # Thin wrapper: directional entry + opportunistic hedge
+│   │   │   ├── backtest_runner.py   # Replay engine: feed historical windows through SpreadEngine
+│   │   │   └── grid_backtest.py     # Parameter sweep over hedge thresholds and signal delay
+│   │   └── directional/             # Directional trading algorithm for crypto Up/Down markets
+│   │       ├── config.py            # DirectionalConfig (frozen dataclass, YAML + CLI)
+│   │       ├── models.py            # MarketOpportunity, FeatureVector, DirectionalPosition, DirectionalResult (ORM)
+│   │       ├── features.py          # Pure feature extraction: momentum, volatility, volume, book imbalance, RSI
+│   │       ├── estimator.py         # ProbabilityEstimator: weighted ensemble → logistic sigmoid → P(Up)
+│   │       ├── kelly.py             # Kelly criterion sizing for binary outcome tokens
 │   │       ├── ports.py             # ExecutionPort and MarketDataPort protocols + FillResult
-│   │       ├── adapters.py          # Live, Paper, Backtest execution + Live/Replay market data adapters
-│   │       ├── engine.py            # SpreadEngine — pure decision logic (no I/O)
-│   │       ├── repository.py        # Async SQLAlchemy repository for persisting closed trade results
-│   │       ├── market_scanner.py    # Incremental polling and signal detection
-│   │       ├── spread_trader.py     # Thin wrapper: simultaneous both-sides strategy
-│   │       ├── accumulating_trader.py # Thin wrapper: directional entry + opportunistic hedge
-│   │       ├── backtest_runner.py   # Replay engine: feed historical windows through SpreadEngine
-│   │       └── grid_backtest.py     # Parameter sweep over hedge thresholds and signal delay
+│   │       ├── adapters.py          # Paper, Backtest execution + Replay market data adapters
+│   │       ├── engine.py            # DirectionalEngine — scan → features → estimate → Kelly → fill → settle
+│   │       ├── repository.py        # Async SQLAlchemy repository for directional trade results
+│   │       ├── market_data_live.py  # Live market data adapter (MarketScanner + Binance + Polymarket)
+│   │       ├── trader.py            # DirectionalTrader — polling loop, shutdown, logging
+│   │       └── backtest_runner.py   # Replay engine with Brier score calibration tracking
 │   ├── clients/                     # External API clients
 │   │   ├── revolut_x/               # Revolut X API client
 │   │   │   ├── auth/                # Ed25519 authentication
@@ -148,6 +161,7 @@ Runnable applications and long-lived services. Each application has:
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
 | `whale_monitor` | Polling service that tracks whale trades, with analysis, per-market breakdown, trade enrichment, and Binance spot correlation |
 | `spread_capture` | Spread capture bot (paper, live, and backtest) with port-based adapters, pure decision engine, hedge urgency, circuit breaker, and historical replay |
+| `directional` | Directional trading algorithm — buy predicted winning side of binary crypto markets using features (momentum, volatility, volume, book imbalance, RSI), weighted ensemble estimator, and Kelly criterion sizing |
 
 ### `/clients` — API Clients
 
