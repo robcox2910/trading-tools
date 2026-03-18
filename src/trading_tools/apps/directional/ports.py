@@ -144,6 +144,22 @@ class MarketDataPort(Protocol):
         """
         ...  # pragma: no cover
 
+    async def get_whale_signal(
+        self,
+        condition_id: str,
+    ) -> str | None:
+        """Return the whale's net directional positioning for a market.
+
+        Args:
+            condition_id: Polymarket market condition identifier.
+
+        Returns:
+            ``"Up"`` or ``"Down"`` if whales have a clear directional
+            bet, ``None`` if no whale activity.
+
+        """
+        ...  # pragma: no cover
+
     async def resolve_outcome(
         self,
         opportunity: MarketOpportunity,

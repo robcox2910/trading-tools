@@ -27,6 +27,7 @@ from .market_data_live import LiveMarketData
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from trading_tools.apps.whale_monitor.repository import WhaleRepository
     from trading_tools.clients.polymarket.client import PolymarketClient
 
     from .config import DirectionalConfig
@@ -64,6 +65,7 @@ class DirectionalTrader:
     _binance: BinanceClient | None = field(default=None, init=False, repr=False)
     _candle_provider: BinanceCandleProvider | None = field(default=None, init=False, repr=False)
     _repo: DirectionalResultRepository | None = field(default=None, init=False, repr=False)
+    _whale_repo: WhaleRepository | None = field(default=None, init=False, repr=False)
 
     async def run(self) -> None:
         """Run the polling loop until interrupted.
@@ -138,6 +140,7 @@ class DirectionalTrader:
             client=self.client,
             candle_provider=self._candle_provider,
             series_slugs=self.config.series_slugs,
+            whale_repo=self._whale_repo,
         )
 
         estimator = ProbabilityEstimator(self.config)
@@ -160,6 +163,15 @@ class DirectionalTrader:
         self._repo = repo
         if self._engine is not None:
             self._engine.set_repository(repo)
+
+    def set_whale_repo(self, repo: WhaleRepository) -> None:
+        """Attach a whale repository for querying whale signals.
+
+        Args:
+            repo: An initialised ``WhaleRepository`` instance.
+
+        """
+        self._whale_repo = repo
 
     def stop(self) -> None:
         """Signal the polling loop to stop after the current cycle."""
