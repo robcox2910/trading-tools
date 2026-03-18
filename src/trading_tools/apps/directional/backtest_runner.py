@@ -4,13 +4,19 @@ Load historical market metadata, order book snapshots, and Binance
 candles from the database.  For each market window, extract features,
 estimate P(Up), apply Kelly sizing, and compute directional P&L.
 Track calibration via Brier score alongside standard win/loss metrics.
+
+Provides ``BookSnapshotCache`` and ``WhaleTradeCache`` for grid search
+pre-fetching, which eliminates per-window DB round-trips when the same
+data is reused across many parameter combinations.
 """
 
 from __future__ import annotations
 
+import bisect
 import dataclasses
 import json
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -28,6 +34,7 @@ if TYPE_CHECKING:
 
     from trading_tools.apps.tick_collector.models import MarketMetadata, OrderBookSnapshot
     from trading_tools.apps.tick_collector.repository import TickRepository
+    from trading_tools.apps.whale_monitor.models import WhaleTrade
     from trading_tools.apps.whale_monitor.repository import WhaleRepository
     from trading_tools.core.models import Candle
 
@@ -39,6 +46,125 @@ logger = logging.getLogger(__name__)
 _MS_PER_SECOND = 1000
 _HUNDRED = Decimal(100)
 _HALF = Decimal("0.50")
+
+
+class BookSnapshotCache:
+    """In-memory cache of order book snapshots keyed by token ID.
+
+    Build from a bulk snapshot list and provide O(log n) nearest-match
+    lookups via bisect.  Eliminates per-window DB queries during grid
+    search backtests where the same snapshot data is reused across many
+    parameter combinations.
+    """
+
+    def __init__(self, snapshots: Sequence[OrderBookSnapshot]) -> None:
+        """Build the cache from a pre-sorted snapshot list.
+
+        Args:
+            snapshots: Order book snapshots sorted by
+                ``(token_id, timestamp)``.
+
+        """
+        self._by_token: dict[str, list[OrderBookSnapshot]] = defaultdict(list)
+        self._ts_by_token: dict[str, list[int]] = defaultdict(list)
+        for snap in snapshots:
+            self._by_token[snap.token_id].append(snap)
+            self._ts_by_token[snap.token_id].append(snap.timestamp)
+
+    def get_nearest(
+        self,
+        token_id: str,
+        timestamp_ms: int,
+        tolerance_ms: int = 5000,
+    ) -> OrderBookSnapshot | None:
+        """Find the snapshot nearest to a given timestamp.
+
+        Use binary search to locate the closest match within the
+        tolerance window.
+
+        Args:
+            token_id: CLOB token identifier.
+            timestamp_ms: Target epoch milliseconds.
+            tolerance_ms: Maximum allowed distance in milliseconds.
+
+        Returns:
+            The nearest ``OrderBookSnapshot``, or ``None`` if nothing
+            exists within the tolerance window.
+
+        """
+        timestamps = self._ts_by_token.get(token_id)
+        if not timestamps:
+            return None
+
+        snaps = self._by_token[token_id]
+        idx = bisect.bisect_left(timestamps, timestamp_ms)
+
+        best: OrderBookSnapshot | None = None
+        best_dist = tolerance_ms + 1
+
+        for candidate_idx in (idx - 1, idx):
+            if 0 <= candidate_idx < len(timestamps):
+                dist = abs(timestamps[candidate_idx] - timestamp_ms)
+                if dist <= tolerance_ms and dist < best_dist:
+                    best = snaps[candidate_idx]
+                    best_dist = dist
+
+        return best
+
+
+class WhaleTradeCache:
+    """In-memory cache of whale BUY trades keyed by condition ID.
+
+    Build from a bulk trade list and provide directional signal lookups
+    without DB queries.  Eliminates per-window whale signal fetches
+    during grid search backtests.
+    """
+
+    def __init__(self, trades: Sequence[WhaleTrade]) -> None:
+        """Build the cache from a pre-sorted trade list.
+
+        Args:
+            trades: BUY-side whale trades sorted by
+                ``(condition_id, timestamp)``.
+
+        """
+        self._by_condition: dict[str, list[WhaleTrade]] = defaultdict(list)
+        for trade in trades:
+            self._by_condition[trade.condition_id].append(trade)
+
+    def get_signal(self, condition_id: str, *, before_ts: int | None = None) -> str | None:
+        """Return the whale directional bet for a market.
+
+        Filter BUY trades by timestamp, group by outcome, and return
+        the outcome with the larger total dollar volume (size * price).
+
+        Args:
+            condition_id: Polymarket market condition identifier.
+            before_ts: Only consider trades at or before this epoch-second
+                timestamp.  Use in backtesting to prevent look-ahead bias.
+
+        Returns:
+            ``"Up"`` or ``"Down"`` if a whale has a clear directional
+            bet, ``None`` if no whale activity.
+
+        """
+        trades = self._by_condition.get(condition_id)
+        if not trades:
+            return None
+
+        volume_by_outcome: dict[str, float] = defaultdict(float)
+        for trade in trades:
+            if before_ts is not None and trade.timestamp > before_ts:
+                continue
+            volume_by_outcome[trade.outcome] += trade.size * trade.price
+
+        if not volume_by_outcome:
+            return None
+
+        top_outcome = max(volume_by_outcome, key=lambda k: volume_by_outcome[k])
+        if top_outcome in ("Up", "Down"):
+            return top_outcome
+        return None
 
 
 @dataclass(frozen=True)
@@ -225,12 +351,19 @@ async def run_directional_backtest(
     candles_by_asset: dict[str, list[Candle]] | None = None,
     series_slug: str | None = None,
     whale_repo: WhaleRepository | None = None,
+    metadata_list: list[MarketMetadata] | None = None,
+    snapshot_cache: BookSnapshotCache | None = None,
+    whale_cache: WhaleTradeCache | None = None,
 ) -> DirectionalBacktestResult:
     """Run a directional backtest over a date range.
 
     Load market metadata from the tick database, then replay each market
     window through the ``DirectionalEngine``.  For each window, step the
     clock from window start through the entry window to settlement.
+
+    When ``snapshot_cache`` and ``whale_cache`` are provided (e.g. from
+    a grid search), use them instead of per-window DB queries for order
+    book snapshots and whale signals.
 
     Args:
         config: Algorithm configuration for the backtest.
@@ -242,14 +375,23 @@ async def run_directional_backtest(
         series_slug: Filter metadata to a specific series slug.
         whale_repo: Whale trade repository for directional signals.
             When ``None``, whale signals are omitted (weight is dead).
+        metadata_list: Pre-loaded market metadata.  When provided, skip
+            the metadata DB query (used by grid search to avoid
+            redundant fetches).
+        snapshot_cache: Pre-built order book snapshot cache.  When
+            provided, use in-memory lookups instead of per-window DB
+            queries.
+        whale_cache: Pre-built whale trade cache.  When provided, use
+            in-memory lookups instead of per-window DB queries.
 
     Returns:
         Aggregate backtest result with performance and calibration metrics.
 
     """
-    metadata_list = await repo.get_market_metadata_in_range(
-        start_ts, end_ts, series_slug=series_slug
-    )
+    if metadata_list is None:
+        metadata_list = await repo.get_market_metadata_in_range(
+            start_ts, end_ts, series_slug=series_slug
+        )
 
     if not metadata_list:
         logger.warning("No market metadata found for %d - %d", start_ts, end_ts)
@@ -261,7 +403,16 @@ async def run_directional_backtest(
     acc = _CalibrationAccumulator()
 
     for meta in metadata_list:
-        await _replay_window(config, repo, meta, candles, acc, whale_repo=whale_repo)
+        await _replay_window(
+            config,
+            repo,
+            meta,
+            candles,
+            acc,
+            whale_repo=whale_repo,
+            snapshot_cache=snapshot_cache,
+            whale_cache=whale_cache,
+        )
 
     return _build_result(config.capital, len(metadata_list), acc)
 
@@ -274,11 +425,15 @@ async def _replay_window(
     acc: _CalibrationAccumulator,
     *,
     whale_repo: WhaleRepository | None = None,
+    snapshot_cache: BookSnapshotCache | None = None,
+    whale_cache: WhaleTradeCache | None = None,
 ) -> None:
     """Replay a single market window through the engine.
 
     Load real order book snapshots and whale signals from the database
     when available, falling back to defaults when data is missing.
+    When caches are provided, use in-memory lookups instead of DB
+    queries.
 
     Args:
         config: Algorithm configuration.
@@ -287,6 +442,8 @@ async def _replay_window(
         candles: Pre-loaded candles keyed by asset.
         acc: Accumulator for metrics.
         whale_repo: Whale repository for directional signals.
+        snapshot_cache: Pre-built snapshot cache (grid search mode).
+        whale_cache: Pre-built whale trade cache (grid search mode).
 
     """
     opp = _metadata_to_opportunity(meta)
@@ -305,12 +462,20 @@ async def _replay_window(
     entry_eval_ts = meta.window_end_ts - config.entry_window_start
     entry_eval_ms = entry_eval_ts * _MS_PER_SECOND
 
-    up_snapshot = await repo.get_nearest_book_snapshot(
-        meta.up_token_id, entry_eval_ms, tolerance_ms=30_000
-    )
-    down_snapshot = await repo.get_nearest_book_snapshot(
-        meta.down_token_id, entry_eval_ms, tolerance_ms=30_000
-    )
+    if snapshot_cache is not None:
+        up_snapshot = snapshot_cache.get_nearest(
+            meta.up_token_id, entry_eval_ms, tolerance_ms=30_000
+        )
+        down_snapshot = snapshot_cache.get_nearest(
+            meta.down_token_id, entry_eval_ms, tolerance_ms=30_000
+        )
+    else:
+        up_snapshot = await repo.get_nearest_book_snapshot(
+            meta.up_token_id, entry_eval_ms, tolerance_ms=30_000
+        )
+        down_snapshot = await repo.get_nearest_book_snapshot(
+            meta.down_token_id, entry_eval_ms, tolerance_ms=30_000
+        )
 
     up_book = (
         _snapshot_to_order_book(up_snapshot)
@@ -335,11 +500,14 @@ async def _replay_window(
     replay_md.set_outcome(meta.condition_id, outcome)
     replay_md.set_order_books(meta.condition_id, up_book, down_book)
 
-    # Load whale signal if repository is available (time-bounded to prevent look-ahead)
-    if whale_repo is not None:
+    # Load whale signal — prefer cache, fall back to DB query
+    signal: str | None = None
+    if whale_cache is not None:
+        signal = whale_cache.get_signal(meta.condition_id, before_ts=entry_eval_ts)
+    elif whale_repo is not None:
         signal = await whale_repo.get_whale_signal(meta.condition_id, before_ts=entry_eval_ts)
-        if signal is not None:
-            replay_md.set_whale_signal(meta.condition_id, signal)
+    if signal is not None:
+        replay_md.set_whale_signal(meta.condition_id, signal)
 
     execution = BacktestExecution(capital=config.capital)
     estimator = ProbabilityEstimator(config)

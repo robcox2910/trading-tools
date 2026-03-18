@@ -243,6 +243,67 @@ class TestWhaleRepository:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_get_buy_trades_for_conditions(self, repo: WhaleRepository) -> None:
+        """Return BUY trades filtered by condition IDs."""
+        trades = [
+            _make_trade(
+                transaction_hash="tx_buy_up",
+                side="BUY",
+                condition_id=_CONDITION_A,
+                outcome="Up",
+            ),
+            _make_trade(
+                transaction_hash="tx_sell",
+                side="SELL",
+                condition_id=_CONDITION_A,
+                outcome="Up",
+            ),
+            _make_trade(
+                transaction_hash="tx_buy_other",
+                side="BUY",
+                condition_id="cond_other",
+                outcome="Down",
+            ),
+            _make_trade(
+                transaction_hash="tx_buy_down",
+                side="BUY",
+                condition_id=_CONDITION_A,
+                outcome="Down",
+                timestamp=_BASE_TS + 100,
+            ),
+        ]
+        await repo.save_trades(trades)
+
+        result = await repo.get_buy_trades_for_conditions({_CONDITION_A})
+
+        # Only BUY trades for cond_aaa — excludes SELL and cond_other
+        assert len(result) == 2
+        assert all(t.side == "BUY" for t in result)
+        assert all(t.condition_id == _CONDITION_A for t in result)
+        # Ordered by condition_id, timestamp
+        assert result[0].timestamp <= result[1].timestamp
+
+    @pytest.mark.asyncio
+    async def test_get_buy_trades_for_conditions_empty_input(self, repo: WhaleRepository) -> None:
+        """Return empty list when given empty condition set."""
+        result = await repo.get_buy_trades_for_conditions(set())
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_buy_trades_for_conditions_multiple(self, repo: WhaleRepository) -> None:
+        """Return BUY trades across multiple condition IDs."""
+        trades = [
+            _make_trade(transaction_hash="tx_1", side="BUY", condition_id="c1"),
+            _make_trade(transaction_hash="tx_2", side="BUY", condition_id="c2"),
+            _make_trade(transaction_hash="tx_3", side="BUY", condition_id="c3"),
+        ]
+        await repo.save_trades(trades)
+
+        result = await repo.get_buy_trades_for_conditions({"c1", "c2"})
+        assert len(result) == 2
+        assert {t.condition_id for t in result} == {"c1", "c2"}
+
+    @pytest.mark.asyncio
     async def test_close(self, repo: WhaleRepository) -> None:
         """Close disposes the engine without raising."""
         await repo.close()

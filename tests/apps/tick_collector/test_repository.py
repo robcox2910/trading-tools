@@ -427,3 +427,41 @@ class TestOrderBookSnapshotRepository:
 
         timestamps = [s.timestamp for s in result]
         assert timestamps == sorted(timestamps)
+
+    @pytest.mark.asyncio
+    async def test_get_all_book_snapshots_in_range(self, repo: TickRepository) -> None:
+        """Return all snapshots across all tokens in a time range."""
+        snapshots = [
+            _make_book_snapshot(token_id=_TOKEN_A, timestamp=_BASE_TS),
+            _make_book_snapshot(token_id=_TOKEN_B, timestamp=_BASE_TS + 1000),
+            _make_book_snapshot(token_id=_TOKEN_A, timestamp=_BASE_TS + 2000),
+            _make_book_snapshot(token_id=_TOKEN_B, timestamp=_BASE_TS + 10000),
+        ]
+        await repo.save_order_book_snapshots(snapshots)
+
+        result = await repo.get_all_book_snapshots_in_range(
+            start_ms=_BASE_TS,
+            end_ms=_BASE_TS + 5000,
+        )
+
+        assert len(result) == 3
+        # Ordered by token_id then timestamp
+        assert result[0].token_id == _TOKEN_A
+        assert result[0].timestamp == _BASE_TS
+        assert result[1].token_id == _TOKEN_A
+        assert result[1].timestamp == _BASE_TS + 2000
+        assert result[2].token_id == _TOKEN_B
+        assert result[2].timestamp == _BASE_TS + 1000
+
+    @pytest.mark.asyncio
+    async def test_get_all_book_snapshots_in_range_empty(self, repo: TickRepository) -> None:
+        """Return empty list when no snapshots exist in range."""
+        snapshots = [_make_book_snapshot(timestamp=_BASE_TS)]
+        await repo.save_order_book_snapshots(snapshots)
+
+        result = await repo.get_all_book_snapshots_in_range(
+            start_ms=_BASE_TS + 10000,
+            end_ms=_BASE_TS + 20000,
+        )
+
+        assert result == []
