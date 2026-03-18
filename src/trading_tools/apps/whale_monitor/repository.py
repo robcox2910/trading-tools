@@ -160,6 +160,43 @@ class WhaleRepository:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
+    async def get_whale_signal(self, condition_id: str) -> str | None:
+        """Return the whale's directional bet for a market.
+
+        Query ALL BUY trades for the given condition_id (each condition_id
+        is unique to one market window), group by outcome, and return the
+        outcome with the larger total dollar volume (size * price).
+
+        Args:
+            condition_id: Polymarket market condition identifier.
+
+        Returns:
+            ``"Up"`` or ``"Down"`` if a whale has a clear directional
+            bet, ``None`` if no whale activity.
+
+        """
+        stmt = (
+            select(
+                WhaleTrade.outcome,
+                func.sum(WhaleTrade.size * WhaleTrade.price).label("dollar_vol"),
+            )
+            .where(
+                WhaleTrade.condition_id == condition_id,
+                WhaleTrade.side == "BUY",
+            )
+            .group_by(WhaleTrade.outcome)
+            .order_by(func.sum(WhaleTrade.size * WhaleTrade.price).desc())
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            rows = result.all()
+            if not rows:
+                return None
+            top_outcome = rows[0][0]
+            if top_outcome in ("Up", "Down"):
+                return top_outcome
+            return None
+
     async def get_trade_count(self, address: str | None = None) -> int:
         """Return the total number of whale trade records.
 

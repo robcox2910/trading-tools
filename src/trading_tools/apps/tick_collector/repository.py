@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from trading_tools.apps.tick_collector.models import Base, OrderBookSnapshot, Tick
+from trading_tools.apps.tick_collector.models import Base, MarketMetadata, OrderBookSnapshot, Tick
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +241,75 @@ class TickRepository:
         async with self._session_factory() as session:
             result = await session.execute(stmt)
             return result.scalars().first()
+
+    async def save_market_metadata(self, metadata: MarketMetadata) -> None:
+        """Insert or update a market metadata record (upsert by condition_id).
+
+        Use merge to handle both new inserts and updates for markets
+        that are re-discovered with updated timestamps.
+
+        Args:
+            metadata: ``MarketMetadata`` ORM instance to persist.
+
+        """
+        async with self._session_factory() as session, session.begin():
+            await session.merge(metadata)
+        logger.debug("Saved market metadata for %s", metadata.condition_id[:12])
+
+    async def save_market_metadata_batch(self, batch: list[MarketMetadata]) -> None:
+        """Insert or update a batch of market metadata records.
+
+        Args:
+            batch: List of ``MarketMetadata`` ORM instances to persist.
+
+        """
+        if not batch:
+            return
+        async with self._session_factory() as session, session.begin():
+            for m in batch:
+                await session.merge(m)
+        logger.debug("Saved %d market metadata records", len(batch))
+
+    async def get_market_metadata_in_range(
+        self,
+        start_ts: int,
+        end_ts: int,
+        *,
+        asset: str | None = None,
+        series_slug: str | None = None,
+    ) -> list[MarketMetadata]:
+        """Query market metadata for windows overlapping a time range.
+
+        Return markets whose window overlaps [start_ts, end_ts] — i.e.
+        ``window_start_ts < end_ts AND window_end_ts > start_ts``.
+
+        Args:
+            start_ts: Inclusive lower bound (epoch seconds).
+            end_ts: Inclusive upper bound (epoch seconds).
+            asset: If set, filter by asset (e.g. ``"BTC-USD"``).
+            series_slug: If set, filter by series slug.
+
+        Returns:
+            List of matching ``MarketMetadata`` rows ordered by window_start_ts.
+
+        """
+        stmt = (
+            select(MarketMetadata)
+            .where(
+                MarketMetadata.window_start_ts < end_ts,
+                MarketMetadata.window_end_ts > start_ts,
+            )
+            .order_by(MarketMetadata.window_start_ts)
+        )
+
+        if asset is not None:
+            stmt = stmt.where(MarketMetadata.asset == asset)
+        if series_slug is not None:
+            stmt = stmt.where(MarketMetadata.series_slug == series_slug)
+
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
 
     async def close(self) -> None:
         """Dispose the async engine and release all connections."""

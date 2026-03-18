@@ -47,7 +47,10 @@ class GammaClient:
 
         """
         self.base_url = base_url.rstrip("/")
-        self._http_client = httpx.AsyncClient(timeout=timeout)
+        self._http_client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        )
 
     async def get_markets(
         self,
@@ -125,10 +128,11 @@ class GammaClient:
         self,
         *,
         slug: str = "",
+        title_contains: str = "",
         active: bool = True,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Fetch events from the Gamma API, optionally filtered by slug.
+        """Fetch events from the Gamma API, optionally filtered by slug or title.
 
         Events group related markets (e.g. a 5-minute crypto Up/Down series).
         Each event contains one or more markets with their condition IDs and
@@ -136,6 +140,7 @@ class GammaClient:
 
         Args:
             slug: Event slug to filter by (e.g. ``btc-updown-5m``).
+            title_contains: Substring to match in event title.
             active: Include only active events.
             limit: Maximum number of events to return.
 
@@ -152,6 +157,8 @@ class GammaClient:
         }
         if slug:
             params["slug"] = slug
+        if title_contains:
+            params["title_contains"] = title_contains
         return await self._get("/events", params=params)
 
     async def _get(
@@ -207,7 +214,7 @@ class GammaClient:
         try:
             data = response.json()
             msg: str = data.get("message", f"HTTP {response.status_code}")
-        except Exception:
+        except (ValueError, KeyError):
             msg = f"HTTP {response.status_code}"
         raise PolymarketAPIError(msg=msg, status_code=response.status_code)
 

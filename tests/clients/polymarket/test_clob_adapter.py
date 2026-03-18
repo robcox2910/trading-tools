@@ -51,7 +51,7 @@ class TestFetchMidpoint404:
     def test_raises_on_generic_exception(self) -> None:
         """Raise PolymarketAPIError for unexpected exceptions."""
         client = MagicMock()
-        client.get_midpoint.side_effect = RuntimeError("connection lost")
+        client.get_midpoint.side_effect = ValueError("connection lost")
         with pytest.raises(PolymarketAPIError, match="Failed to fetch midpoint"):
             _clob_adapter.fetch_midpoint(client, _TOKEN_ID)
 
@@ -186,7 +186,7 @@ class TestDeriveApiCreds:
     def test_raises_on_generic_exception(self) -> None:
         """Raise PolymarketAPIError for unexpected errors."""
         client = MagicMock()
-        client.derive_api_key.side_effect = RuntimeError("network error")
+        client.derive_api_key.side_effect = ValueError("network error")
         with pytest.raises(PolymarketAPIError, match="Failed to derive"):
             _clob_adapter.derive_api_creds(client)
 
@@ -228,7 +228,7 @@ class TestPlaceMarketOrder:
     def test_raises_on_failure(self) -> None:
         """Raise PolymarketAPIError when market order fails."""
         client = MagicMock()
-        client.create_market_order.side_effect = RuntimeError("rejected")
+        client.create_market_order.side_effect = ValueError("rejected")
         with pytest.raises(PolymarketAPIError, match="Failed to place market order"):
             _clob_adapter.place_market_order(client, _TOKEN_ID, "BUY", 100.0)
 
@@ -360,7 +360,7 @@ class TestGetOnchainUsdcBalance:
         mock_w3 = MagicMock()
         mock_w3.is_connected.return_value = True
         mock_contract = MagicMock()
-        mock_contract.functions.balanceOf.return_value.call.side_effect = RuntimeError("revert")
+        mock_contract.functions.balanceOf.return_value.call.side_effect = ValueError("revert")
         mock_w3.eth.contract.return_value = mock_contract
 
         with patch("trading_tools.clients.polymarket._clob_adapter.Web3") as mock_web3_cls:

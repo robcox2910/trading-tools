@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Union
 
 import pandas as pd
-import pandera as pa
+import pandera.pandas as pa
 from pandera.typing import Series  # noqa: TC002 — needed at runtime by pandera DataFrameModel
 
 from trading_tools.apps.whale_monitor.enricher import EnrichedTrade

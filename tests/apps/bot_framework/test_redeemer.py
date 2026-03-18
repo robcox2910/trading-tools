@@ -140,7 +140,7 @@ class TestRedeemerErrorHandling:
     ) -> None:
         """Log discovery errors without propagation."""
         client = AsyncMock()
-        client.get_redeemable_positions = AsyncMock(side_effect=RuntimeError("API down"))
+        client.get_redeemable_positions = AsyncMock(side_effect=ValueError("API down"))
         redeemer = PositionRedeemer(client=client)
 
         with caplog.at_level(
@@ -158,7 +158,7 @@ class TestRedeemerErrorHandling:
         pos = _make_position()
         client = AsyncMock()
         client.get_redeemable_positions = AsyncMock(return_value=[pos])
-        client.redeem_positions = AsyncMock(side_effect=Exception("RPC timeout"))
+        client.redeem_positions = AsyncMock(side_effect=OSError("RPC timeout"))
         redeemer = PositionRedeemer(client=client)
 
         with caplog.at_level(

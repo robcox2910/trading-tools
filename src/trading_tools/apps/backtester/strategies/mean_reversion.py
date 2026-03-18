@@ -43,6 +43,7 @@ Params:
 from collections import deque
 from decimal import Decimal
 
+from trading_tools.apps.backtester.indicators import z_score
 from trading_tools.core.models import ONE, Candle, Side, Signal
 
 
@@ -81,10 +82,10 @@ class MeanReversionStrategy:
 
         if self._candle_count < self._period + 1:
             if self._candle_count >= self._period:
-                self._prev_z = self._compute_z()
+                self._prev_z = z_score(list(self._closes))
             return None
 
-        curr_z = self._compute_z()
+        curr_z = z_score(list(self._closes))
         prev_z = self._prev_z
         self._prev_z = curr_z
 
@@ -103,13 +104,3 @@ class MeanReversionStrategy:
                 reason=f"Z-score ({curr_z:.2f}) crossed above {self._z_threshold}",
             )
         return None
-
-    def _compute_z(self) -> Decimal:
-        """Compute z-score of the latest close relative to the rolling window."""
-        closes = list(self._closes)
-        mean = sum(closes) / Decimal(len(closes))
-        variance = sum((c - mean) ** 2 for c in closes) / Decimal(len(closes))
-        if variance == 0:
-            return Decimal(0)
-        std = variance.sqrt()
-        return (closes[-1] - mean) / std

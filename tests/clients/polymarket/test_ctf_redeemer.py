@@ -78,7 +78,7 @@ class TestRedeemPositions:
             mock_contract = MagicMock()
             mock_instance.eth.contract.return_value = mock_contract
             mock_instance.eth.get_transaction_count.return_value = 0
-            mock_contract.functions.proxy.return_value.build_transaction.side_effect = RuntimeError(
+            mock_contract.functions.proxy.return_value.build_transaction.side_effect = ValueError(
                 "gas estimation failed"
             )
 

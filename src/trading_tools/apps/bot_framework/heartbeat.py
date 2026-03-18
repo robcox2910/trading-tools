@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from decimal import Decimal
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -59,8 +60,8 @@ class HeartbeatLogger:
 
         parts: list[str] = []
         for key, value in metrics.items():
-            if isinstance(value, float):
-                parts.append(f"{key}={value:.2f}")
+            if isinstance(value, float | Decimal):
+                parts.append(f"{key}={float(value):.2f}")
             else:
                 parts.append(f"{key}={value}")
 

@@ -1,6 +1,28 @@
-"""Timestamp parsing utilities for CLI date arguments."""
+"""Timestamp parsing and conversion utilities.
 
+Provide shared timestamp constants and helpers used across collectors,
+engines, and CLI commands. Centralise ``now_ms()``, ``MS_PER_SECOND``,
+and ``FIVE_MINUTES`` to eliminate duplicate definitions.
+"""
+
+import time
 from datetime import UTC, datetime
+
+MS_PER_SECOND = 1000
+"""Milliseconds per second — used when converting between epoch-seconds and epoch-ms."""
+
+FIVE_MINUTES = 300
+"""Five minutes in seconds — used for prediction market window bucketing."""
+
+
+def now_ms() -> int:
+    """Return the current time as epoch milliseconds.
+
+    Returns:
+        Current wall-clock time in milliseconds since the Unix epoch.
+
+    """
+    return int(time.time() * MS_PER_SECOND)
 
 
 def parse_timestamp(value: str) -> int:

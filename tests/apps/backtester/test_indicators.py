@@ -8,10 +8,12 @@ from trading_tools.apps.backtester.indicators import (
     adx,
     atr,
     correlation,
+    detect_crossover,
     ema,
     rolling_std,
     rsi,
     sma,
+    z_score,
 )
 from trading_tools.core.models import Candle, Interval
 
@@ -281,3 +283,108 @@ class TestAdx:
         ]
         result = adx(candles, period=5)
         assert _ZERO <= result <= _HUNDRED
+
+    def test_minimum_candles_produces_averaged_dx(self) -> None:
+        """Compute ADX when exactly 2*period+1 candles are provided (few DX values).
+
+        With the minimum candle count, only ``period + 1`` DX values exist.
+        Verify that ADX still returns a bounded, valid result.
+        """
+        period = 3
+        needed = 2 * period + 1  # 7 candles → 6 bars → 4 DX values
+        candles = [
+            Candle(
+                symbol="BTC-USD",
+                timestamp=1000 + i * 3600,
+                open=Decimal(str(100 + i * 2)),
+                high=Decimal(str(103 + i * 2)),
+                low=Decimal(str(97 + i * 2)),
+                close=Decimal(str(100 + i * 2)),
+                volume=Decimal(100),
+                interval=Interval.H1,
+            )
+            for i in range(needed)
+        ]
+        result = adx(candles, period=period)
+        assert _ZERO <= result <= _HUNDRED
+
+    def test_flat_market_low_adx(self) -> None:
+        """Return a low ADX when all candles have identical OHLC (no directional movement).
+
+        When highs, lows, and closes are constant, directional movement is
+        zero and ADX should be zero or very close to it.
+        """
+        flat_price = Decimal(100)
+        period = 3
+        needed = 2 * period + 1
+        candles = [
+            Candle(
+                symbol="BTC-USD",
+                timestamp=1000 + i * 3600,
+                open=flat_price,
+                high=flat_price,
+                low=flat_price,
+                close=flat_price,
+                volume=Decimal(100),
+                interval=Interval.H1,
+            )
+            for i in range(needed)
+        ]
+        result = adx(candles, period=period)
+        assert result == _ZERO
+
+
+class TestZScore:
+    """Tests for z_score helper."""
+
+    def test_mean_value_is_zero(self) -> None:
+        """Z-score of a value at the mean is zero."""
+        values = [Decimal(10), Decimal(20), Decimal(15)]
+        # Mean = 15, last value = 15 → z = 0
+        assert z_score(values) == _ZERO
+
+    def test_above_mean_positive(self) -> None:
+        """Z-score is positive when the last value exceeds the mean."""
+        values = [Decimal(10), Decimal(10), Decimal(20)]
+        result = z_score(values)
+        assert result > _ZERO
+
+    def test_below_mean_negative(self) -> None:
+        """Z-score is negative when the last value is below the mean."""
+        values = [Decimal(20), Decimal(20), Decimal(10)]
+        result = z_score(values)
+        assert result < _ZERO
+
+    def test_constant_values_zero(self) -> None:
+        """Z-score is zero for constant values (zero variance)."""
+        values = [Decimal(5)] * 5
+        assert z_score(values) == _ZERO
+
+    def test_too_few_values_raises(self) -> None:
+        """Raise ValueError for fewer than 2 values."""
+        with pytest.raises(ValueError, match="at least 2"):
+            z_score([Decimal(1)])
+
+
+class TestDetectCrossover:
+    """Tests for detect_crossover helper."""
+
+    def test_bullish_crossover(self) -> None:
+        """Return 1 when A crosses above B."""
+        assert detect_crossover(Decimal(5), Decimal(15), Decimal(10), Decimal(10)) == 1
+
+    def test_bearish_crossover(self) -> None:
+        """Return -1 when A crosses below B."""
+        assert detect_crossover(Decimal(15), Decimal(5), Decimal(10), Decimal(10)) == -1
+
+    def test_no_crossover(self) -> None:
+        """Return 0 when no crossover occurs."""
+        assert detect_crossover(Decimal(15), Decimal(16), Decimal(10), Decimal(10)) == 0
+
+    def test_touch_is_bullish(self) -> None:
+        """Return 1 when A touches B from below then goes above."""
+        assert detect_crossover(Decimal(10), Decimal(11), Decimal(10), Decimal(10)) == 1
+
+    def test_equal_no_change(self) -> None:
+        """Return 0 when both remain equal."""
+        assert detect_crossover(Decimal(10), Decimal(10), Decimal(10), Decimal(10)) == 0

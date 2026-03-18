@@ -522,7 +522,7 @@ class TestProperties:
         assert portfolio.portfolio_value == _PORTFOLIO_VALUE
 
         # Second call fails — should keep the old portfolio value
-        client.get_portfolio_value = AsyncMock(side_effect=Exception("API down"))
+        client.get_portfolio_value = AsyncMock(side_effect=ValueError("API down"))
         await portfolio.refresh_balance()
         assert portfolio.portfolio_value == _PORTFOLIO_VALUE
 
@@ -530,7 +530,7 @@ class TestProperties:
     async def test_portfolio_value_failure_does_not_affect_clob_balance(self) -> None:
         """Verify portfolio value failure does not prevent CLOB balance from updating."""
         client = _mock_client()
-        client.get_portfolio_value = AsyncMock(side_effect=Exception("API down"))
+        client.get_portfolio_value = AsyncMock(side_effect=ValueError("API down"))
         portfolio = LivePortfolio(client, _MAX_POSITION_PCT)
 
         await portfolio.refresh_balance()

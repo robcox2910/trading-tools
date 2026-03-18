@@ -13,6 +13,59 @@ from decimal import Decimal
 from trading_tools.core.models import HUNDRED, ONE, TWO, ZERO, Candle
 
 
+def z_score(values: Sequence[Decimal]) -> Decimal:
+    """Compute the z-score of the last element relative to the full sequence.
+
+    Use population standard deviation (divide by N).  Return ``ZERO`` when
+    the sequence has zero variance (all values are identical).
+
+    Args:
+        values: Sequence of Decimal values (at least 2 required).
+
+    Returns:
+        The z-score of ``values[-1]``.
+
+    Raises:
+        ValueError: If fewer than 2 values are provided.
+
+    """
+    n = len(values)
+    min_values = 2
+    if n < min_values:
+        msg = f"Need at least 2 values for z_score, got {n}"
+        raise ValueError(msg)
+    dec_n = Decimal(n)
+    mean = sum(values) / dec_n
+    variance = sum((v - mean) ** TWO for v in values) / dec_n
+    if variance == ZERO:
+        return ZERO
+    std = variance.sqrt()
+    return (values[-1] - mean) / std
+
+
+def detect_crossover(prev_a: Decimal, curr_a: Decimal, prev_b: Decimal, curr_b: Decimal) -> int:
+    """Detect whether series *a* has crossed series *b*.
+
+    Return ``1`` for a bullish crossover (a crosses above b), ``-1`` for a
+    bearish crossover (a crosses below b), or ``0`` for no crossover.
+
+    Args:
+        prev_a: Previous value of series A.
+        curr_a: Current value of series A.
+        prev_b: Previous value of series B.
+        curr_b: Current value of series B.
+
+    Returns:
+        ``1`` (bullish), ``-1`` (bearish), or ``0`` (no crossover).
+
+    """
+    if prev_a <= prev_b and curr_a > curr_b:
+        return 1
+    if prev_a >= prev_b and curr_a < curr_b:
+        return -1
+    return 0
+
+
 def sma(candles: Sequence[Candle], period: int) -> Decimal:
     """Compute the simple moving average of close prices over the last ``period`` candles.
 
@@ -323,6 +376,8 @@ def adx(candles: Sequence[Candle], period: int = 14) -> Decimal:
 
     # ADX = Wilder's smoothed average of DX values
     # First ADX = average of first `period` DX values
+    if not dx_values:
+        return ZERO
     if len(dx_values) < period:
         return sum(dx_values) / Decimal(len(dx_values))
 

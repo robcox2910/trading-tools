@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from trading_tools.apps.whale_monitor.collector import (
     WhaleMonitor,
-    _now_ms,
     _parse_trade,
 )
 from trading_tools.apps.whale_monitor.config import WhaleMonitorConfig
-from trading_tools.apps.whale_monitor.models import TrackedWhale
+from trading_tools.core.timestamps import now_ms
 
-_ADDRESS = "0xa45fe11dd1420fca906ceac2c067844379a42429"
+from .conftest import DEFAULT_ADDRESS, make_raw_trade, make_tracked_whale, make_whale_config
+
+_ADDRESS = DEFAULT_ADDRESS
 _TX_HASH = "0xabc123"
 _EXPECTED_PRICE = 0.72
 _EXPECTED_SIZE = 50.0
@@ -24,89 +24,12 @@ _MIN_EPOCH_MS = 1_000_000_000_000
 _POLL_COUNT_2 = 2
 
 
-def _make_config(
-    *,
-    db_url: str = "sqlite+aiosqlite:///:memory:",
-    whales: tuple[str, ...] = (_ADDRESS,),
-    poll_interval_seconds: int = 60,
-) -> WhaleMonitorConfig:
-    """Create a WhaleMonitorConfig for testing.
-
-    Args:
-        db_url: Database connection string.
-        whales: Initial whale addresses.
-        poll_interval_seconds: Polling interval.
-
-    Returns:
-        WhaleMonitorConfig with test parameters.
-
-    """
-    return WhaleMonitorConfig(
-        db_url=db_url,
-        whales=whales,
-        poll_interval_seconds=poll_interval_seconds,
-    )
-
-
-def _make_raw_trade(
-    tx_hash: str = _TX_HASH,
-    price: float = 0.72,
-    size: float = 50.0,
-) -> dict[str, Any]:
-    """Create a sample raw trade dict from the Data API.
-
-    Args:
-        tx_hash: Transaction hash.
-        price: Trade price.
-        size: Trade size.
-
-    Returns:
-        Trade dictionary matching Data API format.
-
-    """
-    return {
-        "transactionHash": tx_hash,
-        "side": "BUY",
-        "asset_id": "asset_test",
-        "condition_id": "cond_test",
-        "size": size,
-        "price": price,
-        "timestamp": 1700000000,
-        "market": "BTC Up/Down",
-        "slug": "btc-updown",
-        "outcome": "Up",
-        "outcome_index": 0,
-    }
-
-
-def _make_tracked_whale(
-    address: str = _ADDRESS,
-    label: str = "Test-Whale",
-) -> TrackedWhale:
-    """Create a TrackedWhale instance for testing.
-
-    Args:
-        address: Whale proxy wallet address.
-        label: Friendly name.
-
-    Returns:
-        A TrackedWhale instance.
-
-    """
-    return TrackedWhale(
-        address=address,
-        label=label,
-        added_at=1700000000,
-        active=True,
-    )
-
-
 class TestParseTrade:
     """Tests for the _parse_trade helper function."""
 
     def test_parse_valid_trade(self) -> None:
         """Parse a valid raw trade into a WhaleTrade."""
-        raw = _make_raw_trade()
+        raw = make_raw_trade()
         trade = _parse_trade(raw, _ADDRESS, 1700000000000)
 
         assert trade is not None
@@ -147,31 +70,106 @@ class TestParseTrade:
 
 
 class TestNowMs:
-    """Tests for the _now_ms utility."""
+    """Tests for the now_ms utility."""
 
     def test_returns_positive_integer(self) -> None:
-        """Verify _now_ms returns a positive integer."""
-        result = _now_ms()
+        """Verify now_ms returns a positive integer."""
+        result = now_ms()
         assert isinstance(result, int)
         assert result > 0
 
     def test_returns_milliseconds(self) -> None:
         """Verify the value is in milliseconds (> 1e12 for modern epochs)."""
-        result = _now_ms()
+        result = now_ms()
         assert result > _MIN_EPOCH_MS
 
 
+_MALFORMED_EPOCH_MS = 1700000000000
+_EXTREME_PRICE = 999999999.99
+_EXTREME_SIZE = 999999999.99
+
+
+class TestParseTradeEdgeCases:
+    """Parametrized edge-case tests for _parse_trade covering malformed and extreme inputs."""
+
+    @pytest.mark.parametrize(
+        ("field_name", "bad_value"),
+        [
+            ("price", "invalid"),
+            ("size", "not_a_number"),
+            ("timestamp", "yesterday"),
+            ("outcome_index", "two"),
+        ],
+        ids=["malformed-price", "malformed-size", "malformed-timestamp", "malformed-outcome-index"],
+    )
+    def test_malformed_numeric_returns_none(
+        self,
+        field_name: str,
+        bad_value: str,
+    ) -> None:
+        """Return None when a required numeric field contains a non-numeric string."""
+        raw = make_raw_trade()
+        raw[field_name] = bad_value
+        trade = _parse_trade(raw, _ADDRESS, _MALFORMED_EPOCH_MS)
+        assert trade is None
+
+    def test_extreme_price_parses_successfully(self) -> None:
+        """Parse a trade with an extreme but valid price value."""
+        raw = make_raw_trade(price=_EXTREME_PRICE)
+        trade = _parse_trade(raw, _ADDRESS, _MALFORMED_EPOCH_MS)
+        assert trade is not None
+        assert trade.price == _EXTREME_PRICE
+
+    def test_extreme_size_parses_successfully(self) -> None:
+        """Parse a trade with an extreme but valid size value."""
+        raw = make_raw_trade(size=_EXTREME_SIZE)
+        trade = _parse_trade(raw, _ADDRESS, _MALFORMED_EPOCH_MS)
+        assert trade is not None
+        assert trade.size == _EXTREME_SIZE
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "price",
+            "size",
+            "side",
+            "outcome",
+        ],
+        ids=["null-price", "null-size", "null-side", "null-outcome"],
+    )
+    def test_none_in_optional_field_uses_default(self, field_name: str) -> None:
+        """Gracefully handle None values in optional fields by using defaults."""
+        raw = make_raw_trade()
+        raw[field_name] = None
+        trade = _parse_trade(raw, _ADDRESS, _MALFORMED_EPOCH_MS)
+        # None in optional fields should still parse (float(None) raises TypeError → None)
+        # or str(None) → "None" for string fields
+        # The function catches TypeError, so numeric None → None result
+        if field_name in ("price", "size"):
+            assert trade is None
+        else:
+            # String fields: str(None) = "None", so it parses but with "None" value
+            assert trade is not None
+
+    def test_none_transaction_hash_returns_none(self) -> None:
+        """Return None when transactionHash is None (KeyError path)."""
+        raw = make_raw_trade()
+        del raw["transactionHash"]
+        trade = _parse_trade(raw, _ADDRESS, _MALFORMED_EPOCH_MS)
+        assert trade is None
+
+
 class TestHandleShutdown:
-    """Tests for the shutdown signal handler."""
+    """Tests for the GracefulShutdown integration."""
 
     def test_sets_shutdown_flag(self) -> None:
-        """Verify _handle_shutdown sets the shutdown flag."""
-        config = _make_config()
+        """Verify request() sets the should_stop flag."""
+        config = make_whale_config()
         monitor = WhaleMonitor(config)
 
-        monitor._handle_shutdown()
+        monitor._shutdown.request()
 
-        assert monitor._shutdown is True
+        assert monitor._shutdown.should_stop is True
 
 
 class TestPollWhale:
@@ -180,7 +178,7 @@ class TestPollWhale:
     @pytest.mark.asyncio
     async def test_poll_whale_inserts_new_trades(self) -> None:
         """Verify new trades are inserted and count is returned."""
-        config = _make_config()
+        config = make_whale_config()
         monitor = WhaleMonitor(config)
 
         mock_repo = MagicMock()
@@ -190,8 +188,8 @@ class TestPollWhale:
 
         mock_response = MagicMock()
         mock_response.json.return_value = [
-            _make_raw_trade(tx_hash="tx_1"),
-            _make_raw_trade(tx_hash="tx_2"),
+            make_raw_trade(tx_hash="tx_1"),
+            make_raw_trade(tx_hash="tx_2"),
         ]
         mock_response.raise_for_status = MagicMock()
 
@@ -208,7 +206,7 @@ class TestPollWhale:
     @pytest.mark.asyncio
     async def test_poll_whale_deduplicates(self) -> None:
         """Verify existing trades are skipped."""
-        config = _make_config()
+        config = make_whale_config()
         monitor = WhaleMonitor(config)
 
         mock_repo = MagicMock()
@@ -218,8 +216,8 @@ class TestPollWhale:
 
         mock_response = MagicMock()
         mock_response.json.return_value = [
-            _make_raw_trade(tx_hash="tx_existing"),
-            _make_raw_trade(tx_hash="tx_new"),
+            make_raw_trade(tx_hash="tx_existing"),
+            make_raw_trade(tx_hash="tx_new"),
         ]
         mock_response.raise_for_status = MagicMock()
 
@@ -236,7 +234,7 @@ class TestPollWhale:
     @pytest.mark.asyncio
     async def test_poll_whale_deduplicates_within_batch(self) -> None:
         """Verify duplicate hashes within the same API response are skipped."""
-        config = _make_config()
+        config = make_whale_config()
         monitor = WhaleMonitor(config)
 
         mock_repo = MagicMock()
@@ -246,9 +244,9 @@ class TestPollWhale:
 
         mock_response = MagicMock()
         mock_response.json.return_value = [
-            _make_raw_trade(tx_hash="tx_dup"),
-            _make_raw_trade(tx_hash="tx_dup"),
-            _make_raw_trade(tx_hash="tx_unique"),
+            make_raw_trade(tx_hash="tx_dup"),
+            make_raw_trade(tx_hash="tx_dup"),
+            make_raw_trade(tx_hash="tx_unique"),
         ]
         mock_response.raise_for_status = MagicMock()
 
@@ -266,7 +264,7 @@ class TestPollWhale:
     @pytest.mark.asyncio
     async def test_poll_whale_empty_response(self) -> None:
         """Return zero when API returns no trades."""
-        config = _make_config()
+        config = make_whale_config()
         monitor = WhaleMonitor(config)
 
         mock_repo = MagicMock()
@@ -299,8 +297,8 @@ class TestPollWhale:
         mock_repo.save_trades = AsyncMock()
         monitor._repo = mock_repo
 
-        page1 = [_make_raw_trade(tx_hash="tx_1"), _make_raw_trade(tx_hash="tx_2")]
-        page2 = [_make_raw_trade(tx_hash="tx_3")]
+        page1 = [make_raw_trade(tx_hash="tx_1"), make_raw_trade(tx_hash="tx_2")]
+        page2 = [make_raw_trade(tx_hash="tx_3")]
 
         mock_resp1 = MagicMock()
         mock_resp1.json.return_value = page1
@@ -325,7 +323,7 @@ class TestWhaleMonitorEndToEnd:
     @pytest.mark.asyncio
     async def test_run_no_whales_exits(self) -> None:
         """Return immediately when no whales are configured."""
-        config = _make_config(whales=())
+        config = make_whale_config(whales=())
         monitor = WhaleMonitor(config)
 
         mock_repo = MagicMock()
@@ -334,8 +332,7 @@ class TestWhaleMonitorEndToEnd:
         mock_repo.close = AsyncMock()
         monitor._repo = mock_repo
 
-        with patch("asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value = MagicMock()
+        with patch.object(monitor._shutdown, "install"):
             await monitor.run()
 
         mock_repo.close.assert_awaited_once()
@@ -343,10 +340,10 @@ class TestWhaleMonitorEndToEnd:
     @pytest.mark.asyncio
     async def test_run_polls_and_shuts_down(self) -> None:
         """Verify run loop polls whales and respects shutdown flag."""
-        config = _make_config()
+        config = make_whale_config()
         monitor = WhaleMonitor(config)
 
-        whale = _make_tracked_whale()
+        whale = make_tracked_whale()
 
         mock_repo = MagicMock()
         mock_repo.init_db = AsyncMock()
@@ -359,23 +356,18 @@ class TestWhaleMonitorEndToEnd:
         monitor._repo = mock_repo
 
         mock_response = MagicMock()
-        mock_response.json.return_value = [_make_raw_trade()]
+        mock_response.json.return_value = [make_raw_trade()]
         mock_response.raise_for_status = MagicMock()
 
-        call_count = 0
-
         async def mock_sleep(delay: float) -> None:  # noqa: ARG001
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 1:
-                monitor._shutdown = True
+            # Request shutdown on every sleep call to ensure the loop exits
+            monitor._shutdown.request()
 
         with (
-            patch("asyncio.get_running_loop") as mock_loop,
+            patch.object(monitor._shutdown, "install"),
             patch("asyncio.sleep", side_effect=mock_sleep),
             patch("httpx.AsyncClient") as mock_http_cls,
         ):
-            mock_loop.return_value = MagicMock()
             mock_http = AsyncMock()
             mock_http.get = AsyncMock(return_value=mock_response)
             mock_http.__aenter__ = AsyncMock(return_value=mock_http)
@@ -392,11 +384,11 @@ class TestWhaleMonitorEndToEnd:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Verify heartbeat logs stats and resets counter."""
-        config = _make_config()
+        config = make_whale_config()
         monitor = WhaleMonitor(config)
         monitor._trades_since_heartbeat = 10
 
-        whale = _make_tracked_whale()
+        whale = make_tracked_whale()
         mock_repo = MagicMock()
         mock_repo.get_active_whales = AsyncMock(return_value=[whale])
         mock_repo.get_trade_count = AsyncMock(return_value=42)
@@ -408,7 +400,7 @@ class TestWhaleMonitorEndToEnd:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
-                monitor._shutdown = True
+                monitor._shutdown.request()
 
         with (
             patch("asyncio.sleep", side_effect=fast_sleep),
@@ -417,4 +409,4 @@ class TestWhaleMonitorEndToEnd:
             await monitor._periodic_heartbeat()
 
         assert monitor._trades_since_heartbeat == 0
-        assert "WHALE-MONITOR" in caplog.text
+        assert "HEARTBEAT" in caplog.text

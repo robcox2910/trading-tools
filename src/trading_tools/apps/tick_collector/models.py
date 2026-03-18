@@ -1,10 +1,13 @@
 """SQLAlchemy ORM models for the tick collector database.
 
-Define the ``Tick`` and ``OrderBookSnapshot`` tables. ``Tick`` stores individual
-trade events captured from the Polymarket CLOB WebSocket market channel.
-``OrderBookSnapshot`` stores periodic order book depth data polled from the
-CLOB REST API. Both schemas are designed for efficient backtesting queries
-filtered by asset/token and time range.
+Define the ``Tick``, ``OrderBookSnapshot``, and ``MarketMetadata`` tables.
+``Tick`` stores individual trade events captured from the Polymarket CLOB
+WebSocket market channel.  ``OrderBookSnapshot`` stores periodic order book
+depth data polled from the CLOB REST API.  ``MarketMetadata`` caches the
+human-readable market fields (asset, title, token IDs, window timestamps)
+needed by the spread capture backtester to reconstruct ``SpreadOpportunity``
+objects from raw tick data.  All schemas are designed for efficient
+backtesting queries filtered by asset/token and time range.
 """
 
 from sqlalchemy import BigInteger, Float, Index, Integer, String, Text
@@ -84,3 +87,41 @@ class OrderBookSnapshot(Base):
     midpoint: Mapped[float] = mapped_column(Float)
 
     __table_args__ = (Index("ix_book_token_timestamp", "token_id", "timestamp"),)
+
+
+class MarketMetadata(Base):
+    """Cached metadata for a Polymarket Up/Down market.
+
+    Store the human-readable fields that the tick collector discovers
+    during market resolution — asset name, title, token IDs, and window
+    timestamps.  The spread capture backtester uses these to reconstruct
+    ``SpreadOpportunity`` objects from raw tick and order book data
+    without needing live Gamma API access.
+
+    Attributes:
+        condition_id: Polymarket market condition identifier (primary key).
+        asset: Spot trading pair derived from the title (e.g. ``"BTC-USD"``).
+        title: Full market question text.
+        up_token_id: CLOB token identifier for the Up outcome.
+        down_token_id: CLOB token identifier for the Down outcome.
+        window_start_ts: UTC epoch seconds when the market window opens.
+        window_end_ts: UTC epoch seconds when the market window closes.
+        series_slug: Series slug that discovered this market (nullable).
+
+    """
+
+    __tablename__ = "market_metadata"
+
+    condition_id: Mapped[str] = mapped_column(String, primary_key=True)
+    asset: Mapped[str] = mapped_column(String, index=True)
+    title: Mapped[str] = mapped_column(String)
+    up_token_id: Mapped[str] = mapped_column(String)
+    down_token_id: Mapped[str] = mapped_column(String)
+    window_start_ts: Mapped[int] = mapped_column(BigInteger)
+    window_end_ts: Mapped[int] = mapped_column(BigInteger)
+    series_slug: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_market_meta_asset_window", "asset", "window_start_ts"),
+        Index("ix_market_meta_window", "window_start_ts", "window_end_ts"),
+    )

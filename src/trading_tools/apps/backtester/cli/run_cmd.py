@@ -28,7 +28,7 @@ from trading_tools.apps.backtester.strategy_factory import build_strategy
 from trading_tools.core.models import BacktestResult
 
 
-def run(  # noqa: PLR0913
+def run(
     source: Annotated[
         str,
         typer.Option(
@@ -129,7 +129,7 @@ def run(  # noqa: PLR0913
     )
 
 
-async def run_backtest(  # noqa: PLR0913
+async def run_backtest(
     *,
     source: str,
     csv: Path | None,

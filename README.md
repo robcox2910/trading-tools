@@ -119,11 +119,11 @@ trading-tools-polymarket whale-monitor --verbose
 trading-tools-polymarket whale-analyse --address 0x... --days 7
 trading-tools-polymarket whale-correlate --address 0x... --days 1
 
-# Copy whale bets in real-time (paper mode)
-trading-tools-polymarket whale-copy --address 0x... -v
+# Spread capture bot (paper mode)
+trading-tools-polymarket spread-capture --series-slugs btc-updown-5m -v
 
-# Copy whale bets with real orders
-trading-tools-polymarket whale-copy --address 0x... --confirm-live
+# Spread capture bot with real orders
+trading-tools-polymarket spread-capture --series-slugs btc-updown-5m --confirm-live
 ```
 
 See [Polymarket](docs/POLYMARKET.md) for all commands, options, and setup instructions.
@@ -167,6 +167,7 @@ All code follows TDD (Red-Green-Refactor) and must adhere to DRY and SOLID princ
 - **[Architecture](docs/ARCHITECTURE.md)** — Project structure, design principles, and module responsibilities
 - **[Strategy Guide](docs/STRATEGY_GUIDE.md)** — How to implement and integrate a new trading strategy
 - **[HTTP Client Usage](docs/HTTP_CLIENT_USAGE.md)** — Revolut X HTTP client API reference
+- **[Clients](docs/CLIENTS.md)** — Client module reference for all external API integrations
 - **[Contributing](CONTRIBUTING.md)** — Developer workflow, code standards, and PR process
 
 ## License

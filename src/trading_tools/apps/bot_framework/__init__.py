@@ -1,7 +1,7 @@
 """Shared bot framework with composable services for trading engines.
 
 Provide reusable building blocks that both the WebSocket-driven live engine
-and the polling-driven whale copy-trader compose to avoid duplicating
+and the polling-driven spread capture bot compose to avoid duplicating
 infrastructure code (balance management, heartbeat monitoring, graceful
 shutdown, redemption, order placement).
 

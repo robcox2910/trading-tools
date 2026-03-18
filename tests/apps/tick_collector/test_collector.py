@@ -12,7 +12,6 @@ import pytest
 
 from trading_tools.apps.tick_collector.collector import (
     TickCollector,
-    _now_ms,
     _seconds_until_next_discovery,
 )
 from trading_tools.apps.tick_collector.config import CollectorConfig
@@ -22,6 +21,7 @@ from trading_tools.clients.polymarket.models import (
     OrderBook,
     OrderLevel,
 )
+from trading_tools.core.timestamps import now_ms
 
 _CONDITION_ID = "cond_test_123"
 _ASSET_ID_YES = "token_yes_456"
@@ -279,7 +279,7 @@ class TestTickCollectorEndToEnd:
         async def _mock_stream(asset_ids: list[str]) -> Any:  # noqa: ARG001
             yield _make_trade_event()
             # Simulate shutdown after one event
-            collector._shutdown = True
+            collector._shutdown.request()
 
         mock_client = _mock_polymarket_client()
 
@@ -463,31 +463,31 @@ class TestTickCollectorDiscovery:
 
 
 class TestNowMs:
-    """Tests for the _now_ms utility."""
+    """Tests for the now_ms utility."""
 
     def test_returns_positive_integer(self) -> None:
-        """Verify _now_ms returns a positive integer."""
-        result = _now_ms()
+        """Verify now_ms returns a positive integer."""
+        result = now_ms()
         assert isinstance(result, int)
         assert result > 0
 
     def test_returns_milliseconds(self) -> None:
         """Verify the value is in milliseconds (> 1e12 for modern epochs)."""
-        result = _now_ms()
+        result = now_ms()
         assert result > _MIN_EPOCH_MS
 
 
 class TestHandleShutdown:
-    """Tests for the shutdown signal handler."""
+    """Tests for the GracefulShutdown integration."""
 
     def test_sets_shutdown_flag(self) -> None:
-        """Verify _handle_shutdown sets the shutdown flag."""
+        """Verify request() sets the should_stop flag."""
         config = _make_config()
         collector = TickCollector(config)
 
-        collector._handle_shutdown()
+        collector._shutdown.request()
 
-        assert collector._shutdown is True
+        assert collector._shutdown.should_stop is True
 
 
 _FIVE_MINUTES = 300
@@ -570,7 +570,7 @@ class TestDiscoveryFailure:
         )
 
         mock_client = _mock_polymarket_client()
-        mock_client.discover_series_markets = AsyncMock(side_effect=Exception("API unavailable"))
+        mock_client.discover_series_markets = AsyncMock(side_effect=ValueError("API unavailable"))
 
         with patch(
             "trading_tools.apps.tick_collector.collector.PolymarketClient",
@@ -588,7 +588,7 @@ class TestDiscoveryFailure:
         config = _make_config(markets=(_CONDITION_ID,))
 
         mock_client = _mock_polymarket_client()
-        mock_client.get_market_tokens = AsyncMock(side_effect=Exception("Market not found"))
+        mock_client.get_market_tokens = AsyncMock(side_effect=ValueError("Market not found"))
 
         with patch(
             "trading_tools.apps.tick_collector.collector.PolymarketClient",
@@ -641,7 +641,7 @@ class TestPeriodicTasks:
                 nonlocal call_count
                 call_count += 1
                 if call_count > 1:
-                    collector._shutdown = True
+                    collector._shutdown.request()
 
             with patch("asyncio.sleep", side_effect=fast_sleep):
                 await collector._periodic_discovery()
@@ -667,7 +667,7 @@ class TestPeriodicTasks:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
-                collector._shutdown = True
+                collector._shutdown.request()
 
         with (
             patch("asyncio.sleep", side_effect=fast_sleep),
@@ -676,7 +676,7 @@ class TestPeriodicTasks:
             await collector._periodic_heartbeat()
 
         assert collector._ticks_since_heartbeat == 0
-        assert "TICK-COLLECTOR" in caplog.text
+        assert "HEARTBEAT" in caplog.text
 
     @pytest.mark.asyncio
     async def test_periodic_flush_flushes_buffer(self) -> None:
@@ -699,7 +699,7 @@ class TestPeriodicTasks:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
-                collector._shutdown = True
+                collector._shutdown.request()
 
         with patch("asyncio.sleep", side_effect=fast_sleep):
             await collector._periodic_flush()
@@ -724,7 +724,7 @@ class TestPeriodicTasks:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
-                collector._shutdown = True
+                collector._shutdown.request()
 
         with patch("asyncio.sleep", side_effect=fast_sleep):
             await collector._periodic_flush()
@@ -837,7 +837,7 @@ class TestBookPollingBufferAndFlush:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
-                collector._shutdown = True
+                collector._shutdown.request()
 
         with (
             patch(

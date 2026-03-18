@@ -8,7 +8,7 @@ revolut_x:
   base_url: ${REVOLUT_X_BASE_URL:https://revx.revolut.com/api/1.0}
 
 # Environment Configuration
-environment: ${ENVIRONMENT:sandbox}
+environment: ${ENVIRONMENT:development}
 
 # Application Settings
 app:

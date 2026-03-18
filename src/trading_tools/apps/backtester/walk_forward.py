@@ -15,6 +15,7 @@ import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
 
+from trading_tools.apps.backtester._providers import CachedProvider
 from trading_tools.apps.backtester.engine import BacktestEngine
 from trading_tools.apps.backtester.metrics import calculate_metrics
 from trading_tools.apps.backtester.strategy_factory import STRATEGY_NAMES, build_strategy
@@ -54,28 +55,6 @@ class WalkForwardResult:
     aggregate_metrics: dict[str, Decimal]
     symbol: str
     interval: Interval
-
-
-class _SliceProvider:
-    """Candle provider that returns a pre-sliced list of candles.
-
-    Used internally by walk-forward to feed a subset of candles to
-    the backtest engine without re-fetching from the original source.
-    """
-
-    def __init__(self, candles: list[Candle]) -> None:
-        """Initialize with a fixed list of candles."""
-        self._candles = candles
-
-    async def get_candles(
-        self,
-        symbol: str,  # noqa: ARG002
-        interval: Interval,  # noqa: ARG002
-        start_ts: int,  # noqa: ARG002
-        end_ts: int,  # noqa: ARG002
-    ) -> list[Candle]:
-        """Return the pre-sliced candles ignoring filter parameters."""
-        return self._candles
 
 
 async def run_walk_forward(
@@ -147,7 +126,7 @@ async def run_walk_forward(
         )
 
         best_strategy = build_strategy(best_name, **strategy_params)  # type: ignore[arg-type]
-        test_provider = _SliceProvider(test_candles)
+        test_provider = CachedProvider(test_candles)
         test_engine = BacktestEngine(
             provider=test_provider,
             strategy=best_strategy,
@@ -208,7 +187,7 @@ async def _find_best_strategy(
         Tuple of (best strategy name from STRATEGY_NAMES, its BacktestResult).
 
     """
-    provider = _SliceProvider(candles)
+    provider = CachedProvider(candles)
 
     async def _eval(name: str) -> tuple[str, BacktestResult]:
         strategy = build_strategy(name, **strategy_params)  # type: ignore[arg-type]

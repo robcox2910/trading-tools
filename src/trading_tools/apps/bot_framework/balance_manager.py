@@ -1,7 +1,7 @@
 """USDC balance management service for live trading bots.
 
 Fetch and cache the live USDC balance from the Polymarket CLOB API.
-Both the snipe trading bot and the whale copy-trader compose this
+Both the snipe trading bot and the spread capture bot compose this
 service to avoid duplicating balance refresh logic.
 """
 
@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from trading_tools.clients.polymarket.exceptions import PolymarketError
 from trading_tools.core.models import ZERO
 
 if TYPE_CHECKING:
@@ -60,21 +61,19 @@ class BalanceManager:
             await self.client.sync_balance("COLLATERAL")
             bal = await self.client.get_balance("COLLATERAL")
             self._balance = bal.balance
-        except Exception:
+        except (PolymarketError, KeyError, ValueError):
             logger.warning(
                 "Balance refresh failed, using last known: $%.4f",
                 self._balance,
-                exc_info=True,
             )
 
         if include_portfolio:
             try:
                 self._portfolio_value = await self.client.get_portfolio_value()
-            except Exception:
+            except (PolymarketError, KeyError, ValueError):
                 logger.warning(
                     "Portfolio value refresh failed, using last known: $%.4f",
                     self._portfolio_value,
-                    exc_info=True,
                 )
 
         logger.info("BALANCE refreshed: $%.2f", self._balance)

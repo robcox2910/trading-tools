@@ -16,13 +16,17 @@ from trading_tools.apps.polymarket_bot.strategies.mean_reversion import (
     PMMeanReversionStrategy,
 )
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
-from trading_tools.clients.polymarket.models import (
-    Market,
-    MarketToken,
-    OrderBook,
-    OrderLevel,
-)
+from trading_tools.clients.polymarket.models import Market, OrderBook, OrderLevel
 from trading_tools.core.models import Side
+
+from .conftest import (
+    make_bot_config,
+    make_market,
+    make_order_book,
+    make_ws_event,
+    mock_feed,
+    mock_polymarket_client,
+)
 
 _CONDITION_ID = "cond_engine_test"
 _YES_TOKEN_ID = "yes_tok"
@@ -31,7 +35,7 @@ _INITIAL_CAPITAL = Decimal(1000)
 
 
 def _make_market(yes_price: str = "0.60", no_price: str = "0.40") -> Market:
-    """Create a Market with given prices.
+    """Create a Market with engine-specific defaults.
 
     Args:
         yes_price: YES token price as string.
@@ -41,62 +45,51 @@ def _make_market(yes_price: str = "0.60", no_price: str = "0.40") -> Market:
         Market instance for testing.
 
     """
-    return Market(
+    return make_market(
         condition_id=_CONDITION_ID,
+        yes_price=yes_price,
+        no_price=no_price,
+        yes_token_id=_YES_TOKEN_ID,
+        no_token_id=_NO_TOKEN_ID,
         question="Will BTC reach $200K?",
-        description="Test market",
-        tokens=(
-            MarketToken(token_id=_YES_TOKEN_ID, outcome="Yes", price=Decimal(yes_price)),
-            MarketToken(token_id=_NO_TOKEN_ID, outcome="No", price=Decimal(no_price)),
-        ),
-        end_date="2026-12-31",
-        volume=Decimal(50000),
-        liquidity=Decimal(10000),
-        active=True,
     )
 
 
 def _make_order_book() -> OrderBook:
-    """Create a sample order book.
+    """Create a sample order book with engine-specific defaults.
 
     Returns:
         OrderBook with sample bid and ask levels.
 
     """
-    return OrderBook(
+    return make_order_book(
         token_id=_YES_TOKEN_ID,
-        bids=(
-            OrderLevel(price=Decimal("0.59"), size=Decimal(100)),
-            OrderLevel(price=Decimal("0.58"), size=Decimal(200)),
-        ),
-        asks=(
-            OrderLevel(price=Decimal("0.61"), size=Decimal(150)),
-            OrderLevel(price=Decimal("0.62"), size=Decimal(50)),
-        ),
-        spread=Decimal("0.02"),
-        midpoint=Decimal("0.60"),
+        extra_bids=(OrderLevel(price=Decimal("0.58"), size=Decimal(200)),),
+        extra_asks=(OrderLevel(price=Decimal("0.62"), size=Decimal(50)),),
+        ask_size=Decimal(150),
     )
 
 
 def _make_config() -> BotConfig:
-    """Create a BotConfig for testing.
+    """Create a BotConfig with engine-specific defaults.
 
     Returns:
         BotConfig with the test condition_id.
 
     """
-    return BotConfig(
-        order_book_refresh_seconds=30,
+    return make_bot_config(
+        markets=(_CONDITION_ID,),
         initial_capital=_INITIAL_CAPITAL,
         max_position_pct=Decimal("0.1"),
-        kelly_fraction=Decimal("0.25"),
         max_history=100,
-        markets=(_CONDITION_ID,),
     )
 
 
-def _mock_client(market: Market | None = None, order_book: OrderBook | None = None) -> AsyncMock:
-    """Create a mock PolymarketClient.
+def _mock_client(
+    market: Market | None = None,
+    order_book: OrderBook | None = None,
+) -> AsyncMock:
+    """Create a mock PolymarketClient with engine-specific defaults.
 
     Args:
         market: Market to return from get_market.
@@ -106,14 +99,14 @@ def _mock_client(market: Market | None = None, order_book: OrderBook | None = No
         AsyncMock configured as a PolymarketClient.
 
     """
-    client = AsyncMock()
-    client.get_market = AsyncMock(return_value=market or _make_market())
-    client.get_order_book = AsyncMock(return_value=order_book or _make_order_book())
-    return client
+    return mock_polymarket_client(
+        market=market or _make_market(),
+        order_book=order_book or _make_order_book(),
+    )
 
 
 def _make_ws_event(asset_id: str = _YES_TOKEN_ID, price: str = "0.60") -> dict[str, Any]:
-    """Create a WebSocket trade event.
+    """Create a WebSocket trade event with engine-specific token ID default.
 
     Args:
         asset_id: Token ID for the event.
@@ -123,7 +116,7 @@ def _make_ws_event(asset_id: str = _YES_TOKEN_ID, price: str = "0.60") -> dict[s
         Event dictionary mimicking a ``last_trade_price`` WS message.
 
     """
-    return {"asset_id": asset_id, "price": price}
+    return make_ws_event(asset_id=asset_id, price=price)
 
 
 def _mock_feed(events: list[dict[str, Any]]) -> MagicMock:
@@ -136,16 +129,7 @@ def _mock_feed(events: list[dict[str, Any]]) -> MagicMock:
         MagicMock configured as a MarketFeed.
 
     """
-    feed = MagicMock()
-
-    async def mock_stream(asset_ids: list[str]) -> Any:  # noqa: ARG001
-        for event in events:
-            yield event
-
-    feed.stream = mock_stream
-    feed.close = AsyncMock()
-    feed.update_subscription = AsyncMock()
-    return feed
+    return mock_feed(events)
 
 
 class TestPaperTradingEngine:

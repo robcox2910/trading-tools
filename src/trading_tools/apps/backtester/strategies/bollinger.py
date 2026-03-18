@@ -30,6 +30,8 @@ Params:
 
 from decimal import Decimal
 
+from trading_tools.apps.backtester.indicators import detect_crossover
+from trading_tools.apps.backtester.indicators import sma as compute_sma
 from trading_tools.core.models import ONE, Candle, Side, Signal
 
 
@@ -69,14 +71,16 @@ class BollingerStrategy:
         _, prev_upper, prev_lower = self._bands(all_candles, offset=1)
         _, curr_upper, curr_lower = self._bands(all_candles, offset=0)
 
-        if prev_close <= prev_upper and curr_close > curr_upper:
+        upper_cross = detect_crossover(prev_close, curr_close, prev_upper, curr_upper)
+        if upper_cross == 1:
             return Signal(
                 side=Side.BUY,
                 symbol=candle.symbol,
                 strength=ONE,
                 reason=f"Close crossed above upper Bollinger Band({self._period}, {self._num_std})",
             )
-        if prev_close >= prev_lower and curr_close < curr_lower:
+        lower_cross = detect_crossover(prev_close, curr_close, prev_lower, curr_lower)
+        if lower_cross == -1:
             return Signal(
                 side=Side.SELL,
                 symbol=candle.symbol,
@@ -89,8 +93,9 @@ class BollingerStrategy:
         """Return (middle, upper, lower) Bollinger Bands."""
         end = len(candles) - offset
         start = end - self._period
-        closes = [c.close for c in candles[start:end]]
-        middle = sum(closes) / Decimal(len(closes))
+        window = candles[start:end]
+        middle = compute_sma(window, self._period)
+        closes = [c.close for c in window]
         variance = sum((c - middle) ** 2 for c in closes) / Decimal(len(closes))
         std = variance.sqrt()
         upper = middle + self._num_std * std

@@ -16,8 +16,11 @@ Some commands require no authentication (market queries), while trading and bot 
 | Live trading bot | Yes |
 | Tick collection | No |
 | Whale monitoring | No |
-| Whale copy-trading (paper) | No |
-| Whale copy-trading (live) | Yes |
+| Spread capture bot (paper) | No |
+| Spread capture bot (live) | Yes |
+| Directional bot (paper) | No |
+| Directional bot (live) | Yes |
+| Directional backtest | No |
 
 ## Market Queries
 
@@ -329,61 +332,57 @@ trading-tools-polymarket whale-correlate --address 0x1234... --days 1 --min-trad
 | `--min-trades` | `10` | Minimum trades per market to include |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 
-## Whale Copy-Trading
+## Spread Capture Bot
 
-### `whale-copy` — Copy Whale Bets in Real-Time
+### `spread-capture` — Buy Both Sides When Combined < $1.00
 
-Run a polling service that detects a whale's directional bias on BTC/ETH 5-minute markets and copies them with **temporal spread arbitrage**. Paper mode by default; pass `--confirm-live` for real orders.
+Run a polling service that scans BTC/ETH/SOL/XRP/DOGE/BNB/HYPE Up/Down markets for spread opportunities where the combined cost of buying both sides is below $1.00, guaranteeing profit at settlement. Paper mode by default; pass `--confirm-live` for real orders.
 
-The bot uses a multi-phase approach:
+The bot uses a simple, guaranteed-profit approach:
 
-1. **Directional entry (leg 1):** detect the whale's favoured side and buy it immediately at current CLOB prices. Position size is determined by the Kelly criterion based on estimated win rate.
-2. **Take-profit:** each poll cycle, check if the leg 1 token price has risen above the take-profit threshold (`entry × (1 + take_profit_pct)`). If so, sell early to lock in known profit.
-3. **Defensive hedge:** if the leg 1 token price drops below `entry × (1 - defensive_hedge_pct)`, buy the opposite side to cap loss at settlement instead of selling into a thin book. The position becomes hedged with a bounded max loss.
-4. **Profit hedge (leg 2):** monitor the opposite side each poll cycle. When `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee_rate`, the opposite side is cheap enough to lock in guaranteed profit. Hedge uses FOK market orders by default for fast execution.
-5. **Settlement:** all hedged positions resolve at market expiry with known P&L (profit or capped loss).
-
-If no hedge opportunity arises before expiry, the position resolves as a pure directional bet (profitable when the whale is correct ~80% of the time).
-
-The service uses **incremental polling** for minimal latency: only new trades since the last poll are fetched, and a rolling window of trades is maintained in memory.
+1. **Market discovery:** periodically scan configured series slugs (e.g. `btc-updown-5m`, `eth-updown-15m`) for active markets with future settlement times.
+2. **Spread detection:** fetch CLOB order book best **ask** prices for both Up and Down tokens. If the combined ask price is below `max_combined_cost` and the net margin (after Polymarket fees) exceeds `min_spread_margin`, an opportunity is detected.
+3. **Entry:** buy both sides simultaneously. Position size is `capital × max_position_pct / combined_cost`, capped by `max_book_pct` of visible ask depth to limit market impact. In live mode, prices are re-validated via VWAP walk of the order book before placing orders.
+4. **Settlement:** at market expiry, one side pays out $1.00 per token. P&L = winning quantity × $1.00 - total cost basis - entry fees. Since combined cost < $1.00, profit is guaranteed for paired positions.
+5. **Single-leg management:** if one side fails to fill (FOK rejection or GTC timeout), the bot attempts to unwind the filled leg at market. If unwind fails, the position is tracked as SINGLE_LEG and the bot attempts early exit when >60 seconds remain before expiry.
 
 ```bash
 # Paper mode (default) — log signals, track virtual P&L
-trading-tools-polymarket whale-copy \
-  --address 0xa45f... \
+trading-tools-polymarket spread-capture \
+  --series-slugs btc-updown-5m \
   --poll-interval 5 \
-  --min-bias 1.5 \
-  --min-trades 3 \
   --capital 100 \
-  --max-spread-cost 0.95 \
-  --max-entry-price 0.65 \
+  --max-combined-cost 0.98 \
+  --min-spread-margin 0.01 \
   -v
 
 # Live mode — place real limit orders on Polymarket
-trading-tools-polymarket whale-copy \
-  --address 0xa45f... \
+trading-tools-polymarket spread-capture \
+  --series-slugs btc-updown-5m \
   --capital 100 \
   --max-position-pct 0.10 \
   --confirm-live
 
 # Load settings from a YAML config file (CLI flags override YAML values)
-trading-tools-polymarket whale-copy \
-  --config whale-copy.yaml \
-  --address 0xa45f... \
+trading-tools-polymarket spread-capture \
+  --config spread-capture.yaml \
+  --series-slugs btc-updown-5m \
   --capital 200 \
   -v
 ```
 
-**YAML config file** — all fields are optional (dataclass defaults fill omitted values). CLI flags override YAML values; YAML overrides defaults. Keys match ``WhaleCopyConfig`` field names:
+**YAML config file** — all fields are optional (dataclass defaults fill omitted values). CLI flags override YAML values; YAML overrides defaults. Keys match ``SpreadCaptureConfig`` field names:
 
 ```yaml
-# whale-copy.yaml
-whale_address: "0xa45f..."
+# spread-capture.yaml
+series_slugs: "btc-updown-5m"
 capital: "200"
 max_position_pct: "0.15"
-max_spread_cost: "0.95"
-max_entry_price: "0.65"
-adaptive_kelly: true
+max_combined_cost: "0.97"
+min_spread_margin: "0.01"
+fee_rate: "0.25"
+fee_exponent: 2
+max_book_pct: "0.20"
 compound_profits: true
 circuit_breaker_losses: 5
 circuit_breaker_cooldown: 600
@@ -391,59 +390,61 @@ circuit_breaker_cooldown: 600
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--address` | *(required)* | Whale proxy wallet address to copy |
+| `--series-slugs` | `btc-updown-5m,eth-updown-5m` | Comma-separated series slugs or `crypto-5m`/`crypto-15m` shortcut |
 | `--config` | *none* | Path to YAML config file (CLI flags override YAML values) |
-| `--poll-interval` | `5` | Seconds between DB polls (lower = faster) |
-| `--lookback` | `900` | Rolling window in seconds for trade accumulation |
-| `--min-bias` | `1.3` | Minimum bias ratio to trigger a copy signal |
-| `--min-trades` | `2` | Minimum trades per market to trigger a signal |
+| `--strategy` | `simultaneous` | Execution strategy: `simultaneous` (both sides at once) or `accumulate` (independent per-side fills over time) |
+| `--poll-interval` | `5` | Seconds between scan cycles |
 | `--capital` | `100` | Starting capital in USDC (paper mode) |
-| `--max-position-pct` | `0.10` | Max fraction of capital per single trade |
-| `--max-spread-cost` | `0.95` | Max combined cost of both legs to trigger hedge (e.g. 0.95 = min 5% return) |
-| `--max-entry-price` | `0.65` | Max price for directional entry (skip if favoured side already above this) |
+| `--max-position-pct` | `0.10` | Max fraction of capital per spread trade |
+| `--max-combined-cost` | `0.98` | Max combined cost of both sides to enter (must be < 1.0) |
+| `--min-spread-margin` | `0.01` | Min profit margin per token pair after fees |
 | `--max-window` | `0` | Max market window in seconds (e.g. 300 for 5-min only, 0=all) |
-| `--no-hedge-market-orders` | `false` | Use GTC limit orders for hedge leg instead of FOK market |
-| `--defensive-hedge-pct` | `0.20` | Buy opposite side when leg1 drops this % (e.g. 0.20 = hedge at 20% drop) |
-| `--win-rate` | `0.80` | Estimated whale win rate for Kelly criterion sizing |
-| `--kelly-fraction` | `0.5` | Fractional Kelly multiplier (e.g. 0.5 = half-Kelly for safety) |
-| `--clob-fee-rate` | `0.0` | Per-leg CLOB fee rate for hedge profitability check |
-| `--take-profit-pct` | `0.15` | Take profit at this % gain above entry (e.g. 0.15 = 15%) |
-| `--max-unhedged-exposure-pct` | `0.50` | Max fraction of capital in net unhedged exposure per asset (opposite sides offset) |
-| `--adaptive-kelly/--no-adaptive-kelly` | `true` | Dynamically adjust Kelly win rate from realised unhedged outcomes |
-| `--min-kelly-results` | `20` | Min closed unhedged trades before adaptive Kelly activates |
-| `--min-win-rate` | `0.65` | Floor for adaptive Kelly win rate |
-| `--max-asset-exposure-pct` | `0.30` | Max fraction of capital per asset+side (e.g. all BTC-USD Up) |
-| `--compound-profits/--no-compound-profits` | `true` | Grow paper capital by adding realised P&L from closed trades |
-| `--hedge-urgency-threshold` | `0.20` | Time fraction below which hedge spread threshold is relaxed |
-| `--hedge-urgency-spread-bump` | `0.03` | Amount added to max_spread_cost in urgency zone |
-| `--circuit-breaker-losses` | `3` | Consecutive unhedged losses to trigger cooldown pause (0=disabled) |
-| `--circuit-breaker-cooldown` | `300` | Seconds to pause new entries after circuit breaker triggers |
-| `--max-drawdown-pct` | `0.15` | Max session drawdown as fraction — halt entries at 15% loss from start |
-| `--drawdown-throttle-pct` | `0.10` | HWM drawdown fraction to throttle Kelly by 50% (e.g. 0.10 = throttle at 10% below peak) |
-| `--paper-slippage-pct` | `0.005` | Simulated slippage for paper fills (e.g. 0.005 = 0.5% worse price) |
-| `--signal-strength-sizing/--no-signal-strength-sizing` | `true` | Scale position size by signal strength (bias ratio × trade count) |
-| `--max-entry-age-pct` | `0.60` | Max fraction of window elapsed before skipping entry (e.g. 0.60 = first 60% only) |
-| `--halt-win-rate` | `0.55` | Halt entries when adaptive win rate drops below this threshold |
+| `--max-entry-age-pct` | `0.60` | Max fraction of window elapsed before skipping entry |
+| `--max-open-positions` | `10` | Max concurrent spread positions |
+| `--fee-rate` | `0.25` | Polymarket crypto fee rate coefficient |
+| `--fee-exponent` | `2` | Polymarket fee exponent for `price × (1-price)` term |
+| `--max-book-pct` | `0.20` | Max fraction of visible order book depth to consume per side |
+| `--use-market-orders/--no-use-market-orders` | `false` | Use FOK market orders instead of GTC limit |
+| `--single-leg-timeout` | `10` | Seconds before cancelling unfilled side (live only) |
+| `--rediscovery-interval` | `30` | Seconds between market rediscovery calls |
+| `--compound-profits/--no-compound-profits` | `true` | Grow paper capital by adding realised P&L |
+| `--circuit-breaker-losses` | `3` | Consecutive losses to trigger cooldown (0=disabled) |
+| `--circuit-breaker-cooldown` | `300` | Seconds to pause after circuit breaker triggers |
+| `--max-drawdown-pct` | `0.15` | Max session drawdown as fraction — halt entries when exceeded |
+| `--paper-slippage-pct` | `0.005` | Simulated slippage for paper fills |
 | `--confirm-live` | `false` | **Required flag** for live trading |
-| `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
 
-**Signal detection pipeline:**
+**`accumulate` strategy flags** (only active when `--strategy accumulate`):
 
-1. Poll `whale_trades` table incrementally (only new trades since last check)
-2. Group by `condition_id`, compute bias via `analyse_markets()`
-3. Filter: BTC/ETH asset only, future time window, bias > threshold, trades >= min
-4. Fetch current CLOB prices; skip if favoured side > `max_entry_price`
-5. Open directional leg 1 (buy whale's favoured side, Kelly-sized with optional signal strength scaling)
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--signal-delay-seconds` | `300` | Seconds of Binance data to look back before window opens for momentum signal |
+| `--hedge-start-threshold` | `0.50` | Early hedge: only buy secondary side when ask < this price |
+| `--hedge-end-threshold` | `0.90` | Late hedge: maximum time-decay threshold near fill cutoff |
+| `--hedge-start-pct` | `0.20` | Begin hedge fills at this fraction of window elapsed |
+| `--max-primary-price` | `0.60` | Maximum ask price for primary side fills (prevents buying decided markets) |
+| `--max-imbalance-ratio` | `1.3` | Maximum ratio of tokens held on one side vs the other (whale median is 1.15, P75 is 1.30) |
+| `--initial-fill-size` | `20` | Token quantity for first fill on primary side (establishes base position) |
+| `--fill-size-tokens` | `2` | Token quantity for hedge fills and primary adjustments (whale DCA pattern) |
+| `--max-fill-age-pct` | `0.80` | Stop filling when market window is past this fraction (whale median fill is at 60%) |
+
+**Spread detection pipeline:**
+
+1. Discover active markets from configured series slugs (refreshed every `rediscovery_interval` seconds)
+2. Fetch CLOB order books for both Up and Down tokens
+3. Use best ask price as actual buy cost (not bids or midpoints)
+4. Compute net margin: `1.0 - combined_ask - up_fee - down_fee`
+5. Open directional leg 1 (buy favoured side, Kelly-sized with optional signal strength scaling)
 6. Each poll cycle checks (in order): take-profit → defensive hedge → profit hedge → expiry
-7. Take-profit: prefer hedging opposite side when combined < $1.00; sell as fallback if hedge too expensive
-8. Defensive hedge: buy opposite side if leg 1 price drops below `entry × (1 - defensive_hedge_pct)`
+7. Take-profit: if flipping enabled, sell + flip to opposite side (priority); otherwise hedge opposite side when combined < $1.00; sell as fallback
+8. Defensive hedge: buy opposite side if leg 1 price drops below `entry × (1 - defensive_hedge_pct)`. If combined cost > `max_defensive_hedge_cost`, sell leg 1 instead
 9. Hedge: if `effective_leg1_price + hedge_price ≤ max_spread_cost - 2×fee`, buy matching token quantity on opposite side (FOK by default)
 10. Close remaining positions when the market window expires; P&L depends on state
 
 **Heartbeat:** Logs status every 60 seconds (poll count, unhedged/hedged positions, P&L) for CloudWatch monitoring.
 
-**Database persistence:** When `WHALE_DB_URL` is set, closed trade results are automatically persisted to the `copy_results` table in the same database as whale trades. Each result is written immediately at close time (not batched) so data survives crashes. The table stores denormalized signal fields (condition_id, asset, bias_ratio, window timestamps) alongside execution details (entry/hedge prices, quantities, P&L, state) for direct querying without joins.
+**Database persistence:** When `SPREAD_DB_URL` (or `WHALE_DB_URL`) is set, closed trade results are automatically persisted to the `copy_results` table. Each result is written immediately at close time (not batched) so data survives crashes. The table stores denormalized signal fields (condition_id, asset, bias_ratio, window timestamps) alongside execution details (entry/hedge prices, quantities, P&L, state) for direct querying without joins.
 
 This enables post-hoc analysis such as backtesting different `max_spread_cost` thresholds:
 
@@ -457,6 +458,71 @@ FROM copy_results
 WHERE is_paper = true
 GROUP BY outcome;
 ```
+
+## Directional Trading Bot
+
+The directional trading bot buys only the predicted winning side of binary crypto Up/Down markets using momentum, volatility, volume, and order-book features to estimate P(Up). Positions are sized via Kelly criterion. Fully independent from the spread capture bot.
+
+### `directional` — Run Directional Paper/Live Trading
+
+```bash
+# Paper mode (default)
+trading-tools-polymarket directional --capital 100 --min-edge 0.05 -v
+
+# With custom entry window and Kelly fraction
+trading-tools-polymarket directional \
+  --capital 200 \
+  --min-edge 0.03 \
+  --kelly-fraction 0.3 \
+  --entry-start 30 \
+  --entry-end 10 \
+  --series-slugs crypto-5m
+
+# Live mode (real orders)
+trading-tools-polymarket directional --capital 50 --confirm-live
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--capital` | `100` | Starting USDC capital (paper mode) |
+| `--min-edge` | `0.05` | Minimum probability edge to enter |
+| `--kelly-fraction` | `0.5` | Fractional Kelly multiplier (0.5 = half-Kelly) |
+| `--max-position-pct` | `0.15` | Maximum fraction of capital per trade |
+| `--entry-start` | `30` | Seconds before close to start entries |
+| `--entry-end` | `10` | Seconds before close to stop entries |
+| `--signal-lookback` | `300` | Seconds of Binance candle lookback |
+| `--series-slugs` | `btc-updown-5m,eth-updown-5m` | Series to scan (supports `crypto-5m` shortcut) |
+| `--max-open-positions` | `10` | Maximum concurrent positions |
+| `--config` | — | Path to YAML config file |
+| `--confirm-live` | `False` | Enable live trading with real orders |
+| `-v` / `--verbose` | `False` | Enable DEBUG logging |
+
+### `directional-backtest` — Backtest Directional Algorithm
+
+```bash
+trading-tools-polymarket directional-backtest \
+  --start 2026-03-01 --end 2026-03-06 \
+  --capital 1000 --min-edge 0.05 -v
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--start` | — | Start date (YYYY-MM-DD, required) |
+| `--end` | — | End date (YYYY-MM-DD, required) |
+| `--capital` | `1000` | Initial virtual capital |
+| `--min-edge` | `0.05` | Minimum probability edge |
+| `--kelly-fraction` | `0.5` | Fractional Kelly multiplier |
+| `--entry-start` | `30` | Seconds before close to start entries |
+| `--entry-end` | `10` | Seconds before close to stop entries |
+| `--signal-lookback` | `300` | Binance candle lookback seconds |
+| `--series-slug` | — | Filter to a specific series slug |
+| `--db-url` | `$TICK_DB_URL` | Database URL for tick data |
+| `-v` / `--verbose` | `False` | Enable per-window logging |
+
+Output includes standard metrics (P&L, win rate, avg P&L) plus calibration metrics:
+- **Brier score**: Mean squared error of probability predictions (< 0.25 = better than random)
+- **Avg P(win) when correct**: Confidence when the algorithm was right
+- **Avg P(win) when incorrect**: Confidence when the algorithm was wrong
 
 ## Backtesting Polymarket Strategies
 
@@ -526,6 +592,66 @@ trading-tools-polymarket grid-backtest --start 2025-01-01 --end 2025-01-31
 
 The grid searches thresholds from 0.55 to 0.95 (step 0.05) and windows from 120s down to 10s (step 10s).
 
+### `backtest-spread` — Backtest Spread Capture Strategy
+
+Replay historical market windows through the spread capture engine using stored order book snapshots and market metadata from the tick database.
+
+```bash
+trading-tools-polymarket backtest-spread \
+  --start 2026-03-01 --end 2026-03-15 \
+  --strategy accumulate \
+  --signal-delay 300 --hedge-start 0.45 --hedge-end 0.65 \
+  --capital 1000 -v
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--start` | *(required)* | Start date `YYYY-MM-DD` |
+| `--end` | *(required)* | End date `YYYY-MM-DD` |
+| `--db-url` | env `TICK_DB_URL` or `sqlite+aiosqlite:///tick_data.db` | SQLAlchemy async DB URL |
+| `--strategy` | `accumulate` | Strategy: `accumulate` |
+| `--series-slug` | `None` | Filter to a specific series slug |
+| `--capital` | `1000.0` | Initial virtual capital in USD |
+| `--signal-delay` | `300` | Seconds of Binance lookback before window |
+| `--hedge-start` | `0.45` | Early hedge threshold |
+| `--hedge-end` | `0.65` | Late hedge threshold |
+| `--hedge-start-pct` | `0.20` | Start hedging at this fraction of window |
+| `--max-fill-age-pct` | `0.80` | Stop fills after this fraction of window |
+| `--max-imbalance` | `3.0` | Max quantity ratio between legs |
+| `--fill-size` | `2.0` | Tokens per adjustment fill |
+| `--initial-fill` | `20.0` | Tokens for first fill on each side |
+| `--poll-interval` | `5` | Seconds between poll cycles during replay |
+| `--slippage` | `0.005` | Paper slippage percentage |
+| `--verbose`, `-v` | `false` | Enable per-window logging |
+
+Requires `market_metadata` and `order_book_snapshots` tables populated by the tick collector.
+
+### `grid-spread` — Grid Search Spread Capture Parameters
+
+Sweep hedge start/end thresholds and signal delay across a grid, replay each combination, and display results as markdown tables.
+
+```bash
+trading-tools-polymarket grid-spread \
+  --start 2026-03-01 --end 2026-03-15 \
+  --hedge-start 0.35,0.40,0.45,0.50 \
+  --hedge-end 0.55,0.60,0.65,0.70,0.80,0.90 \
+  --signal-delay 180,300,420
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--start` | *(required)* | Start date `YYYY-MM-DD` |
+| `--end` | *(required)* | End date `YYYY-MM-DD` |
+| `--db-url` | env `TICK_DB_URL` or `sqlite+aiosqlite:///tick_data.db` | SQLAlchemy async DB URL |
+| `--hedge-start` | `0.35,0.40,0.45,0.50` | Comma-separated hedge start values |
+| `--hedge-end` | `0.55,0.60,0.65,0.70,0.80,0.90` | Comma-separated hedge end values |
+| `--signal-delay` | `180,300,420` | Comma-separated signal delay values (seconds) |
+| `--series-slug` | `None` | Filter to a specific series slug |
+| `--capital` | `1000.0` | Initial virtual capital in USD |
+| `--poll-interval` | `5` | Seconds between poll cycles during replay |
+| `--slippage` | `0.005` | Paper slippage percentage |
+| `--verbose`, `-v` | `false` | Enable per-window logging |
+
 ## Database Support
 
 Both tick collection and whale monitoring support SQLite (default) and PostgreSQL:
@@ -538,4 +664,4 @@ Both tick collection and whale monitoring support SQLite (default) and PostgreSQ
 --db-url "postgresql+asyncpg://user:pass@host:5432/trading_tools"
 ```
 
-Set the `TICK_DB_URL` or `WHALE_DB_URL` environment variable to avoid passing `--db-url` on every command.
+Set the `TICK_DB_URL`, `WHALE_DB_URL`, or `SPREAD_DB_URL` environment variable to avoid passing `--db-url` on every command.
