@@ -134,6 +134,11 @@ class SpreadCaptureConfig:
         maker_bid_up: Resting bid price for the Up token in maker strategy.
         maker_bid_down: Resting bid price for the Down token in maker strategy.
         maker_order_size: Token quantity per side for maker strategy orders.
+        maker_hedge_age_pct: Fraction of the market window that must elapse
+            before considering a hedge buy on the unfilled side.
+        maker_max_hedge_combined: Maximum combined cost (filled bid + hedge
+            ask) to accept for a hedge.  Must be below 1.0 to guarantee
+            profit.
 
     """
 
@@ -170,6 +175,8 @@ class SpreadCaptureConfig:
     maker_bid_up: Decimal = Decimal("0.25")
     maker_bid_down: Decimal = Decimal("0.25")
     maker_order_size: Decimal = Decimal(20)
+    maker_hedge_age_pct: Decimal = Decimal("0.60")
+    maker_max_hedge_combined: Decimal = Decimal("0.98")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "SpreadCaptureConfig":
