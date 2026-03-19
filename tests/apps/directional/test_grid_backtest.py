@@ -9,6 +9,7 @@ from trading_tools.apps.directional.config import DirectionalConfig
 from trading_tools.apps.directional.grid_backtest import (
     DirectionalGridCell,
     DirectionalGridResult,
+    _format_duration,
     format_grid_table,
     run_directional_grid,
 )
@@ -123,3 +124,31 @@ class TestRunDirectionalGrid:
         )
         # All zero brier scores (no trades) → sorted arbitrarily but consistently
         assert len(result.cells) == 3
+
+
+class TestFormatDuration:
+    """Test the duration formatter helper."""
+
+    def test_seconds_only(self) -> None:
+        """Format sub-minute durations as seconds."""
+        assert _format_duration(45) == "45s"
+
+    def test_minutes_and_seconds(self) -> None:
+        """Format durations under an hour as minutes and seconds."""
+        assert _format_duration(125) == "2m05s"
+
+    def test_hours_and_minutes(self) -> None:
+        """Format durations over an hour as hours and minutes."""
+        assert _format_duration(3725) == "1h02m"
+
+    def test_zero(self) -> None:
+        """Format zero duration."""
+        assert _format_duration(0) == "0s"
+
+    def test_exact_minute(self) -> None:
+        """Format exactly one minute."""
+        assert _format_duration(60) == "1m00s"
+
+    def test_exact_hour(self) -> None:
+        """Format exactly one hour."""
+        assert _format_duration(3600) == "1h00m"

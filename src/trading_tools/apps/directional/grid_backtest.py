@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import itertools
 import logging
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -25,6 +26,7 @@ from trading_tools.core.models import ZERO
 
 if TYPE_CHECKING:
     from trading_tools.apps.directional.config import DirectionalConfig
+    from trading_tools.apps.tick_collector.models import MarketMetadata
     from trading_tools.apps.tick_collector.repository import TickRepository
     from trading_tools.apps.whale_monitor.repository import WhaleRepository
     from trading_tools.core.models import Candle
@@ -32,6 +34,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _HUNDRED = Decimal(100)
+_SECONDS_PER_MINUTE = 60
+_SECONDS_PER_HOUR = 3600
+
+
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds as a human-readable string.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        Formatted string like ``"1h23m"`` or ``"4m30s"``.
+
+    """
+    total = int(seconds)
+    hours = total // _SECONDS_PER_HOUR
+    minutes = (total % _SECONDS_PER_HOUR) // _SECONDS_PER_MINUTE
+    secs = total % _SECONDS_PER_MINUTE
+    if hours > 0:
+        return f"{hours}h{minutes:02d}m"
+    if minutes > 0:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
 
 
 @dataclass(frozen=True)
@@ -88,6 +113,7 @@ async def run_directional_grid(
     candles_by_asset: dict[str, list[Candle]] | None = None,
     series_slug: str | None = None,
     whale_repo: WhaleRepository | None = None,
+    metadata_list: list[MarketMetadata] | None = None,
 ) -> DirectionalGridResult:
     """Sweep parameter combinations and collect performance metrics.
 
@@ -105,6 +131,9 @@ async def run_directional_grid(
         candles_by_asset: Pre-loaded Binance candles keyed by asset.
         series_slug: Filter metadata to a specific series slug.
         whale_repo: Whale trade repository for directional signals.
+        metadata_list: Pre-loaded market metadata.  When provided,
+            skip the metadata DB query (avoids duplicate fetch when
+            the CLI already loaded metadata for asset discovery).
 
     Returns:
         Grid result with cells sorted by Brier score ascending.
@@ -122,9 +151,10 @@ async def run_directional_grid(
     )
 
     # Pre-fetch shared data once instead of per-combo
-    metadata_list = await repo.get_market_metadata_in_range(
-        start_ts, end_ts, series_slug=series_slug
-    )
+    if metadata_list is None:
+        metadata_list = await repo.get_market_metadata_in_range(
+            start_ts, end_ts, series_slug=series_slug
+        )
     logger.info("Grid pre-fetch: %d market windows", len(metadata_list))
 
     # Bulk-load order book snapshots for the entire time range
@@ -145,6 +175,7 @@ async def run_directional_grid(
 
     cells: list[DirectionalGridCell] = []
     total_windows = len(metadata_list)
+    grid_start = time.monotonic()
 
     for i, combo in enumerate(combos):
         overrides = dict(zip(param_names, combo, strict=True))
@@ -175,15 +206,23 @@ async def run_directional_grid(
         )
         cells.append(cell)
 
+        elapsed = time.monotonic() - grid_start
+        done = i + 1
+        avg_per_combo = elapsed / done
+        remaining = avg_per_combo * (len(combos) - done)
         logger.info(
-            "Grid [%d/%d] %s → trades=%d win=%.0f%% brier=%.4f return=%.1f%%",
-            i + 1,
+            "Grid [%d/%d] %s → trades=%d win=%.0f%% brier=%.4f return=%.1f%%"
+            " | elapsed=%s avg=%.0fs/combo ETA=%s",
+            done,
             len(combos),
             " ".join(f"{k}={v}" for k, v in overrides.items()),
             result.total_trades,
             float(result.win_rate * _HUNDRED),
             result.brier_score,
             result.return_pct,
+            _format_duration(elapsed),
+            avg_per_combo,
+            _format_duration(remaining),
         )
 
     # Sort by Brier score ascending (lower = better calibration)
