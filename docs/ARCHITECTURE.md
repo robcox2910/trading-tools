@@ -80,6 +80,7 @@ trading-tools/
 │   │       ├── models.py            # MarketOpportunity, FeatureVector, DirectionalPosition, DirectionalResult (ORM)
 │   │       ├── features.py          # Pure feature extraction: momentum, volatility, volume, book imbalance, RSI
 │   │       ├── estimator.py         # ProbabilityEstimator: weighted ensemble → logistic sigmoid → P(Up)
+│   │       ├── weight_trainer.py    # Logistic regression trainer: fit all 7 weights via gradient descent
 │   │       ├── kelly.py             # Kelly criterion sizing for binary outcome tokens
 │   │       ├── ports.py             # ExecutionPort and MarketDataPort protocols + FillResult
 │   │       ├── adapters.py          # Paper, Backtest execution + Replay market data adapters

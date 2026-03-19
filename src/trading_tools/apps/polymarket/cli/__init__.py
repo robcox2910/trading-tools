@@ -22,6 +22,7 @@ from trading_tools.apps.polymarket.cli.spread_capture_cmd import spread_capture
 from trading_tools.apps.polymarket.cli.spread_grid_cmd import grid_spread
 from trading_tools.apps.polymarket.cli.tick_collector_cmd import tick_collect
 from trading_tools.apps.polymarket.cli.trade_cmd import balance, cancel, orders, redeem, trade
+from trading_tools.apps.polymarket.cli.train_weights_cmd import train_weights_cmd
 from trading_tools.apps.polymarket.cli.whale_add_cmd import whale_add
 from trading_tools.apps.polymarket.cli.whale_analyse_cmd import whale_analyse
 from trading_tools.apps.polymarket.cli.whale_copy_cmd import whale_copy
@@ -58,5 +59,6 @@ app.command(name="directional")(directional)
 app.command(name="whale-copy")(whale_copy)
 app.command(name="directional-grid")(directional_grid)
 app.command(name="limit-backtest")(limit_backtest)
+app.command(name="train-weights")(train_weights_cmd)
 
 __all__ = ["app"]

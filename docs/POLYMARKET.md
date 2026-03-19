@@ -556,6 +556,34 @@ Output includes standard metrics (P&L, win rate, avg P&L) plus calibration metri
 - **Avg P(win) when correct**: Confidence when the algorithm was right
 - **Avg P(win) when incorrect**: Confidence when the algorithm was wrong
 
+### `train-weights` — Train Estimator Weights via Logistic Regression
+
+Fit all 7 feature weights simultaneously on historical market outcome data using gradient descent. The learned weights are mathematically optimal for the existing `P(Up) = sigmoid(dot(features, w))` model form and slot directly into `DirectionalConfig`.
+
+```bash
+trading-tools-polymarket train-weights \
+  --start 2026-03-01 --end 2026-03-19 \
+  --signal-lookback 1200 --l2-lambda 0.01 \
+  --output-yaml trained_weights.yaml
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--start` | — | Start date (YYYY-MM-DD, required) |
+| `--end` | — | End date (YYYY-MM-DD, required) |
+| `--entry-start` | `30` | Seconds before close to evaluate entry |
+| `--signal-lookback` | `1200` | Binance candle lookback seconds |
+| `--learning-rate` | `0.1` | Gradient descent step size |
+| `--max-iterations` | `10000` | Maximum gradient descent iterations |
+| `--l2-lambda` | `0.0` | L2 regularisation coefficient (0 = none) |
+| `--output-yaml` | — | Write learned weights to a YAML config file |
+| `--series-slug` | — | Filter to a specific series slug |
+| `--db-url` | `$TICK_DB_URL` | Database URL for tick data |
+| `--whale-db-url` | `$WHALE_DB_URL` | DB URL for whale trades (defaults to `--db-url`) |
+| `-v` / `--verbose` | `False` | Enable verbose logging |
+
+Output includes learned vs. default weight comparison, accuracy, and log-loss. Use `--output-yaml` to save weights for loading via `DirectionalConfig.from_yaml()`.
+
 ## Whale Copy Bot
 
 The whale copy bot mirrors the net directional positioning of tracked whale traders in real time. Unlike the spread capture strategy (which locks in a signal early), this bot re-reads the whale's current direction every poll cycle and buys tokens on whichever side they currently favour. If the whale flips mid-window, both sides can accumulate tokens — winning tokens pay $1.00, losing tokens pay $0.00.
