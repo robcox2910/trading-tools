@@ -124,8 +124,11 @@ class SpreadTrader:
             msg = "PolymarketClient is required — pass client at construction"
             raise RuntimeError(msg)
 
-        # Maker strategy bids at fixed prices, so accept all markets
-        scanner_max_cost = ONE if self.config.strategy == "maker" else self.config.max_combined_cost
+        # Maker strategy bids at fixed prices, so accept all markets.
+        # Use 2.0 (not 1.0) because best asks often sum to > $1.00.
+        scanner_max_cost = (
+            Decimal("2.0") if self.config.strategy == "maker" else self.config.max_combined_cost
+        )
         scanner_min_margin = (
             ZERO if self.config.strategy == "maker" else self.config.min_spread_margin
         )
