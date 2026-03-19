@@ -798,6 +798,243 @@ class SpreadTrader:
                     pos.opportunity.asset,
                 )
 
+    async def _get_binance_direction(self, opp: SpreadOpportunity, now: int) -> str | None:
+        """Determine the current price direction for a market's underlying asset.
+
+        Fetch Binance 1-min candles from the window start to now and compare
+        the opening price with the latest close.
+
+        Args:
+            opp: The spread opportunity with asset and window timestamps.
+            now: Current epoch seconds.
+
+        Returns:
+            ``"Up"`` if price rose, ``"Down"`` if price fell, ``None`` if
+            candle data is unavailable or price is flat.
+
+        """
+        if self._binance is None:
+            return None
+        try:
+            provider = BinanceCandleProvider(self._binance)
+            candles = await provider.get_candles(
+                opp.asset,
+                Interval.M1,
+                opp.window_start_ts,
+                now,
+            )
+        except (BinanceError, httpx.HTTPError, KeyError, ValueError):
+            logger.debug("Failed to fetch Binance candles for hedge signal on %s", opp.asset)
+            return None
+
+        if not candles:
+            return None
+
+        open_price = candles[0].open
+        close_price = candles[-1].close
+        if close_price > open_price:
+            return "Up"
+        if close_price < open_price:
+            return "Down"
+        return None
+
+    def _apply_hedge_to_position(
+        self,
+        pos: PairedPosition,
+        unfilled_side: str,
+        hedge_leg: SideLeg,
+    ) -> None:
+        """Apply a hedge fill to a pending position and transition to PAIRED.
+
+        Replace the unfilled leg with the hedge leg, clear its pending
+        order ID, and set the position state to PAIRED.
+
+        Args:
+            pos: The pending position to hedge.
+            unfilled_side: ``"Up"`` or ``"Down"`` — which side was hedged.
+            hedge_leg: The filled hedge leg.
+
+        """
+        if unfilled_side == "Up":
+            pos.up_leg = hedge_leg
+            pos.pending_up_order_id = None
+        elif pos.down_leg is not None:
+            pos.down_leg = hedge_leg
+            pos.pending_down_order_id = None
+        pos.state = PositionState.PAIRED
+
+    async def _execute_live_hedge(
+        self,
+        cid: str,
+        pos: PairedPosition,
+        unfilled_token_id: str,
+        unfilled_side: str,
+        hedge_ask: Decimal,
+        qty: Decimal,
+    ) -> bool:
+        """Place a live hedge order and apply the fill.
+
+        Args:
+            cid: Condition ID for logging.
+            pos: The pending position.
+            unfilled_token_id: CLOB token ID for the unfilled side.
+            unfilled_side: ``"Up"`` or ``"Down"``.
+            hedge_ask: Ask price for the hedge order.
+            qty: Token quantity to buy.
+
+        Returns:
+            ``True`` if the hedge was executed successfully.
+
+        """
+        if self._executor is None:
+            return False
+        try:
+            resp = await self._executor.place_order(unfilled_token_id, "BUY", hedge_ask, qty)
+        except (httpx.HTTPError, Exception):
+            logger.debug("Hedge order failed for %s %s", cid[:12], unfilled_side)
+            return False
+
+        if resp is None or resp.filled <= ZERO:
+            return False
+
+        hedge_leg = SideLeg(
+            side=unfilled_side,
+            entry_price=resp.price,
+            quantity=resp.filled,
+            cost_basis=resp.price * resp.filled,
+            order_ids=[resp.order_id],
+        )
+        self._apply_hedge_to_position(pos, unfilled_side, hedge_leg)
+        return True
+
+    async def _maybe_hedge_maker_positions(self) -> None:
+        """Hedge single-filled maker positions when the unfilled side is winning.
+
+        For PENDING maker positions where one side has filled and enough of
+        the window has elapsed (``maker_hedge_age_pct``), check Binance spot
+        direction.  If the **unfilled** side is winning (meaning our filled
+        side will lose), market-buy the unfilled side at the current ask to
+        lock in guaranteed spread profit.
+
+        Only hedge when the combined cost (filled bid + hedge ask) is below
+        ``maker_max_hedge_combined``.
+        """
+        if self.client is None:
+            return
+
+        now = int(time.time())
+        hedge_age = self.config.maker_hedge_age_pct
+        max_combined = self.config.maker_max_hedge_combined
+
+        candidates = [
+            (cid, pos)
+            for cid, pos in self._positions.items()
+            if pos.state == PositionState.PENDING
+            and (pos.pending_up_order_id is None) != (pos.pending_down_order_id is None)
+        ]
+
+        for cid, pos in candidates:
+            opp = pos.opportunity
+            window_duration = opp.window_end_ts - opp.window_start_ts
+            if window_duration <= 0:
+                continue
+            elapsed_pct = Decimal(str(now - opp.window_start_ts)) / Decimal(str(window_duration))
+            if elapsed_pct < hedge_age:
+                continue
+
+            up_filled = pos.pending_up_order_id is None
+            filled_side = "Up" if up_filled else "Down"
+            unfilled_side = "Down" if up_filled else "Up"
+
+            direction = await self._get_binance_direction(opp, now)
+            if direction is None or direction != unfilled_side:
+                continue
+
+            hedge_ask = await self._get_hedge_ask(cid, pos, unfilled_side)
+            if hedge_ask is None:
+                continue
+
+            filled_bid = (
+                pos.up_leg.entry_price
+                if up_filled
+                else (pos.down_leg.entry_price if pos.down_leg else ZERO)
+            )
+            combined = filled_bid + hedge_ask
+
+            if combined >= max_combined:
+                logger.debug(
+                    "HEDGE SKIP %s: combined=%.4f >= max %.4f",
+                    cid[:12],
+                    combined,
+                    max_combined,
+                )
+                continue
+
+            qty = (
+                pos.up_leg.quantity
+                if up_filled
+                else (pos.down_leg.quantity if pos.down_leg else ZERO)
+            )
+
+            if pos.is_paper:
+                hedge_leg = SideLeg(
+                    side=unfilled_side,
+                    entry_price=hedge_ask,
+                    quantity=qty,
+                    cost_basis=hedge_ask * qty,
+                )
+                self._apply_hedge_to_position(pos, unfilled_side, hedge_leg)
+            else:
+                unfilled_token_id = (
+                    opp.down_token_id if unfilled_side == "Down" else opp.up_token_id
+                )
+                if not await self._execute_live_hedge(
+                    cid, pos, unfilled_token_id, unfilled_side, hedge_ask, qty
+                ):
+                    continue
+
+            mode = "PAPER" if pos.is_paper else "LIVE"
+            logger.info(
+                "%s HEDGE %s %s at ask=%.4f combined=%.4f margin=%.4f"
+                " direction=%s filled=%s asset=%s",
+                mode,
+                cid[:12],
+                unfilled_side,
+                hedge_ask,
+                combined,
+                ONE - combined,
+                direction,
+                filled_side,
+                opp.asset,
+            )
+
+    async def _get_hedge_ask(
+        self, cid: str, pos: PairedPosition, unfilled_side: str
+    ) -> Decimal | None:
+        """Fetch the best ask price for the unfilled side of a maker position.
+
+        Args:
+            cid: Condition ID for logging.
+            pos: The pending position.
+            unfilled_side: ``"Up"`` or ``"Down"``.
+
+        Returns:
+            Best ask price, or ``None`` if order book is unavailable.
+
+        """
+        if self.client is None:
+            return None
+        opp = pos.opportunity
+        token_id = opp.down_token_id if unfilled_side == "Down" else opp.up_token_id
+        try:
+            book = await self.client.get_order_book(token_id)
+        except (httpx.HTTPError, Exception):
+            logger.debug("Failed to fetch order book for hedge on %s", cid[:12])
+            return None
+        if not book.asks:
+            return None
+        return min(level.price for level in book.asks)
+
     async def _manage_pending_orders(self) -> None:
         """Check fill status of pending GTC limit orders and transition states.
 
@@ -815,6 +1052,7 @@ class SpreadTrader:
         # Handle paper-mode maker fills via order book simulation
         if self.config.strategy == "maker":
             await self._manage_paper_maker_orders()
+            await self._maybe_hedge_maker_positions()
 
         if self.client is None:
             return

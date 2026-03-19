@@ -56,6 +56,8 @@ _PARAM_MAP: tuple[tuple[str, str, bool], ...] = (
     ("maker_bid_up", "maker_bid_up", True),
     ("maker_bid_down", "maker_bid_down", True),
     ("maker_order_size", "maker_order_size", True),
+    ("maker_hedge_age_pct", "maker_hedge_age_pct", True),
+    ("maker_max_hedge_combined", "maker_max_hedge_combined", True),
     # Direct params (int, passed through unchanged)
     ("poll_interval", "poll_interval", False),
     ("max_window", "max_window_seconds", False),
@@ -258,6 +260,20 @@ def spread_capture(
         str | None,
         typer.Option("--maker-order-size", help="Maker order size in tokens per side (e.g. 20)"),
     ] = None,
+    maker_hedge_age_pct: Annotated[
+        str | None,
+        typer.Option(
+            "--maker-hedge-age-pct",
+            help="Fraction of window elapsed before hedge (e.g. 0.60)",
+        ),
+    ] = None,
+    maker_max_hedge_combined: Annotated[
+        str | None,
+        typer.Option(
+            "--maker-max-hedge-combined",
+            help="Max combined cost for hedge to guarantee profit (e.g. 0.98)",
+        ),
+    ] = None,
     confirm_live: Annotated[
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
@@ -310,6 +326,8 @@ def spread_capture(
         maker_bid_up=maker_bid_up,
         maker_bid_down=maker_bid_down,
         maker_order_size=maker_order_size,
+        maker_hedge_age_pct=maker_hedge_age_pct,
+        maker_max_hedge_combined=maker_max_hedge_combined,
     )
 
     if confirm_live:
