@@ -520,9 +520,12 @@ async def _replay_window(
         mode_label="BACKTEST",
     )
 
-    # Step clock through the window; ensure settlement tick is always reached
+    # Skip to entry window opening — the engine does no meaningful work
+    # before entries become eligible (pure time gate, no accumulated state).
+    # This cuts ~90% of poll cycles in backtesting.
     settle_ts = meta.window_end_ts + 1
-    t = meta.window_start_ts
+    entry_open_ts = meta.window_end_ts - config.entry_window_start
+    t = max(entry_open_ts, meta.window_start_ts)
     while t <= settle_ts:
         await engine.poll_cycle(t)
         t += config.poll_interval
