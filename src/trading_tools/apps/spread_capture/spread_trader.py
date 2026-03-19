@@ -124,11 +124,16 @@ class SpreadTrader:
             msg = "PolymarketClient is required — pass client at construction"
             raise RuntimeError(msg)
 
+        # Maker strategy bids at fixed prices, so accept all markets
+        scanner_max_cost = ONE if self.config.strategy == "maker" else self.config.max_combined_cost
+        scanner_min_margin = (
+            ZERO if self.config.strategy == "maker" else self.config.min_spread_margin
+        )
         self._scanner = MarketScanner(
             client=self.client,
             series_slugs=self.config.series_slugs,
-            max_combined_cost=self.config.max_combined_cost,
-            min_spread_margin=self.config.min_spread_margin,
+            max_combined_cost=scanner_max_cost,
+            min_spread_margin=scanner_min_margin,
             max_window_seconds=self.config.max_window_seconds,
             max_entry_age_pct=self.config.max_entry_age_pct,
             rediscovery_interval=self.config.rediscovery_interval,
@@ -398,6 +403,78 @@ class SpreadTrader:
                     pnl,
                 )
 
+    async def _enter_maker_position(self, opp: SpreadOpportunity, now: int) -> None:
+        """Place resting GTC limit buy orders at fixed bid prices on both sides.
+
+        Post maker bids at configured prices (``maker_bid_up``,
+        ``maker_bid_down``) and wait for taker sells to fill them.
+        Position starts as PENDING and transitions to PAIRED when both
+        sides fill via ``_manage_pending_orders()``.
+
+        Args:
+            opp: The spread opportunity (market) to enter.
+            now: Current epoch seconds.
+
+        """
+        bid_up = self.config.maker_bid_up
+        bid_down = self.config.maker_bid_down
+        qty = self.config.maker_order_size
+
+        combined = bid_up + bid_down
+        if combined >= ONE:
+            logger.warning("SKIP %s: combined bid %.4f >= 1.00", opp.condition_id[:12], combined)
+            return
+
+        up_leg = SideLeg(side="Up", entry_price=bid_up, quantity=qty, cost_basis=bid_up * qty)
+        down_leg = SideLeg(
+            side="Down", entry_price=bid_down, quantity=qty, cost_basis=bid_down * qty
+        )
+
+        if self.live:
+            result = await self._place_spread_orders(opp, up_leg, down_leg)
+            up_result, down_result = result
+            if up_result is None and down_result is None:
+                logger.warning("Both maker orders failed for %s", opp.condition_id[:12])
+                return
+
+            pos = PairedPosition(
+                opportunity=opp,
+                state=PositionState.PENDING,
+                up_leg=up_result or up_leg,
+                down_leg=down_result or down_leg,
+                entry_time=now,
+                is_paper=False,
+                pending_up_order_id=(up_result.order_ids[-1] if up_result else None),
+                pending_down_order_id=(down_result.order_ids[-1] if down_result else None),
+            )
+        else:
+            # Paper mode: position stays PENDING, fills simulated by
+            # checking if market best ask <= our bid in _manage_pending_orders()
+            pos = PairedPosition(
+                opportunity=opp,
+                state=PositionState.PENDING,
+                up_leg=up_leg,
+                down_leg=down_leg,
+                entry_time=now,
+                is_paper=True,
+                pending_up_order_id="paper_up",
+                pending_down_order_id="paper_down",
+            )
+
+        self._positions[opp.condition_id] = pos
+        mode = "LIVE" if self.live else "PAPER"
+        logger.info(
+            "%s MAKER %s bid_up=%.4f bid_down=%.4f combined=%.4f margin=%.4f qty=%.0f asset=%s",
+            mode,
+            opp.condition_id[:12],
+            bid_up,
+            bid_down,
+            combined,
+            ONE - combined,
+            qty,
+            opp.asset,
+        )
+
     async def _enter_spread(self, opp: SpreadOpportunity) -> None:
         """Enter a spread position by buying both sides simultaneously.
 
@@ -410,6 +487,10 @@ class SpreadTrader:
 
         """
         now = int(time.time())
+
+        if self.config.strategy == "maker":
+            await self._enter_maker_position(opp, now)
+            return
 
         # Max drawdown kill-switch
         if self._check_drawdown_halt():
@@ -633,6 +714,85 @@ class SpreadTrader:
 
         return result_up, result_down
 
+    async def _manage_paper_maker_orders(self) -> None:
+        """Simulate fills for paper-mode maker positions using order book data.
+
+        For each PENDING paper position in maker strategy, fetch the order
+        book and check whether the best ask is at or below our bid price.
+        If both sides fill, transition to PAIRED.  If the market expires
+        with unfilled sides, remove the position.
+        """
+        if self.client is None:
+            return
+
+        pending = [
+            (cid, pos)
+            for cid, pos in self._positions.items()
+            if pos.state == PositionState.PENDING and pos.is_paper
+        ]
+        if not pending:
+            return
+
+        now = int(time.time())
+        for cid, pos in pending:
+            if pos.opportunity.window_end_ts <= now:
+                del self._positions[cid]
+                logger.info("PAPER EXPIRED %s: market expired while pending", cid[:12])
+                continue
+
+            up_filled = pos.pending_up_order_id is None
+            down_filled = pos.pending_down_order_id is None
+
+            if up_filled and down_filled:
+                continue
+
+            try:
+                books = await asyncio.gather(
+                    self.client.get_order_book(pos.opportunity.up_token_id),
+                    self.client.get_order_book(pos.opportunity.down_token_id),
+                )
+                up_book, down_book = books
+            except (httpx.HTTPError, Exception):
+                logger.debug("Failed to fetch order books for paper maker fill check")
+                continue
+
+            if not up_filled and up_book.asks:
+                best_ask = min(level.price for level in up_book.asks)
+                if best_ask <= pos.up_leg.entry_price:
+                    pos.pending_up_order_id = None
+                    up_filled = True
+                    logger.info(
+                        "PAPER FILL %s Up: ask=%.4f <= bid=%.4f",
+                        cid[:12],
+                        best_ask,
+                        pos.up_leg.entry_price,
+                    )
+
+            if not down_filled and pos.down_leg is not None and down_book.asks:
+                best_ask = min(level.price for level in down_book.asks)
+                if best_ask <= pos.down_leg.entry_price:
+                    pos.pending_down_order_id = None
+                    down_filled = True
+                    logger.info(
+                        "PAPER FILL %s Down: ask=%.4f <= bid=%.4f",
+                        cid[:12],
+                        best_ask,
+                        pos.down_leg.entry_price,
+                    )
+
+            if up_filled and down_filled:
+                pos.state = PositionState.PAIRED
+                combined = pos.up_leg.entry_price + (
+                    pos.down_leg.entry_price if pos.down_leg else ZERO
+                )
+                logger.info(
+                    "PAPER PAIRED %s: both maker bids filled, combined=%.4f margin=%.4f asset=%s",
+                    cid[:12],
+                    combined,
+                    ONE - combined,
+                    pos.opportunity.asset,
+                )
+
     async def _manage_pending_orders(self) -> None:
         """Check fill status of pending GTC limit orders and transition states.
 
@@ -642,12 +802,22 @@ class SpreadTrader:
           unfilled order, unwind filled side, and mark SINGLE_LEG.
         - If neither filled and market is about to expire -> cancel both
           and remove position.
+
+        For paper-mode maker positions, delegate to
+        ``_manage_paper_maker_orders()`` which simulates fills using
+        order book snapshots.
         """
+        # Handle paper-mode maker fills via order book simulation
+        if self.config.strategy == "maker":
+            await self._manage_paper_maker_orders()
+
         if self.client is None:
             return
 
         pending = [
-            (cid, pos) for cid, pos in self._positions.items() if pos.state == PositionState.PENDING
+            (cid, pos)
+            for cid, pos in self._positions.items()
+            if pos.state == PositionState.PENDING and not pos.is_paper
         ]
         if not pending:
             return

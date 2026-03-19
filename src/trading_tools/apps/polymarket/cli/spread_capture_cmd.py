@@ -53,6 +53,9 @@ _PARAM_MAP: tuple[tuple[str, str, bool], ...] = (
     ("hedge_end_threshold", "hedge_end_threshold", True),
     ("hedge_start_pct", "hedge_start_pct", True),
     ("max_primary_price", "max_primary_price", True),
+    ("maker_bid_up", "maker_bid_up", True),
+    ("maker_bid_down", "maker_bid_down", True),
+    ("maker_order_size", "maker_order_size", True),
     # Direct params (int, passed through unchanged)
     ("poll_interval", "poll_interval", False),
     ("max_window", "max_window_seconds", False),
@@ -205,9 +208,7 @@ def spread_capture(
     ] = None,
     strategy: Annotated[
         str | None,
-        typer.Option(
-            help="Strategy: 'simultaneous' (both sides at once) or 'accumulate' (per-side)"
-        ),
+        typer.Option(help="Strategy: 'simultaneous', 'accumulate', or 'maker' (resting bids)"),
     ] = None,
     max_imbalance_ratio: Annotated[
         str | None,
@@ -244,6 +245,18 @@ def spread_capture(
     max_primary_price: Annotated[
         str | None,
         typer.Option(help="Max ask price for primary side fills (e.g. 0.60)"),
+    ] = None,
+    maker_bid_up: Annotated[
+        str | None,
+        typer.Option("--maker-bid-up", help="Maker bid price for Up token (e.g. 0.25)"),
+    ] = None,
+    maker_bid_down: Annotated[
+        str | None,
+        typer.Option("--maker-bid-down", help="Maker bid price for Down token (e.g. 0.25)"),
+    ] = None,
+    maker_order_size: Annotated[
+        str | None,
+        typer.Option("--maker-order-size", help="Maker order size in tokens per side (e.g. 20)"),
     ] = None,
     confirm_live: Annotated[
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
@@ -294,6 +307,9 @@ def spread_capture(
         hedge_end_threshold=hedge_end_threshold,
         hedge_start_pct=hedge_start_pct,
         max_primary_price=max_primary_price,
+        maker_bid_up=maker_bid_up,
+        maker_bid_down=maker_bid_down,
+        maker_order_size=maker_order_size,
     )
 
     if confirm_live:

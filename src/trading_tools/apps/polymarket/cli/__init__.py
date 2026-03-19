@@ -14,6 +14,7 @@ from trading_tools.apps.polymarket.cli.directional_backtest_cmd import direction
 from trading_tools.apps.polymarket.cli.directional_cmd import directional
 from trading_tools.apps.polymarket.cli.directional_grid_cmd import directional_grid
 from trading_tools.apps.polymarket.cli.grid_backtest_cmd import grid_backtest
+from trading_tools.apps.polymarket.cli.limit_backtest_cmd import limit_backtest
 from trading_tools.apps.polymarket.cli.markets_cmd import markets
 from trading_tools.apps.polymarket.cli.odds_cmd import odds
 from trading_tools.apps.polymarket.cli.spread_backtest_cmd import backtest_spread
@@ -56,5 +57,6 @@ app.command(name="directional-backtest")(directional_backtest)
 app.command(name="directional")(directional)
 app.command(name="whale-copy")(whale_copy)
 app.command(name="directional-grid")(directional_grid)
+app.command(name="limit-backtest")(limit_backtest)
 
 __all__ = ["app"]

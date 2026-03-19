@@ -394,7 +394,7 @@ circuit_breaker_cooldown: 600
 |------|---------|-------------|
 | `--series-slugs` | `btc-updown-5m,eth-updown-5m` | Comma-separated series slugs or `crypto-5m`/`crypto-15m` shortcut |
 | `--config` | *none* | Path to YAML config file (CLI flags override YAML values) |
-| `--strategy` | `simultaneous` | Execution strategy: `simultaneous` (both sides at once) or `accumulate` (independent per-side fills over time) |
+| `--strategy` | `simultaneous` | Execution strategy: `simultaneous` (both sides at once), `accumulate` (independent per-side fills over time), or `maker` (resting GTC limit bids on both sides) |
 | `--poll-interval` | `5` | Seconds between scan cycles |
 | `--capital` | `100` | Starting capital in USDC (paper mode) |
 | `--max-position-pct` | `0.10` | Max fraction of capital per spread trade |
@@ -416,6 +416,35 @@ circuit_breaker_cooldown: 600
 | `--paper-slippage-pct` | `0.005` | Simulated slippage for paper fills |
 | `--confirm-live` | `false` | **Required flag** for live trading |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
+
+**`maker` strategy flags** (only active when `--strategy maker`):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--maker-bid-up` | `0.25` | Resting bid price for the Up token |
+| `--maker-bid-down` | `0.25` | Resting bid price for the Down token |
+| `--maker-order-size` | `20` | Token quantity per maker order |
+
+The maker strategy places resting GTC limit buy orders at fixed bid prices on both Up and Down sides, waiting for taker sells instead of taking liquidity at the best ask. Use `--single-leg-timeout 300` to wait until the full window expires. Backtest results show 13.9% of 5-min windows see both sides fill at $0.25/$0.25 bids.
+
+```bash
+# Paper maker bot
+trading-tools-polymarket spread-capture \
+  --strategy maker \
+  --maker-bid-up 0.25 --maker-bid-down 0.25 \
+  --maker-order-size 20 \
+  --series-slugs btc-updown-5m \
+  --single-leg-timeout 300
+
+# Live maker bot
+trading-tools-polymarket spread-capture \
+  --confirm-live \
+  --strategy maker \
+  --maker-bid-up 0.25 --maker-bid-down 0.25 \
+  --maker-order-size 20 \
+  --series-slugs btc-updown-5m \
+  --single-leg-timeout 300
+```
 
 **`accumulate` strategy flags** (only active when `--strategy accumulate`):
 
@@ -704,6 +733,38 @@ trading-tools-polymarket grid-spread \
 | `--poll-interval` | `5` | Seconds between poll cycles during replay |
 | `--slippage` | `0.005` | Paper slippage percentage |
 | `--verbose`, `-v` | `false` | Enable per-window logging |
+
+### `limit-backtest` — Backtest Limit Order Spread Capture
+
+Simulate placing resting limit buy orders on both Up and Down tokens across a grid of bid prices, order sizes, and entry delays. Display fill rates, P&L, and Sharpe ratios as markdown tables.
+
+```bash
+trading-tools-polymarket limit-backtest \
+  --start 2026-03-05 --end 2026-03-19 \
+  --bid-up 0.05,0.10,0.15,0.20,0.25,0.30 \
+  --bid-down 0.05,0.10,0.15,0.20,0.25,0.30 \
+  --order-sizes 10,20,50 \
+  --entry-delays 0.0,0.10,0.20 \
+  --series-slug btc-updown-5m -v
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--start` | *(required)* | Start date `YYYY-MM-DD` |
+| `--end` | *(required)* | End date `YYYY-MM-DD` |
+| `--db-url` | env `TICK_DB_URL` or `sqlite+aiosqlite:///tick_data.db` | SQLAlchemy async DB URL |
+| `--bid-up` | `0.05,0.10,0.15,0.20,0.25,0.30` | Comma-separated Up bid prices |
+| `--bid-down` | `0.05,0.10,0.15,0.20,0.25,0.30` | Comma-separated Down bid prices |
+| `--order-sizes` | `10,20,50` | Comma-separated order sizes in tokens |
+| `--entry-delays` | `0.0,0.10,0.20` | Comma-separated entry delay fractions (0.0 = at open) |
+| `--series-slug` | `None` | Filter to a specific series slug |
+| `--verbose`, `-v` | `false` | Enable per-window logging |
+
+Output tables show:
+- **Fill Rate (Both Sides)** — fraction of windows where both limit orders filled
+- **Total P&L** — sum of guaranteed + directional P&L across all windows
+- **Sharpe Ratio** — avg P&L / std P&L per window
+- **Avg Guaranteed P&L** — mean profit from paired tokens in both-filled windows
 
 ## Database Support
 

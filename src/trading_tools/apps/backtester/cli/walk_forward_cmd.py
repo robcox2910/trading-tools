@@ -25,7 +25,7 @@ from trading_tools.apps.backtester.cli._output import (
 from trading_tools.apps.backtester.walk_forward import run_walk_forward
 
 
-def walk_forward_cmd(  # noqa: PLR0913
+def walk_forward_cmd(
     source: Annotated[
         str,
         typer.Option(
@@ -126,7 +126,7 @@ def walk_forward_cmd(  # noqa: PLR0913
     )
 
 
-async def _walk_forward(  # noqa: PLR0913
+async def _walk_forward(
     *,
     source: str,
     csv: Path | None,
