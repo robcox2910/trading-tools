@@ -213,6 +213,7 @@ def directional_grid(
                 candles_by_asset=candles_by_asset,
                 series_slug=series_slug,
                 whale_repo=w_repo,
+                metadata_list=metadata_list,
             )
         finally:
             await repo.close()

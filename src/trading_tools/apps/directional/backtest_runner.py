@@ -520,14 +520,16 @@ async def _replay_window(
         mode_label="BACKTEST",
     )
 
-    # Step clock through the window
+    # Step clock through the window; ensure settlement tick is always reached
+    settle_ts = meta.window_end_ts + 1
     t = meta.window_start_ts
-    while t <= meta.window_end_ts + 1:
+    while t <= settle_ts:
         await engine.poll_cycle(t)
         t += config.poll_interval
 
-    # Final settle
-    await engine.poll_cycle(meta.window_end_ts + 1)
+    # If the loop stepped past settle_ts without landing on it, fire it once
+    if (t - config.poll_interval) != settle_ts:
+        await engine.poll_cycle(settle_ts)
 
     for result in engine.results:
         acc.record(result)
