@@ -52,6 +52,7 @@ _BALANCE_REFRESH_POLLS = 60
 _WIN_PRICE = Decimal("1.0")
 _MIN_TOKEN_QTY = Decimal(5)
 _SUMMARY_INTERVAL = 900  # 15 minutes
+_REACTIVE_SLEEP = 0.5  # seconds between iterations (WS triggers fills)
 
 
 def _empty_position_dict() -> dict[str, WhalePosition]:
@@ -113,11 +114,13 @@ class WhaleCopyTrader:
             self._balance_manager = BalanceManager(client=self.client)
 
     async def run(self) -> None:
-        """Run the polling loop until interrupted.
+        """Run the reactive loop until interrupted.
 
-        Initialize the market scanner and enter a tight async loop that
-        discovers markets, queries whale signals, fills positions, and
-        settles expired ones.
+        Initialize the market scanner, start the WebSocket listener for
+        real-time trade events, and enter a tight async loop.  Fills are
+        triggered reactively when the WebSocket signals new trade
+        activity, with a short sleep (0.5s) to avoid busy-waiting.
+        Market discovery and settlement run on every iteration.
         """
         if self.client is None:
             msg = "PolymarketClient is required — pass client at construction"
@@ -145,19 +148,20 @@ class WhaleCopyTrader:
         self._session_start_capital = capital
         self._high_water_mark = capital
         logger.info(
-            "whale-copy started mode=%s poll=%ds capital=$%s"
-            " max_pos=%s%% fill_size=%s max_price=%s"
-            " min_conviction=%s max_open=%d slugs=%s",
+            "whale-copy started mode=%s capital=$%s"
+            " max_pos=%s%% fill_size=%s"
+            " max_open=%d slugs=%s ws=enabled",
             mode,
-            self.config.poll_interval,
             capital,
             self.config.max_position_pct * Decimal(100),
             self.config.fill_size_tokens,
-            self.config.max_price,
-            self.config.min_whale_conviction,
             self.config.max_open_positions,
             ",".join(self.config.series_slugs),
         )
+
+        # Start WebSocket for real-time trade triggers
+        initial_assets = await self._discover_asset_ids()
+        await self.signal_client.start_ws(initial_assets)
 
         try:
             while not self._shutdown.should_stop:
@@ -167,13 +171,34 @@ class WhaleCopyTrader:
                 if now >= self._summary_due:
                     self._log_periodic_summary()
                     self._summary_due = now + _SUMMARY_INTERVAL
-                await asyncio.sleep(self.config.poll_interval)
+                # Short sleep — WS triggers make us reactive, not polling
+                await asyncio.sleep(_REACTIVE_SLEEP)
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         finally:
             self._log_summary()
             if self._binance is not None:  # pyright: ignore[reportUnnecessaryComparison]
                 await self._binance.close()
+
+    async def _discover_asset_ids(self) -> list[str]:
+        """Discover all active market token IDs for WebSocket subscription.
+
+        Scan for markets and collect all Up and Down token IDs so the
+        WebSocket can subscribe to trade events on every tracked market.
+
+        Returns:
+            List of CLOB token identifiers for all active markets.
+
+        """
+        if self._scanner is None:
+            return []
+        opportunities = await self._scanner.scan_per_side(set(), Decimal("1.00"))
+        asset_ids: list[str] = []
+        for opp in opportunities:
+            asset_ids.append(opp.up_token_id)
+            asset_ids.append(opp.down_token_id)
+        logger.info("Discovered %d asset IDs for WebSocket subscription", len(asset_ids))
+        return asset_ids
 
     def set_repo(self, repo: SpreadResultRepository) -> None:
         """Attach a database repository for persisting settled trade results.
@@ -213,10 +238,11 @@ class WhaleCopyTrader:
 
         # 2. Discover new markets
         open_cids = set(self._positions.keys())
-        opportunities = await self._scanner.scan_per_side(open_cids, self.config.max_price)
+        opportunities = await self._scanner.scan_per_side(open_cids, Decimal("1.00"))
 
         # 3. Open positions for new markets
         now = int(time.time())
+        positions_opened = False
         for opp in opportunities:
             if len(self._positions) >= self.config.max_open_positions:
                 break
@@ -239,6 +265,7 @@ class WhaleCopyTrader:
                 budget=budget,
             )
             self._positions[opp.condition_id] = pos
+            positions_opened = True
             mode = "LIVE" if self.live else "PAPER"
             logger.info(
                 "%s OPEN %s budget=$%.2f asset=%s",
@@ -247,6 +274,14 @@ class WhaleCopyTrader:
                 budget,
                 opp.asset,
             )
+
+        # 3b. Update WS subscription if new markets were opened
+        if positions_opened:
+            all_assets: list[str] = []
+            for pos in self._positions.values():
+                all_assets.append(pos.opportunity.up_token_id)
+                all_assets.append(pos.opportunity.down_token_id)
+            await self.signal_client.update_subscription(all_assets)
 
         # 4. Fill on each open position based on whale signal
         await self._fill_positions()
