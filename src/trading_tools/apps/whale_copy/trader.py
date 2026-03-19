@@ -36,7 +36,7 @@ from trading_tools.apps.spread_capture.models import (
 from trading_tools.apps.whale_copy.models import WhalePosition
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.clients.binance.exceptions import BinanceError
-from trading_tools.core.models import ONE, ZERO, Interval
+from trading_tools.core.models import HUNDRED, ONE, ZERO, Interval
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
 if TYPE_CHECKING:
@@ -256,13 +256,12 @@ class WhaleCopyTrader:
             await self._redeemer.redeem_if_available()
 
     async def _fill_positions(self) -> None:
-        """Query whale signal and fill tokens for each open position.
+        """Mirror whale volume split on each open position.
 
-        For each ACCUMULATING position:
-        - Skip if past fill cutoff.
-        - Query whale direction and conviction.
-        - Log whale flips.
-        - Fetch order book and fill on the favoured side.
+        For each ACCUMULATING position, query the whale's dollar volume
+        on both sides and fill proportionally.  If the whale has $70 on
+        Up and $30 on Down, allocate fills at 70/30.  This mirrors the
+        whale's buy-then-hedge pattern instead of picking a single side.
         """
         now = int(time.time())
 
@@ -275,61 +274,53 @@ class WhaleCopyTrader:
             if window_duration <= 0:
                 continue
 
-            # Skip if past fill cutoff
             elapsed_pct = Decimal(str(now - opp.window_start_ts)) / Decimal(str(window_duration))
             if elapsed_pct > self.config.max_fill_age_pct:
                 continue
 
-            # Skip if budget exhausted
             if pos.total_cost_basis >= pos.budget:
                 continue
 
-            # Query whale direction — only trades within this window
-            favoured_side, conviction = await self.signal_client.get_direction(
+            # Get whale volumes on BOTH sides
+            up_vol, down_vol = await self.signal_client.get_volumes(
                 opp.condition_id, window_start_ts=opp.window_start_ts
             )
+            total_vol = up_vol + down_vol
 
-            if favoured_side is None:
+            if total_vol == ZERO:
                 logger.debug("No whale activity on %s", cid[:12])
                 continue
 
-            if conviction < self.config.min_whale_conviction:
-                logger.debug(
-                    "Low conviction on %s: %.2f < %.2f",
-                    cid[:12],
-                    conviction,
-                    self.config.min_whale_conviction,
-                )
-                continue
-
-            # Log whale direction (and flips)
-            if pos.whale_side is not None and pos.whale_side != favoured_side:
+            # Track favoured side for logging
+            favoured = "Up" if up_vol >= down_vol else "Down"
+            if pos.whale_side is not None and pos.whale_side != favoured:
                 logger.info(
-                    "WHALE-FLIP %s old=%s new=%s conviction=%.2f",
+                    "WHALE-FLIP %s old=%s new=%s up=$%.2f down=$%.2f",
                     cid[:12],
                     pos.whale_side,
-                    favoured_side,
-                    conviction,
+                    favoured,
+                    up_vol,
+                    down_vol,
                 )
-            else:
-                logger.debug(
-                    "WHALE-DIRECTION %s side=%s conviction=%.2f",
-                    cid[:12],
-                    favoured_side,
-                    conviction,
-                )
-            pos.whale_side = favoured_side
+            pos.whale_side = favoured
 
-            # Determine which leg and token to fill
-            if favoured_side == "Up":
-                leg = pos.up_leg
-                token_id = opp.up_token_id
-            else:
-                leg = pos.down_leg
-                token_id = opp.down_token_id
+            # Fill both sides proportionally to whale volume split
+            up_pct = up_vol / total_vol
+            down_pct = down_vol / total_vol
 
-            # Fetch order book for the favoured side
-            await self._execute_fill(pos, leg, token_id, cid)
+            logger.debug(
+                "WHALE-VOLUME %s up=$%.2f (%.0f%%) down=$%.2f (%.0f%%)",
+                cid[:12],
+                up_vol,
+                up_pct * HUNDRED,
+                down_vol,
+                down_pct * HUNDRED,
+            )
+
+            if up_pct > ZERO:
+                await self._execute_fill(pos, pos.up_leg, opp.up_token_id, cid)
+            if down_pct > ZERO:
+                await self._execute_fill(pos, pos.down_leg, opp.down_token_id, cid)
 
     async def _execute_fill(
         self,

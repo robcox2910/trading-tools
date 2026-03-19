@@ -86,10 +86,10 @@ class WhaleSignalClient:
 
         self._cache_time = now
 
-    async def get_direction(
+    async def get_volumes(
         self, condition_id: str, window_start_ts: int = 0
-    ) -> tuple[str | None, Decimal]:
-        """Return the whale consensus direction for a market from cached trades.
+    ) -> tuple[Decimal, Decimal]:
+        """Return whale BUY dollar volume on each side from cached trades.
 
         If the cache is stale or empty, refresh it first.  Then filter
         cached trades by condition ID, BUY side, and window timestamp.
@@ -100,8 +100,8 @@ class WhaleSignalClient:
                 second.  Defaults to 0 (no filtering).
 
         Returns:
-            Tuple of ``(favoured_side, conviction_ratio)``.
-            Returns ``(None, ZERO)`` if no matching whale trades found.
+            Tuple of ``(up_volume, down_volume)`` in USDC.
+            Both are ``ZERO`` if no matching whale trades found.
 
         """
         await self.refresh()
@@ -127,6 +127,28 @@ class WhaleSignalClient:
                     up_volume += dollar_volume
                 elif outcome == "Down":
                     down_volume += dollar_volume
+
+        return up_volume, down_volume
+
+    async def get_direction(
+        self, condition_id: str, window_start_ts: int = 0
+    ) -> tuple[str | None, Decimal]:
+        """Return the whale consensus direction for a market.
+
+        Convenience wrapper around ``get_volumes`` that returns the
+        favoured side and conviction ratio.
+
+        Args:
+            condition_id: Polymarket market condition identifier.
+            window_start_ts: Only count trades at or after this epoch
+                second.  Defaults to 0 (no filtering).
+
+        Returns:
+            Tuple of ``(favoured_side, conviction_ratio)``.
+            Returns ``(None, ZERO)`` if no matching whale trades found.
+
+        """
+        up_volume, down_volume = await self.get_volumes(condition_id, window_start_ts)
 
         if up_volume == ZERO and down_volume == ZERO:
             return None, ZERO
