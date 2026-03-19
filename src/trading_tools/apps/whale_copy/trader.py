@@ -313,6 +313,10 @@ class WhaleCopyTrader:
             if elapsed_pct > self.config.max_fill_age_pct:
                 continue
 
+            # Wait for the whale to show their real hand
+            if elapsed_pct < self.config.min_fill_age_pct:
+                continue
+
             if pos.total_cost_basis >= pos.budget:
                 continue
 
@@ -324,6 +328,16 @@ class WhaleCopyTrader:
 
             if total_vol == ZERO:
                 logger.debug("No whale activity on %s", cid[:12])
+                continue
+
+            # Ignore tiny feint trades — wait for meaningful volume
+            if total_vol < self.config.min_whale_volume:
+                logger.debug(
+                    "Low whale volume on %s: $%.2f < $%.2f",
+                    cid[:12],
+                    total_vol,
+                    self.config.min_whale_volume,
+                )
                 continue
 
             # Track favoured side for logging
