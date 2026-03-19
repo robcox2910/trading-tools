@@ -9,11 +9,11 @@ from trading_tools.apps.directional.backtest_runner import (
     BookSnapshotCache,
     WhaleTradeCache,
     _CalibrationAccumulator,
-    _determine_outcome,
     _empty_result,
     _metadata_to_opportunity,
-    _snapshot_to_order_book,
+    determine_outcome,
     run_directional_backtest,
+    snapshot_to_order_book,
 )
 from trading_tools.apps.directional.config import DirectionalConfig
 from trading_tools.apps.tick_collector.models import OrderBookSnapshot
@@ -44,21 +44,21 @@ class TestDetermineOutcome:
     def test_up_when_close_above_open(self) -> None:
         """Return 'Up' when close > open."""
         candles = [_make_candle(_BASE_TS, Decimal(100), Decimal(101))]
-        assert _determine_outcome(candles) == "Up"
+        assert determine_outcome(candles) == "Up"
 
     def test_down_when_close_below_open(self) -> None:
         """Return 'Down' when close < open."""
         candles = [_make_candle(_BASE_TS, Decimal(101), Decimal(100))]
-        assert _determine_outcome(candles) == "Down"
+        assert determine_outcome(candles) == "Down"
 
     def test_none_when_flat(self) -> None:
         """Return None when close == open."""
         candles = [_make_candle(_BASE_TS, Decimal(100), Decimal(100))]
-        assert _determine_outcome(candles) is None
+        assert determine_outcome(candles) is None
 
     def test_none_when_empty(self) -> None:
         """Return None when no candles."""
-        assert _determine_outcome([]) is None
+        assert determine_outcome([]) is None
 
 
 class TestMetadataToOpportunity:
@@ -139,7 +139,7 @@ class TestSnapshotToOrderBook:
         snapshot.spread = 0.04
         snapshot.midpoint = 0.50
 
-        book = _snapshot_to_order_book(snapshot)
+        book = snapshot_to_order_book(snapshot)
         assert book.token_id == "tok_1"
         assert len(book.bids) == 2
         assert len(book.asks) == 2
@@ -159,7 +159,7 @@ class TestSnapshotToOrderBook:
         snapshot.spread = 0.0
         snapshot.midpoint = 0.50
 
-        book = _snapshot_to_order_book(snapshot)
+        book = snapshot_to_order_book(snapshot)
         assert len(book.bids) == 0
         assert len(book.asks) == 0
 

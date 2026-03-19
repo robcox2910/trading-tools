@@ -274,7 +274,7 @@ def _metadata_to_opportunity(meta: MarketMetadata) -> MarketOpportunity:
     )
 
 
-def _determine_outcome(candles: Sequence[Candle]) -> str | None:
+def determine_outcome(candles: Sequence[Candle]) -> str | None:
     """Determine the winning side from candle data.
 
     Args:
@@ -295,7 +295,7 @@ def _determine_outcome(candles: Sequence[Candle]) -> str | None:
     return None
 
 
-def _make_default_book(token_id: str) -> OrderBook:
+def make_default_book(token_id: str) -> OrderBook:
     """Create a default order book with symmetric 0.50 prices.
 
     Args:
@@ -315,7 +315,7 @@ def _make_default_book(token_id: str) -> OrderBook:
     )
 
 
-def _snapshot_to_order_book(snapshot: OrderBookSnapshot) -> OrderBook:
+def snapshot_to_order_book(snapshot: OrderBookSnapshot) -> OrderBook:
     """Convert a database ``OrderBookSnapshot`` to an ``OrderBook``.
 
     Parse the JSON bid/ask arrays into typed ``OrderLevel`` tuples.
@@ -452,7 +452,7 @@ async def _replay_window(
     window_candles = [
         c for c in asset_candles if meta.window_start_ts <= c.timestamp <= meta.window_end_ts
     ]
-    outcome = _determine_outcome(window_candles)
+    outcome = determine_outcome(window_candles)
 
     if outcome is None:
         acc.skipped += 1
@@ -478,14 +478,12 @@ async def _replay_window(
         )
 
     up_book = (
-        _snapshot_to_order_book(up_snapshot)
-        if up_snapshot
-        else _make_default_book(meta.up_token_id)
+        snapshot_to_order_book(up_snapshot) if up_snapshot else make_default_book(meta.up_token_id)
     )
     down_book = (
-        _snapshot_to_order_book(down_snapshot)
+        snapshot_to_order_book(down_snapshot)
         if down_snapshot
-        else _make_default_book(meta.down_token_id)
+        else make_default_book(meta.down_token_id)
     )
 
     # Update market prices from real order book data
