@@ -738,14 +738,11 @@ class TestExecuteFill:
         assert leg.entry_price == _EXPECTED_PAPER_PRICE.quantize(Decimal("0.0001"))
 
     @pytest.mark.asyncio
-    async def test_skip_when_ask_above_max_price(self) -> None:
-        """Skip fill when best ask exceeds max_price."""
-        config = WhaleCopyConfig(
-            max_price=Decimal("0.40"),
-            fee_rate=ZERO,
-        )
+    async def test_fills_at_any_price_to_match_whale_ratio(self) -> None:
+        """Fill even when ask is expensive — no max_price filter on fills."""
+        config = WhaleCopyConfig(fee_rate=ZERO)
         mock_client = AsyncMock()
-        book = SimpleNamespace(asks=[_make_ask_level(price=Decimal("0.50"))])
+        book = SimpleNamespace(asks=[_make_ask_level(price=Decimal("0.80"), size=Decimal(100))])
         mock_client.get_order_book = AsyncMock(return_value=book)
 
         trader = WhaleCopyTrader(
@@ -759,7 +756,7 @@ class TestExecuteFill:
 
         await trader._execute_fill(pos, leg, "tok_up", "cond_abc")
 
-        assert leg.quantity == ZERO
+        assert leg.quantity > ZERO
 
     @pytest.mark.asyncio
     async def test_skip_when_depth_too_thin(self) -> None:

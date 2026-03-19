@@ -318,9 +318,9 @@ class WhaleCopyTrader:
             )
 
             if up_pct > ZERO:
-                await self._execute_fill(pos, pos.up_leg, opp.up_token_id, cid)
+                await self._execute_fill(pos, pos.up_leg, opp.up_token_id, cid, up_pct)
             if down_pct > ZERO:
-                await self._execute_fill(pos, pos.down_leg, opp.down_token_id, cid)
+                await self._execute_fill(pos, pos.down_leg, opp.down_token_id, cid, down_pct)
 
     async def _execute_fill(
         self,
@@ -328,17 +328,21 @@ class WhaleCopyTrader:
         leg: SideLeg,
         token_id: str,
         cid: str,
+        whale_pct: Decimal = ONE,
     ) -> None:
-        """Execute a single fill on the given leg.
+        """Execute a single fill on the given leg, sized by whale ratio.
 
-        Fetch the order book, check the ask price, and either place a
-        live order or simulate a paper fill.
+        Fetch the order book and fill proportionally to the whale's
+        volume split.  No max_price filter — we buy at whatever price
+        the whale is buying to match their ratio.
 
         Args:
             pos: The whale copy position being filled.
             leg: The side leg to add the fill to.
             token_id: CLOB token ID for the side.
             cid: Condition ID (for logging).
+            whale_pct: Fraction of whale volume on this side (0-1).
+                Fill size is scaled by this ratio.
 
         """
         if self.client is None:
@@ -354,20 +358,15 @@ class WhaleCopyTrader:
             return
 
         ask_price = book.asks[0].price
-        if ask_price > self.config.max_price:
-            logger.debug(
-                "Skip fill %s %s: ask=%.4f > max=%.4f",
-                cid[:12],
-                leg.side,
-                ask_price,
-                self.config.max_price,
-            )
-            return
+
+        # Scale fill size by whale's ratio on this side
+        base_qty = self.config.fill_size_tokens * whale_pct
+        fill_qty = max(base_qty.quantize(Decimal(1)), _MIN_TOKEN_QTY)
 
         # Check depth constraint
         ask_depth = sum((level.size for level in book.asks), start=ZERO)
         max_qty = ask_depth * self.config.max_book_pct
-        fill_qty = min(self.config.fill_size_tokens, max_qty)
+        fill_qty = min(fill_qty, max_qty)
         if fill_qty < _MIN_TOKEN_QTY:
             logger.debug("Skip fill %s %s: depth too thin", cid[:12], leg.side)
             return
