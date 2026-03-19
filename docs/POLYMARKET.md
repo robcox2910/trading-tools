@@ -705,6 +705,38 @@ trading-tools-polymarket grid-spread \
 | `--slippage` | `0.005` | Paper slippage percentage |
 | `--verbose`, `-v` | `false` | Enable per-window logging |
 
+### `limit-backtest` — Backtest Limit Order Spread Capture
+
+Simulate placing resting limit buy orders on both Up and Down tokens across a grid of bid prices, order sizes, and entry delays. Display fill rates, P&L, and Sharpe ratios as markdown tables.
+
+```bash
+trading-tools-polymarket limit-backtest \
+  --start 2026-03-05 --end 2026-03-19 \
+  --bid-up 0.05,0.10,0.15,0.20,0.25,0.30 \
+  --bid-down 0.05,0.10,0.15,0.20,0.25,0.30 \
+  --order-sizes 10,20,50 \
+  --entry-delays 0.0,0.10,0.20 \
+  --series-slug btc-updown-5m -v
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--start` | *(required)* | Start date `YYYY-MM-DD` |
+| `--end` | *(required)* | End date `YYYY-MM-DD` |
+| `--db-url` | env `TICK_DB_URL` or `sqlite+aiosqlite:///tick_data.db` | SQLAlchemy async DB URL |
+| `--bid-up` | `0.05,0.10,0.15,0.20,0.25,0.30` | Comma-separated Up bid prices |
+| `--bid-down` | `0.05,0.10,0.15,0.20,0.25,0.30` | Comma-separated Down bid prices |
+| `--order-sizes` | `10,20,50` | Comma-separated order sizes in tokens |
+| `--entry-delays` | `0.0,0.10,0.20` | Comma-separated entry delay fractions (0.0 = at open) |
+| `--series-slug` | `None` | Filter to a specific series slug |
+| `--verbose`, `-v` | `false` | Enable per-window logging |
+
+Output tables show:
+- **Fill Rate (Both Sides)** — fraction of windows where both limit orders filled
+- **Total P&L** — sum of guaranteed + directional P&L across all windows
+- **Sharpe Ratio** — avg P&L / std P&L per window
+- **Avg Guaranteed P&L** — mean profit from paired tokens in both-filled windows
+
 ## Database Support
 
 Both tick collection and whale monitoring support SQLite (default) and PostgreSQL:

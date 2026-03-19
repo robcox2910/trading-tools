@@ -68,7 +68,8 @@ trading-tools/
 │   │   │   ├── spread_trader.py     # Thin wrapper: simultaneous both-sides strategy
 │   │   │   ├── accumulating_trader.py # Thin wrapper: directional entry + opportunistic hedge
 │   │   │   ├── backtest_runner.py   # Replay engine: feed historical windows through SpreadEngine
-│   │   │   └── grid_backtest.py     # Parameter sweep over hedge thresholds and signal delay
+│   │   │   ├── grid_backtest.py     # Parameter sweep over hedge thresholds and signal delay
+│   │   │   └── limit_backtest.py    # Limit order fill simulation, grid sweep, and P&L aggregation
 │   │   ├── whale_copy/              # Whale copy trading bot — mirror whale directional positioning
 │   │   │   ├── config.py            # WhaleCopyConfig (frozen dataclass, YAML + CLI)
 │   │   │   ├── models.py            # WhalePosition — tracks position with dynamic whale_side
@@ -165,7 +166,7 @@ Runnable applications and long-lived services. Each application has:
 | `polymarket_bot` | Paper and live trading engines with fee/slippage modelling and loss limits (consumed by `polymarket` CLI) |
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
 | `whale_monitor` | Polling service that tracks whale trades, with analysis, per-market breakdown, trade enrichment, and Binance spot correlation |
-| `spread_capture` | Spread capture bot (paper, live, and backtest) with port-based adapters, pure decision engine, hedge urgency, circuit breaker, and historical replay |
+| `spread_capture` | Spread capture bot (paper, live, and backtest) with port-based adapters, pure decision engine, hedge urgency, circuit breaker, historical replay, and limit order fill backtester |
 | `directional` | Directional trading algorithm — buy predicted winning side of binary crypto markets using features (momentum, volatility, volume, book imbalance, RSI), weighted ensemble estimator, and Kelly criterion sizing |
 
 ### `/clients` — API Clients
