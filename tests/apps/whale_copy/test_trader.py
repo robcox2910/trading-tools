@@ -584,6 +584,10 @@ class TestFillPositionsPositivePath:
         book = SimpleNamespace(asks=[_make_ask_level()])
         mock_client.get_order_book = AsyncMock(return_value=book)
 
+        # Disable timing/volume gates for unit tests
+        config = WhaleCopyConfig.with_overrides(
+            config, min_fill_age_pct=ZERO, min_whale_volume=ZERO
+        )
         trader = WhaleCopyTrader(
             config=config,
             signal_client=signal,
@@ -625,6 +629,9 @@ class TestFillPositionsPositivePath:
         book = SimpleNamespace(asks=[_make_ask_level()])
         mock_client.get_order_book = AsyncMock(return_value=book)
 
+        config = WhaleCopyConfig.with_overrides(
+            config, min_fill_age_pct=ZERO, min_whale_volume=ZERO
+        )
         trader = WhaleCopyTrader(
             config=config,
             signal_client=signal,

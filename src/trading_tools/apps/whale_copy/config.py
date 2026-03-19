@@ -80,8 +80,13 @@ class WhaleCopyConfig:
             order size of 5).
         max_fill_age_pct: Maximum fraction of the market window elapsed
             before fills are stopped on existing positions.
+        min_fill_age_pct: Minimum fraction of the market window elapsed
+            before fills begin.  Wait for the whale to show their real
+            hand before copying — early trades are often noise.
         max_entry_age_pct: Maximum fraction of the market window elapsed
             before new positions are opened.
+        min_whale_volume: Minimum total whale dollar volume on a market
+            before we start filling.  Ignore tiny feint trades.
         max_book_pct: Maximum fraction of visible order book depth to
             consume per fill.
         max_price: Maximum ask price to buy — skip fills above this.
@@ -115,7 +120,9 @@ class WhaleCopyConfig:
     rediscovery_interval: int = 30
     fill_size_tokens: Decimal = Decimal(5)
     max_fill_age_pct: Decimal = Decimal("0.90")
+    min_fill_age_pct: Decimal = Decimal("0.40")
     max_entry_age_pct: Decimal = Decimal("0.60")
+    min_whale_volume: Decimal = Decimal(50)
     max_book_pct: Decimal = Decimal("0.20")
     max_price: Decimal = Decimal("0.60")
     paper_slippage_pct: Decimal = Decimal("0.005")
