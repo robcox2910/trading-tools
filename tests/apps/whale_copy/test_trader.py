@@ -228,14 +228,11 @@ class TestFillPositions:
     """Test the fill logic in the trader."""
 
     @pytest.mark.asyncio
-    async def test_skip_low_conviction(self) -> None:
-        """Skip fills when whale conviction is below threshold."""
-        config = WhaleCopyConfig(
-            min_whale_conviction=Decimal("2.0"),
-            max_fill_age_pct=Decimal("0.95"),
-        )
+    async def test_skip_no_whale_activity(self) -> None:
+        """Skip fills when no whale trades exist in the window."""
+        config = WhaleCopyConfig(max_fill_age_pct=Decimal("0.95"))
         signal = AsyncMock(spec=WhaleSignalClient)
-        signal.get_direction = AsyncMock(return_value=("Up", Decimal("1.2")))
+        signal.get_volumes = AsyncMock(return_value=(ZERO, ZERO))
 
         trader = WhaleCopyTrader(config=config, signal_client=signal)
 
@@ -250,7 +247,6 @@ class TestFillPositions:
 
         await trader._fill_positions()
 
-        # No fills should have been made
         assert pos.up_leg.quantity == ZERO
         assert pos.whale_side is None
 
@@ -259,7 +255,7 @@ class TestFillPositions:
         """Skip fills when past the fill age cutoff."""
         config = WhaleCopyConfig(max_fill_age_pct=Decimal("0.50"))
         signal = AsyncMock(spec=WhaleSignalClient)
-        signal.get_direction = AsyncMock(return_value=("Up", Decimal("3.0")))
+        signal.get_volumes = AsyncMock(return_value=(Decimal(50), Decimal(10)))
 
         trader = WhaleCopyTrader(config=config, signal_client=signal)
 
@@ -582,7 +578,7 @@ class TestFillPositionsPositivePath:
             fee_rate=ZERO,
         )
         signal = AsyncMock(spec=WhaleSignalClient)
-        signal.get_direction = AsyncMock(return_value=("Up", _HIGH_CONVICTION))
+        signal.get_volumes = AsyncMock(return_value=(Decimal(100), Decimal(10)))
 
         mock_client = AsyncMock()
         book = SimpleNamespace(asks=[_make_ask_level()])
@@ -623,7 +619,7 @@ class TestFillPositionsPositivePath:
         )
         signal = AsyncMock(spec=WhaleSignalClient)
         # Whale flips from Up to Down
-        signal.get_direction = AsyncMock(return_value=("Down", _HIGH_CONVICTION))
+        signal.get_volumes = AsyncMock(return_value=(Decimal(10), Decimal(100)))
 
         mock_client = AsyncMock()
         book = SimpleNamespace(asks=[_make_ask_level()])
@@ -662,7 +658,7 @@ class TestFillPositionsPositivePath:
             fee_rate=ZERO,
         )
         signal = AsyncMock(spec=WhaleSignalClient)
-        signal.get_direction = AsyncMock(return_value=("Up", _HIGH_CONVICTION))
+        signal.get_volumes = AsyncMock(return_value=(Decimal(100), Decimal(10)))
 
         trader = WhaleCopyTrader(config=config, signal_client=signal)
 
@@ -680,7 +676,7 @@ class TestFillPositionsPositivePath:
         await trader._fill_positions()
 
         # get_direction should not be called since budget check is before it
-        signal.get_direction.assert_not_called()
+        signal.get_volumes.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skip_no_whale_activity(self) -> None:
@@ -691,7 +687,7 @@ class TestFillPositionsPositivePath:
             fee_rate=ZERO,
         )
         signal = AsyncMock(spec=WhaleSignalClient)
-        signal.get_direction = AsyncMock(return_value=(None, ZERO))
+        signal.get_volumes = AsyncMock(return_value=(ZERO, ZERO))
 
         trader = WhaleCopyTrader(config=config, signal_client=signal)
 
@@ -1173,7 +1169,7 @@ class TestPollCycle:
             fill_size_tokens=_EXPECTED_FILL_QTY,
         )
         signal = AsyncMock(spec=WhaleSignalClient)
-        signal.get_direction = AsyncMock(return_value=(None, ZERO))
+        signal.get_volumes = AsyncMock(return_value=(ZERO, ZERO))
 
         trader = WhaleCopyTrader(config=config, signal_client=signal)
         trader._session_start_capital = _BASE_CAPITAL
@@ -1202,7 +1198,7 @@ class TestPollCycle:
             fill_size_tokens=_EXPECTED_FILL_QTY,
         )
         signal = AsyncMock(spec=WhaleSignalClient)
-        signal.get_direction = AsyncMock(return_value=(None, ZERO))
+        signal.get_volumes = AsyncMock(return_value=(ZERO, ZERO))
 
         trader = WhaleCopyTrader(config=config, signal_client=signal)
         trader._session_start_capital = _BASE_CAPITAL
