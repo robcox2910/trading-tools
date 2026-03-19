@@ -129,8 +129,10 @@ class SpreadTrader:
         scanner_max_cost = (
             Decimal("2.0") if self.config.strategy == "maker" else self.config.max_combined_cost
         )
+        # Net margin is negative for typical markets (combined > 1.0),
+        # so use a very negative floor to pass all markets through.
         scanner_min_margin = (
-            ZERO if self.config.strategy == "maker" else self.config.min_spread_margin
+            Decimal(-10) if self.config.strategy == "maker" else self.config.min_spread_margin
         )
         self._scanner = MarketScanner(
             client=self.client,
