@@ -16,6 +16,9 @@ from trading_tools.apps.polymarket.backtest_common import (
     configure_verbose_logging,
     parse_date,
 )
+from trading_tools.apps.polymarket.cli.directional_backtest_cmd import (
+    fetch_binance_candles,
+)
 from trading_tools.apps.spread_capture.limit_backtest import (
     format_limit_grid_table,
     run_limit_grid,
@@ -110,6 +113,18 @@ def limit_backtest(
     async def _run() -> None:
         repo = TickRepository(db_url)
         try:
+            # Discover assets and pre-fetch Binance candles for outcome resolution
+            metadata_list = await repo.get_market_metadata_in_range(
+                start_ts, end_ts, series_slug=series_slug
+            )
+            assets = sorted({m.asset for m in metadata_list})
+            typer.echo(
+                f"Found {len(metadata_list)} windows across "
+                f"{len(assets)} assets: {', '.join(assets)}"
+            )
+
+            candles_by_asset = await fetch_binance_candles(assets, start_ts, end_ts, lookback=0)
+
             result = await run_limit_grid(
                 repo=repo,
                 start_ts=start_ts,
@@ -119,6 +134,7 @@ def limit_backtest(
                 order_sizes=order_sizes,
                 entry_delays=entry_delays,
                 series_slug=series_slug,
+                candles_by_asset=candles_by_asset,
             )
         finally:
             await repo.close()
