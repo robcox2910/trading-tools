@@ -16,14 +16,15 @@ from trading_tools.apps.polymarket.backtest_common import (
     configure_verbose_logging,
     parse_date,
 )
-from trading_tools.apps.polymarket.cli.directional_backtest_cmd import (
-    fetch_binance_candles,
-)
 from trading_tools.apps.spread_capture.limit_backtest import (
     format_limit_grid_table,
     run_limit_grid,
 )
 from trading_tools.apps.tick_collector.repository import TickRepository
+from trading_tools.clients.binance.client import BinanceClient
+from trading_tools.clients.binance.exceptions import BinanceError
+from trading_tools.core.models import Candle, Interval
+from trading_tools.data.providers.binance import BinanceCandleProvider
 
 _DEFAULT_DB_URL = os.environ.get("TICK_DB_URL", "sqlite+aiosqlite:///tick_data.db")
 
@@ -39,6 +40,45 @@ def _parse_decimal_list(value: str) -> list[Decimal]:
 
     """
     return sorted(Decimal(v.strip()) for v in value.split(","))
+
+
+async def _fetch_candles_safe(
+    assets: list[str],
+    start_ts: int,
+    end_ts: int,
+) -> dict[str, list[Candle]]:
+    """Fetch Binance 1-min candles, skipping assets not listed on Binance.
+
+    Args:
+        assets: Unique asset names (e.g. ``["BTC-USD", "ETH-USD"]``).
+        start_ts: Start epoch seconds.
+        end_ts: End epoch seconds.
+
+    Returns:
+        Mapping from asset name to list of 1-min candles.  Assets that
+        fail to fetch (e.g. not on Binance) are silently skipped.
+
+    """
+    candles_by_asset: dict[str, list[Candle]] = {}
+    binance = BinanceClient()
+    provider = BinanceCandleProvider(binance)
+    try:
+        for asset_name in assets:
+            try:
+                typer.echo(f"Fetching Binance candles for {asset_name}...")
+                asset_candles = await provider.get_candles(
+                    symbol=asset_name,
+                    interval=Interval.M1,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                )
+                candles_by_asset[asset_name] = asset_candles
+                typer.echo(f"  Got {len(asset_candles)} candles")
+            except BinanceError:
+                typer.echo(f"  Skipped {asset_name} (not on Binance)")
+    finally:
+        await binance.close()
+    return candles_by_asset
 
 
 def limit_backtest(
@@ -123,7 +163,7 @@ def limit_backtest(
                 f"{len(assets)} assets: {', '.join(assets)}"
             )
 
-            candles_by_asset = await fetch_binance_candles(assets, start_ts, end_ts, lookback=0)
+            candles_by_asset = await _fetch_candles_safe(assets, start_ts, end_ts)
 
             result = await run_limit_grid(
                 repo=repo,
