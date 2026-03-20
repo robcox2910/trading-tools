@@ -1049,9 +1049,11 @@ class SpreadTrader:
             combined = filled_bid + hedge_ask
 
             # Scale max hedge cost with time: at hedge_age (60%) accept
-            # max_combined ($0.98), at 100% accept max_combined + 0.12 ($1.10).
+            # max_combined ($0.98), at 100% accept max_combined + 0.27 ($1.25).
             # Linear interpolation minimises loss as window runs out.
-            max_extra = Decimal("0.12")
+            # At $1.25 combined we lose $2.50, but that beats a 50% chance
+            # of losing $3.00 (expected saving = $0.25 per trade).
+            max_extra = Decimal("0.27")
             time_range = ONE - hedge_age
             if time_range > ZERO:
                 progress = min((elapsed_pct - hedge_age) / time_range, ONE)
