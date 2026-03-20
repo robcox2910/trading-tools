@@ -30,6 +30,9 @@ _WEIGHT_FIELD_NAMES = frozenset(
         "w_price_change",
         "w_whale",
         "w_leader_momentum",
+        "w_tick_imbalance",
+        "w_tick_price_velocity",
+        "w_tick_volume_accel",
         "bias",
     }
 )
@@ -161,6 +164,12 @@ class DirectionalConfig:
         w_whale: Estimator weight for the whale positioning feature.
         w_leader_momentum: Estimator weight for the leader (BTC)
             momentum feature.  Default ``0.0`` — zero until trained.
+        w_tick_imbalance: Estimator weight for the Polymarket tick
+            buy/sell imbalance feature.  Default ``0.0``.
+        w_tick_price_velocity: Estimator weight for the tick price
+            velocity feature.  Default ``0.0``.
+        w_tick_volume_accel: Estimator weight for the tick volume
+            acceleration feature.  Default ``0.0``.
         bias: Intercept (bias) term for the estimator.  Shifts the
             baseline probability away from 0.5 when features are zero,
             allowing the model to learn the base rate (e.g. crypto trends
@@ -201,6 +210,9 @@ class DirectionalConfig:
     w_price_change: Decimal = Decimal("0.10")
     w_whale: Decimal = Decimal("0.50")
     w_leader_momentum: Decimal = Decimal("0.0")
+    w_tick_imbalance: Decimal = Decimal("0.0")
+    w_tick_price_velocity: Decimal = Decimal("0.0")
+    w_tick_volume_accel: Decimal = Decimal("0.0")
     bias: Decimal = Decimal("0.0")
     weights_by_slug: dict[str, dict[str, Decimal]] = dataclasses.field(
         default_factory=_empty_slug_weights,

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from trading_tools.clients.polymarket.models import OrderBook
     from trading_tools.core.models import Candle
 
-    from .models import MarketOpportunity
+    from .models import MarketOpportunity, TickSample
 
 
 @dataclass(frozen=True)
@@ -156,6 +156,24 @@ class MarketDataPort(Protocol):
         Returns:
             ``"Up"`` or ``"Down"`` if whales have a clear directional
             bet, ``None`` if no whale activity.
+
+        """
+        ...  # pragma: no cover
+
+    async def get_recent_ticks(
+        self,
+        token_id: str,
+        since_ms: int,
+    ) -> list[TickSample]:
+        """Fetch recent Polymarket tick samples for a token.
+
+        Args:
+            token_id: CLOB token identifier for the Up outcome.
+            since_ms: Epoch milliseconds — only return ticks after this.
+
+        Returns:
+            List of ``TickSample`` ordered by timestamp, or empty list
+            when tick data is unavailable.
 
         """
         ...  # pragma: no cover

@@ -58,6 +58,28 @@ class MarketOpportunity:
 
 
 @dataclass(frozen=True)
+class TickSample:
+    """Lightweight tick record for feature extraction.
+
+    Decouple the directional feature code from the tick collector ORM
+    model.  Live and replay adapters convert to this representation
+    before passing ticks into the feature layer.
+
+    Attributes:
+        price: Execution price.
+        size: Trade size in tokens.
+        side: ``"BUY"`` or ``"SELL"``.
+        timestamp_ms: Epoch milliseconds.
+
+    """
+
+    price: float
+    size: float
+    side: str
+    timestamp_ms: int
+
+
+@dataclass(frozen=True)
 class FeatureVector:
     """Extracted features for a single market at a point in time.
 
@@ -79,6 +101,13 @@ class FeatureVector:
             normalised to ``[-1, 1]``.  Captures the "BTC leads altcoins"
             effect.  Set to ``0`` for BTC markets to avoid double-counting
             with the momentum feature.
+        tick_imbalance: Polymarket trade flow imbalance.
+            ``(buy_vol - sell_vol) / total_vol`` for the Up token in the
+            last 60 seconds.  Positive = net buying (bullish).
+        tick_price_velocity: Linear rate of change of Up-token tick
+            prices over the last 30 seconds, normalised to ``[-1, 1]``.
+        tick_volume_accel: Ratio of recent to earlier trading volume,
+            normalised to ``[-1, 1]``.  Positive = accelerating activity.
 
     """
 
@@ -90,6 +119,9 @@ class FeatureVector:
     price_change_pct: Decimal
     whale_signal: Decimal = Decimal(0)
     leader_momentum: Decimal = Decimal(0)
+    tick_imbalance: Decimal = Decimal(0)
+    tick_price_velocity: Decimal = Decimal(0)
+    tick_volume_accel: Decimal = Decimal(0)
 
 
 @dataclass
@@ -209,6 +241,9 @@ class DirectionalResultRecord(DirectionalBase):
         f_rsi: RSI signal feature value at entry.
         f_price_change: Price change feature value at entry.
         f_leader_momentum: Leader (BTC) momentum feature value at entry.
+        f_tick_imbalance: Tick trade flow imbalance at entry.
+        f_tick_price_velocity: Tick price velocity at entry.
+        f_tick_volume_accel: Tick volume acceleration at entry.
 
     """
 
@@ -240,6 +275,9 @@ class DirectionalResultRecord(DirectionalBase):
     f_price_change: Mapped[float] = mapped_column(Float)
     f_whale: Mapped[float] = mapped_column(Float, default=0.0)
     f_leader_momentum: Mapped[float] = mapped_column(Float, default=0.0)
+    f_tick_imbalance: Mapped[float] = mapped_column(Float, default=0.0)
+    f_tick_price_velocity: Mapped[float] = mapped_column(Float, default=0.0)
+    f_tick_volume_accel: Mapped[float] = mapped_column(Float, default=0.0)
 
     __table_args__ = (
         Index("ix_directional_condition_settled", "condition_id", "settled_at"),
@@ -289,4 +327,7 @@ class DirectionalResultRecord(DirectionalBase):
             f_price_change=float(feat.price_change_pct),
             f_whale=float(feat.whale_signal),
             f_leader_momentum=float(feat.leader_momentum),
+            f_tick_imbalance=float(feat.tick_imbalance),
+            f_tick_price_velocity=float(feat.tick_price_velocity),
+            f_tick_volume_accel=float(feat.tick_volume_accel),
         )

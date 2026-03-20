@@ -10,11 +10,15 @@ from trading_tools.apps.directional.features import (
     compute_momentum,
     compute_price_change,
     compute_rsi_signal,
+    compute_tick_imbalance,
+    compute_tick_price_velocity,
+    compute_tick_volume_accel,
     compute_volatility_regime,
     compute_volume_profile,
     compute_whale_signal,
     extract_features,
 )
+from trading_tools.apps.directional.models import TickSample
 from trading_tools.clients.polymarket.models import OrderBook, OrderLevel
 from trading_tools.core.models import ZERO, Candle, Interval
 
@@ -359,6 +363,111 @@ class TestComputeLeaderMomentum:
         assert Decimal(-1) <= result_long <= Decimal(1)
 
 
+_TICK_BASE_MS = _BASE_TS * 1000
+
+
+def _make_tick(ts_ms: int, price: float, size: float, side: str = "BUY") -> TickSample:
+    """Create a TickSample for testing."""
+    return TickSample(price=price, size=size, side=side, timestamp_ms=ts_ms)
+
+
+class TestComputeTickImbalance:
+    """Test tick buy/sell imbalance feature."""
+
+    def test_all_buys_returns_one(self) -> None:
+        """All BUY ticks produce imbalance of 1."""
+        ticks = [_make_tick(_TICK_BASE_MS + i * 1000, 0.5, 100.0, "BUY") for i in range(5)]
+        assert compute_tick_imbalance(ticks) == Decimal(1)
+
+    def test_all_sells_returns_negative_one(self) -> None:
+        """All SELL ticks produce imbalance of -1."""
+        ticks = [_make_tick(_TICK_BASE_MS + i * 1000, 0.5, 100.0, "SELL") for i in range(5)]
+        assert compute_tick_imbalance(ticks) == Decimal(-1)
+
+    def test_balanced_returns_zero(self) -> None:
+        """Equal buy and sell volume returns 0."""
+        ticks = [
+            _make_tick(_TICK_BASE_MS, 0.5, 100.0, "BUY"),
+            _make_tick(_TICK_BASE_MS + 1000, 0.5, 100.0, "SELL"),
+        ]
+        assert compute_tick_imbalance(ticks) == ZERO
+
+    def test_none_returns_zero(self) -> None:
+        """None ticks return 0."""
+        assert compute_tick_imbalance(None) == ZERO
+
+    def test_empty_returns_zero(self) -> None:
+        """Empty ticks return 0."""
+        assert compute_tick_imbalance([]) == ZERO
+
+
+class TestComputeTickPriceVelocity:
+    """Test tick price velocity feature."""
+
+    def test_rising_prices_positive(self) -> None:
+        """Rising tick prices produce positive velocity."""
+        ticks = [_make_tick(_TICK_BASE_MS + i * 1000, 0.50 + i * 0.01, 10.0) for i in range(5)]
+        assert compute_tick_price_velocity(ticks) > ZERO
+
+    def test_falling_prices_negative(self) -> None:
+        """Falling tick prices produce negative velocity."""
+        ticks = [_make_tick(_TICK_BASE_MS + i * 1000, 0.60 - i * 0.01, 10.0) for i in range(5)]
+        assert compute_tick_price_velocity(ticks) < ZERO
+
+    def test_none_returns_zero(self) -> None:
+        """None ticks return 0."""
+        assert compute_tick_price_velocity(None) == ZERO
+
+    def test_single_tick_returns_zero(self) -> None:
+        """Single tick is not enough for velocity."""
+        ticks = [_make_tick(_TICK_BASE_MS, 0.5, 10.0)]
+        assert compute_tick_price_velocity(ticks) == ZERO
+
+    def test_result_in_range(self) -> None:
+        """Velocity is always in [-1, 1]."""
+        ticks = [_make_tick(_TICK_BASE_MS + i * 1000, 0.50 + i * 0.05, 10.0) for i in range(10)]
+        result = compute_tick_price_velocity(ticks)
+        assert Decimal(-1) <= result <= Decimal(1)
+
+
+class TestComputeTickVolumeAccel:
+    """Test tick volume acceleration feature."""
+
+    def test_accelerating_volume_positive(self) -> None:
+        """More recent volume than earlier produces positive signal."""
+        ticks = [
+            # Earlier half: small volume
+            _make_tick(_TICK_BASE_MS, 0.5, 10.0),
+            _make_tick(_TICK_BASE_MS + 10_000, 0.5, 10.0),
+            # Recent half: large volume
+            _make_tick(_TICK_BASE_MS + 30_000, 0.5, 100.0),
+            _make_tick(_TICK_BASE_MS + 50_000, 0.5, 100.0),
+        ]
+        assert compute_tick_volume_accel(ticks) > ZERO
+
+    def test_decelerating_volume_negative(self) -> None:
+        """Less recent volume than earlier produces negative signal."""
+        ticks = [
+            # Earlier half: large volume
+            _make_tick(_TICK_BASE_MS, 0.5, 100.0),
+            _make_tick(_TICK_BASE_MS + 10_000, 0.5, 100.0),
+            # Recent half: small volume
+            _make_tick(_TICK_BASE_MS + 30_000, 0.5, 10.0),
+            _make_tick(_TICK_BASE_MS + 50_000, 0.5, 10.0),
+        ]
+        assert compute_tick_volume_accel(ticks) < ZERO
+
+    def test_none_returns_zero(self) -> None:
+        """None ticks return 0."""
+        assert compute_tick_volume_accel(None) == ZERO
+
+    def test_result_in_range(self) -> None:
+        """Acceleration is always in [-1, 1]."""
+        ticks = [_make_tick(_TICK_BASE_MS + i * 5000, 0.5, float(10 + i * 5)) for i in range(12)]
+        result = compute_tick_volume_accel(ticks)
+        assert Decimal(-1) <= result <= Decimal(1)
+
+
 class TestExtractFeatures:
     """Test the feature extraction orchestrator."""
 
@@ -376,6 +485,9 @@ class TestExtractFeatures:
         assert isinstance(result.price_change_pct, Decimal)
         assert isinstance(result.whale_signal, Decimal)
         assert isinstance(result.leader_momentum, Decimal)
+        assert isinstance(result.tick_imbalance, Decimal)
+        assert isinstance(result.tick_price_velocity, Decimal)
+        assert isinstance(result.tick_volume_accel, Decimal)
 
     def test_all_features_in_range(self) -> None:
         """All features are in [-1, 1]."""
@@ -383,8 +495,14 @@ class TestExtractFeatures:
         up_book = _make_order_book("up", [Decimal(100)], [Decimal(50)])
         down_book = _make_order_book("down", [Decimal(50)], [Decimal(50)])
         leader_candles = _make_rising_candles(5)
+        up_ticks = [_make_tick(_TICK_BASE_MS + i * 1000, 0.55, 50.0, "BUY") for i in range(5)]
         result = extract_features(
-            candles, up_book, down_book, whale_direction="Up", leader_candles=leader_candles
+            candles,
+            up_book,
+            down_book,
+            whale_direction="Up",
+            leader_candles=leader_candles,
+            up_ticks=up_ticks,
         )
         for field_name in (
             "momentum",
@@ -395,6 +513,9 @@ class TestExtractFeatures:
             "price_change_pct",
             "whale_signal",
             "leader_momentum",
+            "tick_imbalance",
+            "tick_price_velocity",
+            "tick_volume_accel",
         ):
             val = getattr(result, field_name)
             assert -1 <= val <= 1, f"{field_name}={val} out of range"
@@ -406,3 +527,13 @@ class TestExtractFeatures:
         down_book = _make_order_book("down", [Decimal(50)], [Decimal(50)])
         result = extract_features(candles, up_book, down_book)
         assert result.leader_momentum == ZERO
+
+    def test_no_ticks_gives_zero_tick_features(self) -> None:
+        """Without tick data, all tick features are 0."""
+        candles = _make_rising_candles(20)
+        up_book = _make_order_book("up", [Decimal(100)], [Decimal(50)])
+        down_book = _make_order_book("down", [Decimal(50)], [Decimal(50)])
+        result = extract_features(candles, up_book, down_book)
+        assert result.tick_imbalance == ZERO
+        assert result.tick_price_velocity == ZERO
+        assert result.tick_volume_accel == ZERO

@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from trading_tools.clients.polymarket.models import OrderBook
     from trading_tools.core.models import Candle
 
-    from .models import MarketOpportunity
+    from .models import MarketOpportunity, TickSample
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +262,7 @@ class ReplayMarketData:
         self._candles: dict[str, list[Candle]] = {}
         self._outcomes: dict[str, str] = {}
         self._whale_signals: dict[str, str] = {}
+        self._ticks: dict[str, list[TickSample]] = {}
 
     def set_markets(self, markets: list[MarketOpportunity]) -> None:
         """Register markets to return from ``get_active_markets``.
@@ -317,6 +318,16 @@ class ReplayMarketData:
 
         """
         self._whale_signals[condition_id] = direction
+
+    def set_ticks(self, token_id: str, ticks: list[TickSample]) -> None:
+        """Register tick samples for a token.
+
+        Args:
+            token_id: CLOB token identifier.
+            ticks: Tick samples ordered by timestamp.
+
+        """
+        self._ticks[token_id] = ticks
 
     async def get_active_markets(
         self,
@@ -391,6 +402,24 @@ class ReplayMarketData:
 
         """
         return self._whale_signals.get(condition_id)
+
+    async def get_recent_ticks(
+        self,
+        token_id: str,
+        since_ms: int,
+    ) -> list[TickSample]:
+        """Return pre-loaded ticks for a token after a timestamp.
+
+        Args:
+            token_id: CLOB token identifier.
+            since_ms: Epoch milliseconds — only return ticks after this.
+
+        Returns:
+            Filtered tick samples.
+
+        """
+        all_ticks = self._ticks.get(token_id, [])
+        return [t for t in all_ticks if t.timestamp_ms >= since_ms]
 
     async def resolve_outcome(
         self,

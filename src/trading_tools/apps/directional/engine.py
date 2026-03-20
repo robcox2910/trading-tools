@@ -38,6 +38,7 @@ _WIN_PAYOUT = Decimal("1.0")
 _MIN_TOKEN_QTY = Decimal(5)
 _HALF = Decimal("0.5")
 _LEADER_ASSET = "BTC-USD"
+_MS_PER_S = 1000
 
 
 def _empty_positions() -> dict[str, DirectionalPosition]:
@@ -203,12 +204,19 @@ class DirectionalEngine:
                 _LEADER_ASSET, lookback_start, now
             )
 
+        # Fetch recent Up-token ticks for tick-level features
+        tick_lookback_ms = 60_000
+        up_ticks = await self.market_data.get_recent_ticks(
+            market.up_token_id, now * _MS_PER_S - tick_lookback_ms
+        )
+
         features = extract_features(
             candles,
             up_book,
             down_book,
             whale_direction=whale_direction,
             leader_candles=leader_candles,
+            up_ticks=up_ticks,
         )
         est = (
             self.estimator_by_slug.get(market.series_slug, self.estimator)

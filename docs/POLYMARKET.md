@@ -560,7 +560,7 @@ Output includes standard metrics (P&L, win rate, avg P&L) plus calibration metri
 
 ### `train-weights` — Train Estimator Weights via Logistic Regression
 
-Fit all 8 feature weights and a bias (intercept) term simultaneously on historical market outcome data using gradient descent. The learned weights are mathematically optimal for the `P(Up) = sigmoid(dot(features, w) + bias)` model form and slot directly into `DirectionalConfig`. Features include a cross-asset `leader_momentum` signal (BTC price change in last 60s) that captures the "BTC leads altcoins" effect.
+Fit all 11 feature weights and a bias (intercept) term simultaneously on historical market outcome data using gradient descent. The learned weights are mathematically optimal for the `P(Up) = sigmoid(dot(features, w) + bias)` model form and slot directly into `DirectionalConfig`. Features include cross-asset `leader_momentum` (BTC price change in last 60s) and three tick-level features (`tick_imbalance`, `tick_price_velocity`, `tick_volume_accel`) from Polymarket trade flow.
 
 ```bash
 trading-tools-polymarket train-weights \

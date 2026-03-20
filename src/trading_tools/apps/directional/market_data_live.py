@@ -19,11 +19,12 @@ from typing import TYPE_CHECKING
 from trading_tools.apps.spread_capture.market_scanner import MarketScanner
 from trading_tools.core.models import Interval
 
-from .models import MarketOpportunity
+from .models import MarketOpportunity, TickSample
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from trading_tools.apps.tick_collector.repository import TickRepository
     from trading_tools.apps.whale_monitor.repository import WhaleRepository
     from trading_tools.clients.polymarket.client import PolymarketClient
     from trading_tools.clients.polymarket.models import OrderBook
@@ -64,6 +65,7 @@ class LiveMarketData:
         series_slugs: tuple[str, ...] = ("btc-updown-5m", "eth-updown-5m"),
         whale_repo: WhaleRepository | None = None,
         book_feed: OrderBookFeed | None = None,
+        tick_repo: TickRepository | None = None,
     ) -> None:
         """Initialize with API clients and create the market scanner.
 
@@ -73,12 +75,14 @@ class LiveMarketData:
             series_slugs: Series slugs to scan for active markets.
             whale_repo: Optional whale trade repository for signal queries.
             book_feed: Optional WebSocket order book feed for low-latency reads.
+            tick_repo: Optional tick repository for Polymarket tick data.
 
         """
         self._client = client
         self._candle_provider = candle_provider
         self._whale_repo = whale_repo
         self._book_feed = book_feed
+        self._tick_repo = tick_repo
         self._scanner = MarketScanner(
             client=client,
             series_slugs=series_slugs,
@@ -236,6 +240,35 @@ class LiveMarketData:
         if self._whale_repo is None:
             return None
         return await self._whale_repo.get_whale_signal(condition_id)
+
+    async def get_recent_ticks(
+        self,
+        token_id: str,
+        since_ms: int,
+    ) -> list[TickSample]:
+        """Fetch recent Polymarket ticks from the tick repository.
+
+        Args:
+            token_id: CLOB token identifier.
+            since_ms: Epoch milliseconds — only return ticks after this.
+
+        Returns:
+            List of ``TickSample`` ordered by timestamp, or empty when
+            no tick repository is configured.
+
+        """
+        if self._tick_repo is None:
+            return []
+        ticks = await self._tick_repo.get_ticks(token_id, since_ms, since_ms + 120_000)
+        return [
+            TickSample(
+                price=t.price,
+                size=t.size,
+                side=t.side,
+                timestamp_ms=t.timestamp,
+            )
+            for t in ticks
+        ]
 
     async def resolve_outcome(
         self,
