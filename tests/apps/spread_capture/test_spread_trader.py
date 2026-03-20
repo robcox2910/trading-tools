@@ -1110,9 +1110,9 @@ class TestMakerHedge:
         config = _make_hedge_config(maker_max_hedge_combined=Decimal("0.90"))
         client = AsyncMock()
 
-        # Up ask at 0.70, combined = 0.25 + 0.70 = 0.95 > 0.90
+        # Up ask at 0.95, combined = 0.25 + 0.95 = 1.20 > scaled max
         up_ask = MagicMock()
-        up_ask.price = Decimal("0.70")
+        up_ask.price = Decimal("0.95")
         up_book = MagicMock()
         up_book.asks = [up_ask]
         client.get_order_book = AsyncMock(return_value=up_book)
