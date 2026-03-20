@@ -148,8 +148,6 @@ _ASSET_PREFIX_MAP: dict[str, str] = {
     "solana": "SOL-USD",
     "xrp": "XRP-USD",
     "dogecoin": "DOGE-USD",
-    "bnb": "BNB-USD",
-    "hyperliquid": "HYPE-USD",
 }
 
 

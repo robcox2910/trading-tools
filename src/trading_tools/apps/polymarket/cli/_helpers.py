@@ -27,8 +27,6 @@ CRYPTO_5M_SERIES: tuple[str, ...] = (
     "sol-updown-5m",
     "xrp-updown-5m",
     "doge-updown-5m",
-    "bnb-updown-5m",
-    "hype-updown-5m",
 )
 
 CRYPTO_15M_SERIES: tuple[str, ...] = (
@@ -37,8 +35,6 @@ CRYPTO_15M_SERIES: tuple[str, ...] = (
     "sol-updown-15m",
     "xrp-updown-15m",
     "doge-updown-15m",
-    "bnb-updown-15m",
-    "hype-updown-15m",
 )
 
 CRYPTO_1H_SERIES: tuple[str, ...] = (
@@ -47,8 +43,6 @@ CRYPTO_1H_SERIES: tuple[str, ...] = (
     "sol-updown-1h",
     "xrp-updown-1h",
     "doge-updown-1h",
-    "bnb-updown-1h",
-    "hype-updown-1h",
 )
 
 CRYPTO_4H_SERIES: tuple[str, ...] = (
@@ -57,8 +51,6 @@ CRYPTO_4H_SERIES: tuple[str, ...] = (
     "sol-updown-4h",
     "xrp-updown-4h",
     "doge-updown-4h",
-    "bnb-updown-4h",
-    "hype-updown-4h",
 )
 
 CRYPTO_DAILY_SERIES: tuple[str, ...] = (
@@ -67,8 +59,6 @@ CRYPTO_DAILY_SERIES: tuple[str, ...] = (
     "sol-updown-daily",
     "xrp-updown-daily",
     "doge-updown-daily",
-    "bnb-updown-daily",
-    "hype-updown-daily",
 )
 
 

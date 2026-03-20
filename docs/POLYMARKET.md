@@ -340,7 +340,7 @@ For each market the command shows: the whale's favoured side (Up/Down), the actu
 
 ### `spread-capture` — Buy Both Sides When Combined < $1.00
 
-Run a polling service that scans BTC/ETH/SOL/XRP/DOGE/BNB/HYPE Up/Down markets for spread opportunities where the combined cost of buying both sides is below $1.00, guaranteeing profit at settlement. Paper mode by default; pass `--confirm-live` for real orders.
+Run a polling service that scans BTC/ETH/SOL/XRP/DOGE Up/Down markets for spread opportunities where the combined cost of buying both sides is below $1.00, guaranteeing profit at settlement. Paper mode by default; pass `--confirm-live` for real orders.
 
 The bot uses a simple, guaranteed-profit approach:
 
