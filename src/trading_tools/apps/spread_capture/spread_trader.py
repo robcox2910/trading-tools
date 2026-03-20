@@ -191,11 +191,55 @@ class SpreadTrader:
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         finally:
+            await self._safe_shutdown()
             self._log_summary()
             if self._book_feed is not None:
                 await self._book_feed.stop()
             if self._binance is not None:  # pyright: ignore[reportUnnecessaryComparison]
                 await self._binance.close()
+
+    async def _safe_shutdown(self) -> None:
+        """Cancel all open GTC orders on the CLOB before exiting.
+
+        Prevent orphaned resting orders from accumulating fills without
+        hedge or take-profit protection.  For live maker positions, also
+        attempt to sell any single-filled legs at market to recover capital.
+        """
+        if not self.live or self.client is None:
+            return
+
+        logger.info("SAFE SHUTDOWN: cancelling all open orders...")
+        try:
+            open_orders = await self.client.get_open_orders()
+            for order in open_orders:
+                await self._cancel_order_safe(order.order_id)
+            logger.info("SAFE SHUTDOWN: cancelled %d open orders", len(open_orders))
+        except (httpx.HTTPError, Exception):
+            logger.warning("SAFE SHUTDOWN: failed to cancel open orders")
+
+        # Sell any single-filled legs to recover capital
+        single_filled = [
+            (cid, pos)
+            for cid, pos in self._positions.items()
+            if pos.state == PositionState.PENDING
+            and not pos.is_paper
+            and (pos.pending_up_order_id is None) != (pos.pending_down_order_id is None)
+        ]
+        for cid, pos in single_filled:
+            up_filled = pos.pending_up_order_id is None
+            filled_side = "Up" if up_filled else "Down"
+            token_id = pos.opportunity.up_token_id if up_filled else pos.opportunity.down_token_id
+            filled_leg = pos.up_leg if up_filled else pos.down_leg
+            if filled_leg is None:
+                continue
+            pnl = await self._unwind_filled_leg(token_id, filled_leg)
+            logger.info(
+                "SAFE SHUTDOWN: unwound %s %s pnl=%.4f asset=%s",
+                cid[:12],
+                filled_side,
+                pnl,
+                pos.opportunity.asset,
+            )
 
     def set_repo(self, repo: SpreadResultRepository) -> None:
         """Attach a database repository for persisting settled trade results.
