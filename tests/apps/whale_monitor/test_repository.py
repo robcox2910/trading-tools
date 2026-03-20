@@ -26,6 +26,7 @@ def _make_trade(
     size: float = 50.0,
     price: float = 0.72,
     condition_id: str = _CONDITION_A,
+    outcome: str = "Up",
 ) -> WhaleTrade:
     """Create a WhaleTrade instance for testing.
 
@@ -37,6 +38,7 @@ def _make_trade(
         size: Token quantity.
         price: Execution price.
         condition_id: Market condition ID.
+        outcome: Outcome label.
 
     Returns:
         A new WhaleTrade instance.
@@ -53,7 +55,7 @@ def _make_trade(
         timestamp=timestamp,
         title="Test Market",
         slug="test-market",
-        outcome="Up",
+        outcome=outcome,
         outcome_index=0,
         collected_at=_COLLECTED_AT,
     )
@@ -106,7 +108,7 @@ class TestWhaleRepository:
         await repo.add_whale(_ADDRESS_B, _LABEL_B)
 
         whales = await repo.get_active_whales()
-        assert len(whales) == 2  # noqa: PLR2004
+        assert len(whales) == 2
 
     @pytest.mark.asyncio
     async def test_save_and_count(self, repo: WhaleRepository) -> None:
@@ -156,7 +158,7 @@ class TestWhaleRepository:
         await repo.save_trades(trades)
 
         result = await repo.get_trades(_ADDRESS_A, start_ts=0, end_ts=_BASE_TS + 1000)
-        assert len(result) == 2  # noqa: PLR2004
+        assert len(result) == 2
         assert all(t.whale_address == _ADDRESS_A for t in result)
 
     @pytest.mark.asyncio
@@ -200,7 +202,7 @@ class TestWhaleRepository:
 
         count_a = await repo.get_trade_count(_ADDRESS_A)
         count_b = await repo.get_trade_count(_ADDRESS_B)
-        assert count_a == 2  # noqa: PLR2004
+        assert count_a == 2
         assert count_b == 1
 
     @pytest.mark.asyncio
@@ -221,6 +223,85 @@ class TestWhaleRepository:
         await repo.init_db()
         count = await repo.get_trade_count()
         assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_whale_signal_returns_favoured_side(self, repo: WhaleRepository) -> None:
+        """Return the outcome with the larger BUY dollar volume."""
+        trades = [
+            _make_trade(transaction_hash="tx_up1", outcome="Up", size=100, price=0.50),
+            _make_trade(transaction_hash="tx_up2", outcome="Up", size=50, price=0.55),
+            _make_trade(transaction_hash="tx_down1", outcome="Down", size=30, price=0.45),
+        ]
+        await repo.save_trades(trades)
+        result = await repo.get_whale_signal(_CONDITION_A)
+        assert result == "Up"
+
+    @pytest.mark.asyncio
+    async def test_whale_signal_none_when_no_trades(self, repo: WhaleRepository) -> None:
+        """Return None when no whale trades exist for the market."""
+        result = await repo.get_whale_signal("nonexistent")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_buy_trades_for_conditions(self, repo: WhaleRepository) -> None:
+        """Return BUY trades filtered by condition IDs."""
+        trades = [
+            _make_trade(
+                transaction_hash="tx_buy_up",
+                side="BUY",
+                condition_id=_CONDITION_A,
+                outcome="Up",
+            ),
+            _make_trade(
+                transaction_hash="tx_sell",
+                side="SELL",
+                condition_id=_CONDITION_A,
+                outcome="Up",
+            ),
+            _make_trade(
+                transaction_hash="tx_buy_other",
+                side="BUY",
+                condition_id="cond_other",
+                outcome="Down",
+            ),
+            _make_trade(
+                transaction_hash="tx_buy_down",
+                side="BUY",
+                condition_id=_CONDITION_A,
+                outcome="Down",
+                timestamp=_BASE_TS + 100,
+            ),
+        ]
+        await repo.save_trades(trades)
+
+        result = await repo.get_buy_trades_for_conditions({_CONDITION_A})
+
+        # Only BUY trades for cond_aaa — excludes SELL and cond_other
+        assert len(result) == 2
+        assert all(t.side == "BUY" for t in result)
+        assert all(t.condition_id == _CONDITION_A for t in result)
+        # Ordered by condition_id, timestamp
+        assert result[0].timestamp <= result[1].timestamp
+
+    @pytest.mark.asyncio
+    async def test_get_buy_trades_for_conditions_empty_input(self, repo: WhaleRepository) -> None:
+        """Return empty list when given empty condition set."""
+        result = await repo.get_buy_trades_for_conditions(set())
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_buy_trades_for_conditions_multiple(self, repo: WhaleRepository) -> None:
+        """Return BUY trades across multiple condition IDs."""
+        trades = [
+            _make_trade(transaction_hash="tx_1", side="BUY", condition_id="c1"),
+            _make_trade(transaction_hash="tx_2", side="BUY", condition_id="c2"),
+            _make_trade(transaction_hash="tx_3", side="BUY", condition_id="c3"),
+        ]
+        await repo.save_trades(trades)
+
+        result = await repo.get_buy_trades_for_conditions({"c1", "c2"})
+        assert len(result) == 2
+        assert {t.condition_id for t in result} == {"c1", "c2"}
 
     @pytest.mark.asyncio
     async def test_close(self, repo: WhaleRepository) -> None:

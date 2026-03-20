@@ -39,23 +39,23 @@ resource "aws_cloudwatch_log_group" "whale_monitor" {
   }
 }
 
-resource "aws_cloudwatch_log_group" "whale_copy_live" {
-  name              = "/trading-tools/whale-copy-live"
+resource "aws_cloudwatch_log_group" "spread_capture_live" {
+  name              = "/trading-tools/spread-capture-live"
   retention_in_days = 14
 
   tags = {
     Project = "trading-tools"
-    Service = "whale-copy-live"
+    Service = "spread-capture-live"
   }
 }
 
-resource "aws_cloudwatch_log_group" "whale_copy_paper" {
-  name              = "/trading-tools/whale-copy-paper"
+resource "aws_cloudwatch_log_group" "spread_capture_paper" {
+  name              = "/trading-tools/spread-capture-paper"
   retention_in_days = 14
 
   tags = {
     Project = "trading-tools"
-    Service = "whale-copy-paper"
+    Service = "spread-capture-paper"
   }
 }
 
@@ -203,55 +203,55 @@ resource "aws_cloudwatch_log_metric_filter" "whale_monitor_errors" {
 }
 
 # ---------------------------------------------------------------------------
-# Whale Copy-Trader Metric Filters
+# Spread Capture Bot Metric Filters
 # ---------------------------------------------------------------------------
 
-resource "aws_cloudwatch_log_metric_filter" "whale_copy_live_heartbeat" {
-  name           = "whale-copy-live-heartbeat"
-  log_group_name = aws_cloudwatch_log_group.whale_copy_live.name
-  pattern        = "\"[WHALE-COPY]\""
+resource "aws_cloudwatch_log_metric_filter" "spread_capture_live_heartbeat" {
+  name           = "spread-capture-live-heartbeat"
+  log_group_name = aws_cloudwatch_log_group.spread_capture_live.name
+  pattern        = "\"[SPREAD-CAPTURE]\""
 
   metric_transformation {
-    name          = "WhaleCopyLiveHeartbeat"
+    name          = "SpreadCaptureLiveHeartbeat"
     namespace     = "TradingBot"
     value         = "1"
     default_value = "0"
   }
 }
 
-resource "aws_cloudwatch_log_metric_filter" "whale_copy_live_errors" {
-  name           = "whale-copy-live-errors"
-  log_group_name = aws_cloudwatch_log_group.whale_copy_live.name
+resource "aws_cloudwatch_log_metric_filter" "spread_capture_live_errors" {
+  name           = "spread-capture-live-errors"
+  log_group_name = aws_cloudwatch_log_group.spread_capture_live.name
   pattern        = "?\"Error:\" ?\"ERROR\""
 
   metric_transformation {
-    name          = "WhaleCopyLiveErrorCount"
+    name          = "SpreadCaptureLiveErrorCount"
     namespace     = "TradingBot"
     value         = "1"
     default_value = "0"
   }
 }
 
-resource "aws_cloudwatch_log_metric_filter" "whale_copy_paper_heartbeat" {
-  name           = "whale-copy-paper-heartbeat"
-  log_group_name = aws_cloudwatch_log_group.whale_copy_paper.name
-  pattern        = "\"[WHALE-COPY]\""
+resource "aws_cloudwatch_log_metric_filter" "spread_capture_paper_heartbeat" {
+  name           = "spread-capture-paper-heartbeat"
+  log_group_name = aws_cloudwatch_log_group.spread_capture_paper.name
+  pattern        = "\"[SPREAD-CAPTURE]\""
 
   metric_transformation {
-    name          = "WhaleCopyPaperHeartbeat"
+    name          = "SpreadCapturePaperHeartbeat"
     namespace     = "TradingBot"
     value         = "1"
     default_value = "0"
   }
 }
 
-resource "aws_cloudwatch_log_metric_filter" "whale_copy_paper_errors" {
-  name           = "whale-copy-paper-errors"
-  log_group_name = aws_cloudwatch_log_group.whale_copy_paper.name
+resource "aws_cloudwatch_log_metric_filter" "spread_capture_paper_errors" {
+  name           = "spread-capture-paper-errors"
+  log_group_name = aws_cloudwatch_log_group.spread_capture_paper.name
   pattern        = "?\"Error:\" ?\"ERROR\""
 
   metric_transformation {
-    name          = "WhaleCopyPaperErrorCount"
+    name          = "SpreadCapturePaperErrorCount"
     namespace     = "TradingBot"
     value         = "1"
     default_value = "0"
@@ -485,8 +485,8 @@ resource "aws_cloudwatch_dashboard" "trading_bot" {
             ["AWS/Logs", "IncomingLogEvents", "LogGroupName", aws_cloudwatch_log_group.paper_bot.name, { stat = "Sum", period = 300 }],
             ["AWS/Logs", "IncomingLogEvents", "LogGroupName", aws_cloudwatch_log_group.tick_collector.name, { stat = "Sum", period = 300 }],
             ["AWS/Logs", "IncomingLogEvents", "LogGroupName", aws_cloudwatch_log_group.whale_monitor.name, { stat = "Sum", period = 300 }],
-            ["AWS/Logs", "IncomingLogEvents", "LogGroupName", aws_cloudwatch_log_group.whale_copy_live.name, { stat = "Sum", period = 300 }],
-            ["AWS/Logs", "IncomingLogEvents", "LogGroupName", aws_cloudwatch_log_group.whale_copy_paper.name, { stat = "Sum", period = 300 }]
+            ["AWS/Logs", "IncomingLogEvents", "LogGroupName", aws_cloudwatch_log_group.spread_capture_live.name, { stat = "Sum", period = 300 }],
+            ["AWS/Logs", "IncomingLogEvents", "LogGroupName", aws_cloudwatch_log_group.spread_capture_paper.name, { stat = "Sum", period = 300 }]
           ]
           view = "timeSeries"
         }

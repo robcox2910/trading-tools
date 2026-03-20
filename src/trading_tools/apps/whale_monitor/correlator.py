@@ -27,6 +27,7 @@ _PERCENTAGE_MULTIPLIER = 100
 _MAX_TITLE_LENGTH = 50
 
 _FLAT_THRESHOLD = Decimal("0.001")
+_NOON = 12
 
 # Regex patterns for time windows in market titles
 _RANGE_PATTERN = re.compile(
@@ -141,24 +142,34 @@ class CorrelatedMarket:
     correlation: SpotCorrelation | None
 
 
+_ASSET_PREFIX_MAP: dict[str, str] = {
+    "bitcoin": "BTC-USD",
+    "ethereum": "ETH-USD",
+    "solana": "SOL-USD",
+    "xrp": "XRP-USD",
+    "dogecoin": "DOGE-USD",
+    "bnb": "BNB-USD",
+    "hyperliquid": "HYPE-USD",
+}
+
+
 def parse_asset(title: str) -> str | None:
     """Extract the spot asset symbol from a market title.
 
-    Look for ``"Bitcoin"`` or ``"Ethereum"`` as the first word to determine
-    the corresponding trading pair.
+    Match the first word of the title against known crypto asset names
+    to determine the corresponding Binance trading pair.
 
     Args:
         title: Market title string (e.g. ``"Bitcoin Up or Down - Mar 13, 6PM ET"``).
 
     Returns:
-        ``"BTC-USD"`` or ``"ETH-USD"``, or ``None`` if neither is found.
+        Trading pair like ``"BTC-USD"`` or ``None`` if unrecognised.
 
     """
     lower = title.lower()
-    if lower.startswith("bitcoin"):
-        return "BTC-USD"
-    if lower.startswith("ethereum"):
-        return "ETH-USD"
+    for prefix, pair in _ASSET_PREFIX_MAP.items():
+        if lower.startswith(prefix):
+            return pair
     return None
 
 
@@ -249,7 +260,6 @@ def _parse_time(hour: int, minute: int, ampm: str) -> time:
         A ``time`` object in 24-hour format.
 
     """
-    _NOON = 12  # noqa: N806
     if ampm.upper() == "AM" and hour == _NOON:
         hour = 0
     elif ampm.upper() == "PM" and hour != _NOON:

@@ -26,11 +26,15 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, cast
 
+import httpx
+
 if TYPE_CHECKING:
     from trading_tools.apps.whale_monitor.models import WhaleTrade
     from trading_tools.clients.polymarket.client import PolymarketClient
 
 logger = logging.getLogger(__name__)
+
+_MIN_OUTCOMES = 2
 
 
 # ── Outcome structure enum ────────────────────────────────────────────────────
@@ -202,7 +206,7 @@ def _parse_outcome_structure(raw_outcomes: object) -> OutcomeStructure:
         return OutcomeStructure.YES_NO
     if normalised == {"up", "down"}:
         return OutcomeStructure.UP_DOWN
-    if len(outcomes) >= 2:  # noqa: PLR2004
+    if len(outcomes) >= _MIN_OUTCOMES:
         return OutcomeStructure.MULTI
     return OutcomeStructure.UNKNOWN
 
@@ -280,17 +284,16 @@ def _infer_category_from_tags(tags: list[dict[str, object]]) -> str:
         Category label string, or empty string when no match is found.
 
     """
+    published_fallback = ""
     for tag in tags:
         slug = str(tag.get("slug") or "").lower()
         if slug in _CATEGORY_TAG_SLUGS:
             return _CATEGORY_TAG_SLUGS[slug]
+        # Track first tag with publishedAt as fallback (single pass)
+        if not published_fallback and tag.get("publishedAt"):
+            published_fallback = str(tag.get("label") or "")
 
-    # Fallback: first tag with a publishedAt timestamp is a curated content tag
-    for tag in tags:
-        if tag.get("publishedAt"):
-            return str(tag.get("label") or "")
-
-    return ""
+    return published_fallback
 
 
 def _extract_metadata(condition_id: str, data: dict[str, object]) -> MarketMetadata:
@@ -477,11 +480,11 @@ async def enrich_trades(
                                     close_datetime=meta.close_datetime,
                                     winning_outcome=meta.winning_outcome,
                                 )
-                    except Exception:
+                    except (httpx.HTTPError, KeyError, ValueError, TypeError):
                         logger.debug("Could not fetch event tags for slug %r", event_slug)
 
             cache[cid] = meta
-        except Exception:
+        except (httpx.HTTPError, KeyError, ValueError, TypeError):
             logger.warning("Failed to fetch market info for %s", cid[:20])
             cache[cid] = MarketMetadata(
                 condition_id=cid,

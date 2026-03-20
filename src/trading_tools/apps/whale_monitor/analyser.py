@@ -13,8 +13,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Union
 
 import pandas as pd
-import pandera as pa
-from pandera.typing import Series  # noqa: TC002 — needed at runtime by pandera DataFrameModel
+import pandera.pandas as pa
+from pandera.typing import Series
 
 from trading_tools.apps.whale_monitor.enricher import EnrichedTrade
 
@@ -28,6 +28,7 @@ TradeInput = Union["WhaleTrade", EnrichedTrade]
 
 _PERCENTAGE_MULTIPLIER = 100
 _MAX_TITLE_LENGTH = 50
+_SECONDS_PER_HOUR = 3600
 
 
 def _empty_str_int_dict() -> dict[str, int]:
@@ -92,8 +93,6 @@ def trades_to_df(trades: Sequence[WhaleTrade | EnrichedTrade]) -> pd.DataFrame:
                 "hour",
             ]
         )
-
-    _SECONDS_PER_HOUR = 3600  # noqa: N806
 
     df = pd.DataFrame(
         [

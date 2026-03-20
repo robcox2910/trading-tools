@@ -11,9 +11,7 @@ on exit.
 """
 
 import asyncio
-import contextlib
 import logging
-import signal
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -21,6 +19,8 @@ from typing import Any
 
 import httpx
 
+from trading_tools.apps.bot_framework.redeemer import PositionRedeemer
+from trading_tools.apps.bot_framework.shutdown import GracefulShutdown
 from trading_tools.apps.polymarket_bot.base_engine import BaseTradingEngine
 from trading_tools.apps.polymarket_bot.kelly import kelly_fraction
 from trading_tools.apps.polymarket_bot.live_portfolio import LivePortfolio
@@ -122,8 +122,8 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
         self._max_loss_pct = max_loss_pct
         self._auto_redeem = auto_redeem
         self._initial_balance = ZERO
-        self._shutdown = False
-        self._redeem_task: asyncio.Task[None] | None = None
+        self._shutdown = GracefulShutdown()
+        self._redeemer = PositionRedeemer(client=client) if auto_redeem else None
         self._token_ids: dict[str, tuple[str, str]] = {}
 
     # ------------------------------------------------------------------
@@ -176,8 +176,7 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
             Summary of the live trading run including trades and metrics.
 
         """
-        loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGINT, self._handle_sigint)
+        self._shutdown.install()
 
         self._initial_balance = await self._portfolio.refresh_balance()
         logger.info("Initial USDC balance: %s", self._initial_balance)
@@ -197,8 +196,8 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
         tick_count = 0
         try:
             async for event in self._feed.stream(self._asset_ids):
-                if self._shutdown:
-                    logger.info("Shutdown signal received, closing positions...")
+                if self._shutdown.should_stop:
+                    logger.info("Shutdown requested, closing positions...")
                     break
 
                 if self._check_loss_limit():
@@ -227,8 +226,8 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
 
     async def _on_rotation_close(self) -> None:
         """Redeem resolved positions, clear tracking, and refresh balance."""
-        if self._auto_redeem:
-            await self._redeem_resolved()
+        if self._redeemer is not None:
+            await self._redeemer.redeem_if_available()
 
         remaining = len(self._portfolio.positions)
         if remaining > 0:
@@ -440,7 +439,7 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
 
     def _handle_sigint(self) -> None:
         """Set the shutdown flag for graceful exit on SIGINT."""
-        self._shutdown = True
+        self._shutdown.request()
 
     def _check_loss_limit(self) -> bool:
         """Check whether the portfolio has breached the loss limit.
@@ -477,73 +476,7 @@ class LiveTradingEngine(BaseTradingEngine[LivePortfolio]):
             try:
                 await self._portfolio.refresh_balance()
             except (PolymarketAPIError, httpx.HTTPError):
-                logger.warning("Failed to refresh balance", exc_info=True)
-
-    async def _redeem_resolved(self) -> None:
-        """Discover redeemable positions and kick off background CTF redemption.
-
-        Query the Polymarket Data API for all redeemable positions held by
-        the proxy wallet, extract condition IDs (skipping positions below
-        the minimum order size), and spawn a background task to call
-        ``client.redeem_positions()`` for on-chain CTF redemption at $1.00
-        face value.
-
-        The on-chain call runs in the background so the trading loop is not
-        blocked by slow Polygon transactions.  Require POL in the signing
-        EOA for gas.
-        """
-        if self._redeem_task is not None and not self._redeem_task.done():
-            logger.info("AUTO-REDEEM: cancelling previous redemption task")
-            self._redeem_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._redeem_task
-
-        try:
-            redeemable = await self._client.get_redeemable_positions()
-        except (PolymarketAPIError, httpx.HTTPError):
-            logger.warning("Failed to discover redeemable positions", exc_info=True)
-            return
-
-        if not redeemable:
-            return
-
-        logger.info("AUTO-REDEEM: found %d redeemable positions", len(redeemable))
-        condition_ids: list[str] = []
-        for pos in redeemable:
-            if pos.size < _MIN_ORDER_SIZE:
-                logger.info(
-                    "REDEEM skip %s: size=%s below minimum %s",
-                    pos.title[:40],
-                    pos.size,
-                    _MIN_ORDER_SIZE,
-                )
-                continue
-            condition_ids.append(pos.condition_id)
-
-        if not condition_ids:
-            return
-
-        self._redeem_task = asyncio.create_task(self._redeem_on_chain(condition_ids))
-
-    async def _redeem_on_chain(self, condition_ids: list[str]) -> None:
-        """Execute on-chain CTF redemption in the background.
-
-        Log results when complete.  Errors are caught and logged so they
-        do not propagate to the main trading loop.
-
-        Args:
-            condition_ids: Resolved market condition IDs to redeem.
-
-        """
-        try:
-            redeemed = await self._client.redeem_positions(condition_ids)
-            logger.info(
-                "AUTO-REDEEM: redeemed %d/%d positions on-chain via CTF",
-                redeemed,
-                len(condition_ids),
-            )
-        except Exception:
-            logger.warning("CTF redemption failed", exc_info=True)
+                logger.warning("Failed to refresh balance")
 
     def _compute_sleep(self) -> float:
         """Compute seconds to sleep before the next tick.

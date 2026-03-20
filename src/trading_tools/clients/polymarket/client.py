@@ -11,7 +11,7 @@ import logging
 import os
 import time
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -36,6 +36,29 @@ logger = logging.getLogger(__name__)
 _ZERO = Decimal(0)
 _TWO = Decimal(2)
 _USDC_DECIMALS = Decimal("1e6")
+_CLOB_TIMEOUT = 30.0
+"""Timeout in seconds for CLOB adapter calls via ``asyncio.to_thread``."""
+
+_POLYMARKET_EVENT_PREFIX = "https://polymarket.com/event/"
+_MIN_CONDITION_ID_LEN = 10
+
+
+async def _to_thread_with_timeout(func: Any, *args: Any, timeout: float = _CLOB_TIMEOUT) -> Any:
+    """Run a sync function in a thread with an async timeout.
+
+    Args:
+        func: Synchronous callable to run in a background thread.
+        *args: Positional arguments forwarded to *func*.
+        timeout: Maximum seconds to wait before raising ``TimeoutError``.
+
+    Returns:
+        The return value of *func*.
+
+    Raises:
+        TimeoutError: If the function does not complete within *timeout*.
+
+    """
+    return await asyncio.wait_for(asyncio.to_thread(func, *args), timeout=timeout)
 
 
 class PolymarketClient:
@@ -98,8 +121,63 @@ class PolymarketClient:
         else:
             self._clob_client = _clob_adapter.create_clob_client(host)
         self._gamma = GammaClient(base_url=gamma_base_url)
-        self._data_client = httpx.AsyncClient(timeout=30.0)
+        self._data_client = httpx.AsyncClient(
+            timeout=30.0,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        )
         self._clob_lock = asyncio.Lock()
+
+    @property
+    def gamma(self) -> GammaClient:
+        """Return the Gamma metadata API client.
+
+        Returns:
+            The underlying ``GammaClient`` instance.
+
+        """
+        return self._gamma
+
+    @staticmethod
+    def _check_data_response(response: httpx.Response, context: str) -> None:
+        """Raise if a Data API response indicates an error.
+
+        Args:
+            response: HTTP response to check.
+            context: Human-readable context for the error message.
+
+        Raises:
+            PolymarketAPIError: When the response status is >= 400.
+
+        """
+        if response.status_code >= HTTP_BAD_REQUEST:
+            raise PolymarketAPIError(
+                msg=f"{context}: HTTP {response.status_code}",
+                status_code=response.status_code,
+            )
+
+    async def _data_get(self, url: str, params: Any) -> httpx.Response:
+        """Perform a GET on the Data API with standard error handling.
+
+        Args:
+            url: Full Data API URL.
+            params: Query parameters.
+
+        Returns:
+            The HTTP response with a successful status code.
+
+        Raises:
+            PolymarketAPIError: On network errors or non-2xx responses.
+
+        """
+        try:
+            response = await self._data_client.get(url, params=params)
+        except httpx.HTTPError as exc:
+            raise PolymarketAPIError(
+                msg=f"Data API request failed: {exc}",
+                status_code=None,
+            ) from exc
+        self._check_data_response(response, "Data API error")
+        return response
 
     async def search_markets(
         self,
@@ -149,7 +227,7 @@ class PolymarketClient:
 
         """
         async with self._clob_lock:
-            raw = await asyncio.to_thread(
+            raw = await _to_thread_with_timeout(
                 _clob_adapter.fetch_market, self._clob_client, condition_id
             )
         if raw is None:
@@ -162,7 +240,7 @@ class PolymarketClient:
         # Enrich tokens with live CLOB midpoint prices (concurrent fetches)
         async def _fetch_midpoint(token_id: str) -> str | None:
             async with self._clob_lock:
-                return await asyncio.to_thread(
+                return await _to_thread_with_timeout(
                     _clob_adapter.fetch_midpoint, self._clob_client, token_id
                 )
 
@@ -209,7 +287,7 @@ class PolymarketClient:
 
         """
         async with self._clob_lock:
-            raw = await asyncio.to_thread(
+            raw = await _to_thread_with_timeout(
                 _clob_adapter.fetch_market, self._clob_client, condition_id
             )
         if raw is None:
@@ -233,7 +311,7 @@ class PolymarketClient:
 
         """
         async with self._clob_lock:
-            raw = await asyncio.to_thread(
+            raw = await _to_thread_with_timeout(
                 _clob_adapter.fetch_order_book,
                 self._clob_client,
                 token_id,
@@ -273,17 +351,34 @@ class PolymarketClient:
             in the specified series.
 
         """
-        resolved_slugs = _resolve_timestamped_slugs(series_slugs, include_next=include_next)
-        all_events = await asyncio.gather(
-            *(self._gamma.get_events(slug=slug, active=False, limit=5) for slug in resolved_slugs)
+        resolved_slugs, hourly_titles = _resolve_timestamped_slugs(
+            series_slugs, include_next=include_next
         )
+
+        tasks: list[Any] = [
+            self._gamma.get_events(slug=slug, active=False, limit=5) for slug in resolved_slugs
+        ]
+        # Hourly markets use title_contains search
+        tasks.extend(
+            self._gamma.get_events(title_contains=title, active=True, limit=5)
+            for title in hourly_titles
+        )
+
+        all_events = await asyncio.gather(*tasks)
         results: list[tuple[str, str]] = []
-        for events in all_events:
+        seen_cids: set[str] = set()
+        slug_result_count = len(resolved_slugs)
+        for idx, events in enumerate(all_events):
+            is_hourly_search = idx >= slug_result_count
             for event in events:
+                # Filter hourly title searches to actual Up/Down markets
+                if is_hourly_search and not _is_updown_event(event.get("title", "")):
+                    continue
                 for market_raw in event.get("markets", []):
                     cid = market_raw.get("conditionId", market_raw.get("condition_id", ""))
                     end_date = market_raw.get("endDate", market_raw.get("end_date", ""))
-                    if cid:
+                    if cid and cid not in seen_cids:
+                        seen_cids.add(cid)
                         results.append((cid, end_date))
         return results
 
@@ -336,26 +431,15 @@ class PolymarketClient:
                 "orderBy": order_by,
                 "category": category,
             }
-            try:
-                response = await self._data_client.get(url, params=params)
-            except httpx.HTTPError as exc:
-                raise PolymarketAPIError(
-                    msg=f"Data API request failed: {exc}",
-                    status_code=0,
-                ) from exc
-            if response.status_code >= HTTP_BAD_REQUEST:
-                raise PolymarketAPIError(
-                    msg=f"Data API error: HTTP {response.status_code}",
-                    status_code=response.status_code,
-                )
+            response = await self._data_get(url, params)
             rows: list[dict[str, object]] = response.json()
             profiles.extend(
                 TraderProfile(
-                    rank=int(r.get("rank") or 0),  # type: ignore[arg-type]
+                    rank=int(str(r.get("rank") or 0)),
                     proxy_wallet=str(r["proxyWallet"]).lower(),
                     name=str(r.get("userName") or ""),
-                    pnl=float(r.get("pnl") or 0),  # type: ignore[arg-type]
-                    volume=float(r.get("vol") or 0),  # type: ignore[arg-type]
+                    pnl=float(str(r.get("pnl") or 0)),
+                    volume=float(str(r.get("vol") or 0)),
                 )
                 for r in rows
                 if r.get("proxyWallet")
@@ -400,18 +484,7 @@ class PolymarketClient:
             "limit": limit,
             "offset": offset,
         }
-        try:
-            response = await self._data_client.get(url, params=params)
-        except httpx.HTTPError as exc:
-            raise PolymarketAPIError(
-                msg=f"Data API request failed: {exc}",
-                status_code=0,
-            ) from exc
-        if response.status_code >= HTTP_BAD_REQUEST:
-            raise PolymarketAPIError(
-                msg=f"Data API error: HTTP {response.status_code}",
-                status_code=response.status_code,
-            )
+        response = await self._data_get(url, params)
         result: list[dict[str, object]] = response.json()
         return result
 
@@ -449,18 +522,7 @@ class PolymarketClient:
             "offset": offset,
             "takerOnly": "false",
         }
-        try:
-            response = await self._data_client.get(url, params=params)
-        except httpx.HTTPError as exc:
-            raise PolymarketAPIError(
-                msg=f"Data API request failed: {exc}",
-                status_code=0,
-            ) from exc
-        if response.status_code >= HTTP_BAD_REQUEST:
-            raise PolymarketAPIError(
-                msg=f"Data API error: HTTP {response.status_code}",
-                status_code=response.status_code,
-            )
+        response = await self._data_get(url, params)
         result: list[dict[str, object]] = response.json()
         return result
 
@@ -493,9 +555,6 @@ class PolymarketClient:
                 API returns an error.
 
         """
-        _POLYMARKET_EVENT_PREFIX = "https://polymarket.com/event/"  # noqa: N806
-        _MIN_CONDITION_ID_LEN = 10  # noqa: N806
-
         stripped = market.strip()
         if stripped.startswith(_POLYMARKET_EVENT_PREFIX):
             stripped = stripped[len(_POLYMARKET_EVENT_PREFIX) :].rstrip("/")
@@ -546,18 +605,7 @@ class PolymarketClient:
             "timePeriod": "ALL",
             "orderBy": "PNL",
         }
-        try:
-            response = await self._data_client.get(url, params=params)
-        except httpx.RequestError as exc:
-            raise PolymarketAPIError(
-                msg=f"Data API request failed: {exc}",
-                status_code=0,
-            ) from exc
-        if response.status_code >= HTTP_BAD_REQUEST:
-            raise PolymarketAPIError(
-                msg=f"Data API error: HTTP {response.status_code}",
-                status_code=response.status_code,
-            )
+        response = await self._data_get(url, params)
         rows: list[dict[str, object]] = response.json()
         for row in rows:
             if str(row.get("userName", "")).lower() == username.lower():
@@ -593,7 +641,7 @@ class PolymarketClient:
         """
         self._require_auth()
         async with self._clob_lock:
-            return await asyncio.to_thread(_clob_adapter.derive_api_creds, self._clob_client)
+            return await _to_thread_with_timeout(_clob_adapter.derive_api_creds, self._clob_client)
 
     async def place_order(self, request: OrderRequest) -> OrderResponse:
         """Place a limit or market order on Polymarket.
@@ -614,7 +662,7 @@ class PolymarketClient:
         self._require_auth()
         if request.order_type == "market":
             async with self._clob_lock:
-                raw = await asyncio.to_thread(
+                raw = await _to_thread_with_timeout(
                     _clob_adapter.place_market_order,
                     self._clob_client,
                     request.token_id,
@@ -623,7 +671,7 @@ class PolymarketClient:
                 )
         else:
             async with self._clob_lock:
-                raw = await asyncio.to_thread(
+                raw = await _to_thread_with_timeout(
                     _clob_adapter.place_limit_order,
                     self._clob_client,
                     request.token_id,
@@ -648,7 +696,9 @@ class PolymarketClient:
         """
         self._require_auth()
         async with self._clob_lock:
-            await asyncio.to_thread(_clob_adapter.update_balance, self._clob_client, asset_type)
+            await _to_thread_with_timeout(
+                _clob_adapter.update_balance, self._clob_client, asset_type
+            )
 
     async def get_balance(self, asset_type: str = "COLLATERAL") -> Balance:
         """Fetch the balance and allowance for an asset.
@@ -665,7 +715,9 @@ class PolymarketClient:
         """
         self._require_auth()
         async with self._clob_lock:
-            raw = await asyncio.to_thread(_clob_adapter.get_balance, self._clob_client, asset_type)
+            raw = await _to_thread_with_timeout(
+                _clob_adapter.get_balance, self._clob_client, asset_type
+            )
         raw_balance = _safe_decimal(raw.get("balance"))
         raw_allowance = _safe_decimal(raw.get("allowance"))
         return Balance(
@@ -699,12 +751,12 @@ class PolymarketClient:
             raise PolymarketAPIError(
                 msg="Funder address required for on-chain balance query. "
                 "Set POLYMARKET_FUNDER_ADDRESS.",
-                status_code=0,
+                status_code=None,
             )
         resolved_rpc = rpc_url or os.environ.get(
             "POLYGON_RPC_URL", "https://rpc-mainnet.matic.quiknode.pro"
         )
-        raw_balance = await asyncio.to_thread(
+        raw_balance = await _to_thread_with_timeout(
             _clob_adapter.get_onchain_usdc_balance,
             resolved_rpc,
             self._funder_address,
@@ -726,7 +778,9 @@ class PolymarketClient:
         """
         self._require_auth()
         async with self._clob_lock:
-            return await asyncio.to_thread(_clob_adapter.cancel_order, self._clob_client, order_id)
+            return await _to_thread_with_timeout(
+                _clob_adapter.cancel_order, self._clob_client, order_id
+            )
 
     async def get_open_orders(self) -> list[OrderResponse]:
         """Fetch all open orders for the authenticated user.
@@ -740,7 +794,9 @@ class PolymarketClient:
         """
         self._require_auth()
         async with self._clob_lock:
-            raw_list = await asyncio.to_thread(_clob_adapter.get_open_orders, self._clob_client)
+            raw_list = await _to_thread_with_timeout(
+                _clob_adapter.get_open_orders, self._clob_client
+            )
         return [_parse_raw_order(raw) for raw in raw_list]
 
     async def get_redeemable_positions(self) -> list[RedeemablePosition]:
@@ -826,7 +882,7 @@ class PolymarketClient:
             raise PolymarketAPIError(
                 msg="Funder address required for position discovery. "
                 "Set POLYMARKET_FUNDER_ADDRESS.",
-                status_code=0,
+                status_code=None,
             )
         url = f"{self.DATA_API_URL}/positions"
         params: dict[str, str] = {
@@ -835,19 +891,7 @@ class PolymarketClient:
         }
         if redeemable is not None:
             params["redeemable"] = str(redeemable).lower()
-        try:
-            response = await self._data_client.get(url, params=params)
-        except httpx.HTTPError as exc:
-            raise PolymarketAPIError(
-                msg=f"Data API request failed: {exc}",
-                status_code=0,
-            ) from exc
-
-        if response.status_code >= HTTP_BAD_REQUEST:
-            raise PolymarketAPIError(
-                msg=f"Data API error: HTTP {response.status_code}",
-                status_code=response.status_code,
-            )
+        response = await self._data_get(url, params)
 
         try:
             return response.json()
@@ -888,7 +932,7 @@ class PolymarketClient:
         resolved_rpc = rpc_url or os.environ.get(
             "POLYGON_RPC_URL", "https://rpc-mainnet.matic.quiknode.pro"
         )
-        receipts = await asyncio.to_thread(
+        receipts = await _to_thread_with_timeout(
             _ctf_redeemer.redeem_positions,
             resolved_rpc,
             self._private_key,
@@ -1008,12 +1052,15 @@ class PolymarketClient:
         spread = best_ask - best_bid if bids and asks else _ZERO
         midpoint = (best_bid + best_ask) / _TWO if bids and asks else _ZERO
 
+        min_order_size = _safe_decimal(raw.get("min_order_size", "5"))
+
         return OrderBook(
             token_id=token_id,
             bids=bids,
             asks=asks,
             spread=spread,
             midpoint=midpoint,
+            min_order_size=min_order_size,
         )
 
 
@@ -1033,11 +1080,11 @@ def _parse_json_or_list(raw: Any) -> list[str]:
     """
     if isinstance(raw, str):
         try:
-            return json.loads(raw)  # type: ignore[no-any-return]
+            return cast("list[str]", json.loads(raw))
         except (json.JSONDecodeError, TypeError):
             return []
     if isinstance(raw, list):
-        return [str(item) for item in raw]  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
+        return [str(item) for item in cast("list[object]", raw)]
     return []
 
 
@@ -1089,24 +1136,43 @@ def _safe_decimal(value: Any) -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError) as exc:
         msg = f"Cannot convert {value!r} to Decimal"
-        raise PolymarketAPIError(msg=msg, status_code=0) from exc
+        raise PolymarketAPIError(msg=msg, status_code=None) from exc
 
 
 _FIVE_MINUTES = 300
 _FIFTEEN_MINUTES = 900
+_FOUR_HOURS = 14400
+
+# Map hourly series base slugs to the asset name used in Gamma event titles
+_HOURLY_SLUG_TO_TITLE: dict[str, str] = {
+    "btc-updown-1h": "Bitcoin Up or Down",
+    "eth-updown-1h": "Ethereum Up or Down",
+    "sol-updown-1h": "Solana Up or Down",
+    "xrp-updown-1h": "XRP Up or Down",
+    "doge-updown-1h": "Dogecoin Up or Down",
+    "bnb-updown-1h": "BNB Up or Down",
+    "hype-updown-1h": "Hyperliquid Up or Down",
+}
+
+
+def _is_updown_event(title: str) -> bool:
+    """Return ``True`` if the event title is an Up/Down crypto market."""
+    return "up or down" in title.lower()
 
 
 def _resolve_timestamped_slugs(
     series_slugs: list[str],
     *,
     include_next: bool = False,
-) -> list[str]:
-    """Expand series slugs into timestamped slugs for rotating markets.
+) -> tuple[list[str], list[str]]:
+    """Expand series slugs into timestamped slugs and hourly title queries.
 
     Polymarket rotating markets use slugs like ``btc-updown-5m-1771758600``
     where the suffix is the Unix epoch of the current window start.  For
-    slugs ending in ``-5m`` or ``-15m``, compute the current window epoch
-    (aligned to 300s or 900s respectively) and append it.  When
+    slugs ending in ``-5m``, ``-15m``, or ``-4h``, compute the current
+    window epoch (aligned to 300s, 900s, or 14400s respectively) and append
+    it.  Slugs ending in ``-daily`` are passed through unchanged (they use
+    title-based discovery rather than epoch suffixes).  When
     ``include_next`` is ``True``, also emit the next window slug so the
     collector can discover upcoming markets before they open.
     Other slugs are passed through unchanged.
@@ -1117,11 +1183,12 @@ def _resolve_timestamped_slugs(
             slugs for timestamped series.  Other slugs are not duplicated.
 
     Returns:
-        Resolved slugs with epoch suffixes where applicable.
+        Tuple of (resolved_slugs, hourly_title_queries).
 
     """
     now = int(time.time())
     resolved: list[str] = []
+    hourly_titles: list[str] = []
     for slug in series_slugs:
         if slug.endswith("-5m"):
             window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
@@ -1133,9 +1200,16 @@ def _resolve_timestamped_slugs(
             resolved.append(f"{slug}-{window}")
             if include_next:
                 resolved.append(f"{slug}-{window + _FIFTEEN_MINUTES}")
+        elif slug in _HOURLY_SLUG_TO_TITLE:
+            hourly_titles.append(_HOURLY_SLUG_TO_TITLE[slug])
+        elif slug.endswith("-4h"):
+            window = (now // _FOUR_HOURS) * _FOUR_HOURS
+            resolved.append(f"{slug}-{window}")
+            if include_next:
+                resolved.append(f"{slug}-{window + _FOUR_HOURS}")
         else:
             resolved.append(slug)
-    return resolved
+    return resolved, hourly_titles
 
 
 def _parse_order_response(raw: dict[str, Any], request: OrderRequest) -> OrderResponse:

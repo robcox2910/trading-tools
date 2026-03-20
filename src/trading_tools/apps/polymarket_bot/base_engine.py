@@ -28,6 +28,7 @@ from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import Market
 from trading_tools.core.models import Signal
+from trading_tools.core.timestamps import FIVE_MINUTES
 
 if TYPE_CHECKING:
     from trading_tools.clients.polymarket.models import OrderBook
@@ -35,7 +36,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MIN_TOKENS = 2
-_FIVE_MINUTES = 300
 
 
 class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
@@ -90,7 +90,7 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
         self._cached_order_books: dict[str, OrderBook] = {}
         self._cached_markets: dict[str, Market] = {}
         now = int(time.time())
-        self._current_window: int = (now // _FIVE_MINUTES) * _FIVE_MINUTES
+        self._current_window: int = (now // FIVE_MINUTES) * FIVE_MINUTES
         self._asset_ids: list[str] = []
 
     # ------------------------------------------------------------------
@@ -144,7 +144,7 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
             try:
                 market = await self._bootstrap_market(condition_id)
             except (PolymarketAPIError, httpx.HTTPError):
-                logger.warning("Failed to fetch market %s", condition_id, exc_info=True)
+                logger.warning("Failed to fetch market %s", condition_id)
                 continue
 
             if market is None:
@@ -154,11 +154,7 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
                 order_book = await self._client.get_order_book(market.tokens[0].token_id)
                 self._cached_order_books[condition_id] = order_book
             except (PolymarketAPIError, httpx.HTTPError):
-                logger.warning(
-                    "Failed to fetch order book for %s",
-                    condition_id,
-                    exc_info=True,
-                )
+                logger.warning("Failed to fetch order book for %s", condition_id)
 
         logger.info(
             "Bootstrapped %d markets with %d asset IDs",
@@ -283,11 +279,7 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
                     order_book = await self._client.get_order_book(market.tokens[0].token_id)
                     self._cached_order_books[condition_id] = order_book
                 except (PolymarketAPIError, httpx.HTTPError):
-                    logger.warning(
-                        "Failed to refresh order book for %s",
-                        condition_id,
-                        exc_info=True,
-                    )
+                    logger.warning("Failed to refresh order book for %s", condition_id)
 
     async def _rotation_loop(self) -> None:
         """Check for 5-minute window rotation periodically."""
@@ -296,7 +288,7 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
         while True:
             await asyncio.sleep(1)
             now = int(time.time())
-            new_window = (now // _FIVE_MINUTES) * _FIVE_MINUTES
+            new_window = (now // FIVE_MINUTES) * FIVE_MINUTES
             if new_window != self._current_window:
                 self._current_window = new_window
                 await self._rotate_markets()
@@ -316,7 +308,7 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
                 list(self._config.series_slugs),
             )
         except (PolymarketAPIError, httpx.HTTPError):
-            logger.warning("Market rotation discovery failed", exc_info=True)
+            logger.warning("Market rotation discovery failed")
             return
 
         if not discovered:
@@ -344,11 +336,7 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
                 order_book = await self._client.get_order_book(market.tokens[0].token_id)
                 self._cached_order_books[cid] = order_book
             except (PolymarketAPIError, httpx.HTTPError):
-                logger.warning(
-                    "Failed to bootstrap rotated market %s",
-                    cid,
-                    exc_info=True,
-                )
+                logger.warning("Failed to bootstrap rotated market %s", cid)
 
         await self._feed.update_subscription(self._asset_ids)
 
@@ -385,7 +373,6 @@ class BaseTradingEngine[PortfolioT: BasePortfolio](ABC):
             logger.warning(
                 "Failed to refresh order book for %s before trade, using cached",
                 condition_id[:20],
-                exc_info=True,
             )
 
         return self._build_snapshot(condition_id)

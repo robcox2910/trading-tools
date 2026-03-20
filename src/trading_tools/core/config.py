@@ -8,6 +8,9 @@ from typing import Any, cast
 import yaml
 from dotenv import load_dotenv
 
+_MISSING = object()
+"""Sentinel for distinguishing 'key not found' from 'key maps to None'."""
+
 
 class ConfigError(Exception):
     """Raise when configuration loading or validation fails."""
@@ -123,8 +126,8 @@ class ConfigLoader:
         current: Any = self._config
         for k in keys:
             if isinstance(current, dict):
-                current = cast("dict[str, Any]", current).get(k)
-                if current is None:
+                current = cast("dict[str, Any]", current).get(k, _MISSING)
+                if current is _MISSING:
                     return default
             else:
                 return default
@@ -168,7 +171,8 @@ class ConfigLoader:
         return path.read_bytes()
 
 
-_config: ConfigLoader | None = None
+_config: dict[str, ConfigLoader] = {}
+"""Module-level cache for the singleton ``ConfigLoader`` instance."""
 
 
 def get_config() -> ConfigLoader:
@@ -181,7 +185,6 @@ def get_config() -> ConfigLoader:
         The shared ``ConfigLoader`` instance.
 
     """
-    global _config  # noqa: PLW0603
-    if _config is None:
-        _config = ConfigLoader()
-    return _config
+    if "instance" not in _config:
+        _config["instance"] = ConfigLoader()
+    return _config["instance"]

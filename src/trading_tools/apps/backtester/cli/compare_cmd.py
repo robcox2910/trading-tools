@@ -25,7 +25,7 @@ from trading_tools.apps.backtester.compare import (
 )
 
 
-def compare(  # noqa: PLR0913
+def compare(
     source: Annotated[
         str,
         typer.Option(
@@ -61,7 +61,7 @@ def compare(  # noqa: PLR0913
         float | None, typer.Option(help="Take-profit threshold as decimal")
     ] = None,
     position_size: Annotated[float, typer.Option(help="Fraction of capital per trade (0-1)")] = 1.0,
-    volatility_sizing: Annotated[bool, typer.Option(help="Use ATR-based position sizing")] = False,  # noqa: FBT002
+    volatility_sizing: Annotated[bool, typer.Option(help="Use ATR-based position sizing")] = False,
     atr_period: Annotated[int, typer.Option(help="ATR period for volatility sizing")] = 14,
     target_risk_pct: Annotated[float, typer.Option(help="Target risk per trade as decimal")] = 0.02,
     circuit_breaker: Annotated[
@@ -73,7 +73,7 @@ def compare(  # noqa: PLR0913
     start: Annotated[int, typer.Option(help="Start timestamp")] = 0,
     end: Annotated[int, typer.Option(help="End timestamp")] = 2**53,
     sort_by: Annotated[str, typer.Option(help="Metric to rank by")] = "total_return",
-    chart: Annotated[bool, typer.Option(help="Generate interactive charts")] = False,  # noqa: FBT002
+    chart: Annotated[bool, typer.Option(help="Generate interactive charts")] = False,
     chart_output: Annotated[
         Path | None, typer.Option(help="Save charts to HTML file instead of browser")
     ] = None,
@@ -118,7 +118,7 @@ def compare(  # noqa: PLR0913
     )
 
 
-async def _compare(  # noqa: PLR0913
+async def _compare(
     *,
     source: str,
     csv: Path | None,
@@ -204,7 +204,7 @@ async def _compare(  # noqa: PLR0913
         typer.echo(table)
 
         if chart or chart_output is not None:
-            render_compare_charts(results, chart=chart, chart_output=chart_output)
+            render_compare_charts(results, _chart=chart, chart_output=chart_output)
     finally:
         if client is not None:
             await client.close()

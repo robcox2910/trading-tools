@@ -22,13 +22,21 @@ from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 from trading_tools.clients.polymarket.models import (
     Balance,
     Market,
-    MarketToken,
     OrderBook,
     OrderLevel,
     OrderResponse,
     RedeemablePosition,
 )
 from trading_tools.core.models import ZERO, Side
+
+from .conftest import (
+    make_bot_config,
+    make_market,
+    make_order_book,
+    make_ws_event,
+    mock_feed,
+    mock_polymarket_client,
+)
 
 _CONDITION_ID = "cond_live_engine_test"
 _YES_TOKEN_ID = "yes_tok_live"
@@ -38,7 +46,7 @@ _INITIAL_BALANCE = Decimal("1000.00")
 
 
 def _make_market(yes_price: str = "0.60", no_price: str = "0.40") -> Market:
-    """Create a Market with given prices.
+    """Create a Market with live-engine-specific defaults.
 
     Args:
         yes_price: YES token price as string.
@@ -48,56 +56,42 @@ def _make_market(yes_price: str = "0.60", no_price: str = "0.40") -> Market:
         Market instance for testing.
 
     """
-    return Market(
+    return make_market(
         condition_id=_CONDITION_ID,
+        yes_price=yes_price,
+        no_price=no_price,
+        yes_token_id=_YES_TOKEN_ID,
+        no_token_id=_NO_TOKEN_ID,
         question="Will BTC reach $200K?",
-        description="Test market",
-        tokens=(
-            MarketToken(token_id=_YES_TOKEN_ID, outcome="Yes", price=Decimal(yes_price)),
-            MarketToken(token_id=_NO_TOKEN_ID, outcome="No", price=Decimal(no_price)),
-        ),
-        end_date="2026-12-31",
-        volume=Decimal(50000),
-        liquidity=Decimal(10000),
-        active=True,
     )
 
 
 def _make_order_book() -> OrderBook:
-    """Create a sample order book.
+    """Create a sample order book with live-engine-specific defaults.
 
     Returns:
         OrderBook with sample bid and ask levels.
 
     """
-    return OrderBook(
+    return make_order_book(
         token_id=_YES_TOKEN_ID,
-        bids=(
-            OrderLevel(price=Decimal("0.59"), size=Decimal(100)),
-            OrderLevel(price=Decimal("0.58"), size=Decimal(200)),
-        ),
-        asks=(
-            OrderLevel(price=Decimal("0.61"), size=Decimal(150)),
-            OrderLevel(price=Decimal("0.62"), size=Decimal(50)),
-        ),
-        spread=Decimal("0.02"),
-        midpoint=Decimal("0.60"),
+        extra_bids=(OrderLevel(price=Decimal("0.58"), size=Decimal(200)),),
+        extra_asks=(OrderLevel(price=Decimal("0.62"), size=Decimal(50)),),
+        ask_size=Decimal(150),
     )
 
 
 def _make_config() -> BotConfig:
-    """Create a BotConfig for testing.
+    """Create a BotConfig with live-engine-specific defaults.
 
     Returns:
         BotConfig with the test condition_id.
 
     """
-    return BotConfig(
-        order_book_refresh_seconds=30,
-        max_position_pct=Decimal("0.1"),
-        kelly_fraction=Decimal("0.25"),
-        max_history=100,
+    return make_bot_config(
         markets=(_CONDITION_ID,),
+        max_position_pct=Decimal("0.1"),
+        max_history=100,
     )
 
 
@@ -139,9 +133,10 @@ def _mock_client(
         AsyncMock configured as an authenticated PolymarketClient.
 
     """
-    client = AsyncMock()
-    client.get_market = AsyncMock(return_value=market or _make_market())
-    client.get_order_book = AsyncMock(return_value=order_book or _make_order_book())
+    client = mock_polymarket_client(
+        market=market or _make_market(),
+        order_book=order_book or _make_order_book(),
+    )
     client.get_balance = AsyncMock(
         return_value=Balance(
             asset_type="COLLATERAL",
@@ -155,7 +150,7 @@ def _mock_client(
 
 
 def _make_ws_event(asset_id: str = _YES_TOKEN_ID, price: str = "0.60") -> dict[str, Any]:
-    """Create a WebSocket trade event.
+    """Create a WebSocket trade event with live-engine token ID default.
 
     Args:
         asset_id: Token ID for the event.
@@ -165,7 +160,7 @@ def _make_ws_event(asset_id: str = _YES_TOKEN_ID, price: str = "0.60") -> dict[s
         Event dictionary mimicking a ``last_trade_price`` WS message.
 
     """
-    return {"asset_id": asset_id, "price": price}
+    return make_ws_event(asset_id=asset_id, price=price)
 
 
 def _mock_feed(events: list[dict[str, Any]]) -> MagicMock:
@@ -178,16 +173,7 @@ def _mock_feed(events: list[dict[str, Any]]) -> MagicMock:
         MagicMock configured as a MarketFeed.
 
     """
-    feed = MagicMock()
-
-    async def mock_stream(asset_ids: list[str]) -> Any:  # noqa: ARG001
-        for event in events:
-            yield event
-
-    feed.stream = mock_stream
-    feed.close = AsyncMock()
-    feed.update_subscription = AsyncMock()
-    return feed
+    return mock_feed(events)
 
 
 class TestLiveTradingEngine:
@@ -296,13 +282,13 @@ class TestLiveTradingEngine:
         event_count = 0
         low_balance = Decimal("850.00")
 
-        async def feed_with_loss(asset_ids: list[str]) -> Any:  # noqa: ARG001
+        async def feed_with_loss(asset_ids: list[str]) -> Any:
             nonlocal event_count
             for event in events:
                 event_count += 1
-                if event_count == 2:  # noqa: PLR2004
+                if event_count == 2:
                     # Simulate balance drop after first event
-                    engine._portfolio._balance = low_balance
+                    engine._portfolio._balance_manager._balance = low_balance
                 yield event
 
         feed = MagicMock()
@@ -335,7 +321,7 @@ class TestLiveTradingEngine:
         engine = LiveTradingEngine(client, strategy, config, feed=feed)
 
         # Set shutdown before running
-        engine._shutdown = True
+        engine._shutdown.request()
 
         result = await engine.run(max_ticks=100)
 
@@ -616,12 +602,13 @@ class TestAutoRedeem:
 
             with caplog.at_level(
                 logging.INFO,
-                logger="trading_tools.apps.polymarket_bot.live_engine",
+                logger="trading_tools.apps.bot_framework.redeemer",
             ):
                 await engine._rotate_markets()
                 # Let the background redeem task complete
-                assert engine._redeem_task is not None
-                await engine._redeem_task
+                assert engine._redeemer is not None
+                assert engine._redeemer.task is not None
+                await engine._redeemer.task
 
         client.get_redeemable_positions.assert_called_once()
         client.redeem_positions.assert_called_once_with(["0xresolved1"])
@@ -673,11 +660,12 @@ class TestAutoRedeem:
 
             with caplog.at_level(
                 logging.INFO,
-                logger="trading_tools.apps.polymarket_bot.live_engine",
+                logger="trading_tools.apps.bot_framework.redeemer",
             ):
                 await engine._rotate_markets()
                 # No background task should be created for undersized positions
-                assert engine._redeem_task is None
+                assert engine._redeemer is not None
+                assert engine._redeemer.task is None
 
         assert any("REDEEM skip" in msg for msg in caplog.messages)
         client.redeem_positions.assert_not_called()
@@ -741,7 +729,7 @@ class TestAutoRedeem:
                 ),
             ],
         )
-        client.redeem_positions = AsyncMock(side_effect=Exception("RPC timeout"))
+        client.redeem_positions = AsyncMock(side_effect=OSError("RPC timeout"))
 
         config = BotConfig(
             max_position_pct=Decimal("0.1"),
@@ -767,12 +755,13 @@ class TestAutoRedeem:
 
             with caplog.at_level(
                 logging.WARNING,
-                logger="trading_tools.apps.polymarket_bot.live_engine",
+                logger="trading_tools.apps.bot_framework.redeemer",
             ):
                 await engine._rotate_markets()
                 # Let the background redeem task complete
-                assert engine._redeem_task is not None
-                await engine._redeem_task
+                assert engine._redeemer is not None
+                assert engine._redeemer.task is not None
+                await engine._redeemer.task
 
         client.redeem_positions.assert_called_once_with(["0xfailing"])
         assert any("CTF redemption failed" in msg for msg in caplog.messages)
@@ -805,21 +794,22 @@ class TestAutoRedeem:
             feed=feed,
             auto_redeem=True,
         )
+        assert engine._redeemer is not None
         # Simulate a still-running redeem task
         old_task = asyncio.create_task(asyncio.sleep(10))
-        engine._redeem_task = old_task
+        engine._redeemer._task = old_task
 
         with caplog.at_level(
             logging.INFO,
-            logger="trading_tools.apps.polymarket_bot.live_engine",
+            logger="trading_tools.apps.bot_framework.redeemer",
         ):
-            await engine._redeem_resolved()
+            await engine._redeemer.redeem_if_available()
 
         assert old_task.cancelling()
         assert any("cancelling previous" in msg for msg in caplog.messages)
         # New task should have been created
-        assert engine._redeem_task is not None
-        assert engine._redeem_task is not old_task
+        assert engine._redeemer.task is not None
+        assert engine._redeemer.task is not old_task
 
 
 class TestComputeSleep:

@@ -96,14 +96,14 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWEOF
             "retention_in_days": 14
           },
           {
-            "file_path": "/var/log/trading-tools/whale-copy-live.log",
-            "log_group_name": "/trading-tools/whale-copy-live",
+            "file_path": "/var/log/trading-tools/spread-capture-live.log",
+            "log_group_name": "/trading-tools/spread-capture-live",
             "log_stream_name": "{instance_id}",
             "retention_in_days": 14
           },
           {
-            "file_path": "/var/log/trading-tools/whale-copy-paper.log",
-            "log_group_name": "/trading-tools/whale-copy-paper",
+            "file_path": "/var/log/trading-tools/spread-capture-paper.log",
+            "log_group_name": "/trading-tools/spread-capture-paper",
             "log_stream_name": "{instance_id}",
             "retention_in_days": 14
           }
@@ -307,10 +307,10 @@ MemoryMax=512M
 WantedBy=multi-user.target
 SVCEOF
 
-# ── 13. Systemd service: whale copy-trader (paper) ──────────────
-cat > /etc/systemd/system/whale-copy-paper.service <<SVCEOF
+# ── 13. Systemd service: spread capture bot (paper) ──────────────
+cat > /etc/systemd/system/spread-capture-paper.service <<SVCEOF
 [Unit]
-Description=Polymarket Whale Copy-Trader (Paper)
+Description=Polymarket Spread Capture Bot (Paper)
 After=network-online.target
 Wants=network-online.target
 
@@ -319,14 +319,15 @@ Type=simple
 User=root
 WorkingDirectory=$REPO_DIR
 
-ExecStartPre=/bin/bash $REPO_DIR/fetch-secrets.sh /run/whale-copy-paper.env
-EnvironmentFile=-/run/whale-copy-paper.env
+ExecStartPre=/bin/bash $REPO_DIR/fetch-secrets.sh /run/spread-capture-paper.env
+EnvironmentFile=-/run/spread-capture-paper.env
 
-ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket whale-copy \
+ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket spread-capture \
+  --series-slugs crypto-5m \
   --verbose
 
-StandardOutput=append:/var/log/trading-tools/whale-copy-paper.log
-StandardError=append:/var/log/trading-tools/whale-copy-paper.log
+StandardOutput=append:/var/log/trading-tools/spread-capture-paper.log
+StandardError=append:/var/log/trading-tools/spread-capture-paper.log
 
 Restart=on-failure
 RestartSec=30
@@ -339,10 +340,10 @@ MemoryMax=512M
 WantedBy=multi-user.target
 SVCEOF
 
-# ── 14. Systemd service: whale copy-trader (live) ──────────────
-cat > /etc/systemd/system/whale-copy-live.service <<SVCEOF
+# ── 14. Systemd service: spread capture bot (live) ──────────────
+cat > /etc/systemd/system/spread-capture-live.service <<SVCEOF
 [Unit]
-Description=Polymarket Whale Copy-Trader (Live)
+Description=Polymarket Spread Capture Bot (Live)
 After=network-online.target
 Wants=network-online.target
 
@@ -351,15 +352,16 @@ Type=simple
 User=root
 WorkingDirectory=$REPO_DIR
 
-ExecStartPre=/bin/bash $REPO_DIR/fetch-secrets.sh /run/whale-copy-live.env
-EnvironmentFile=-/run/whale-copy-live.env
+ExecStartPre=/bin/bash $REPO_DIR/fetch-secrets.sh /run/spread-capture-live.env
+EnvironmentFile=-/run/spread-capture-live.env
 
-ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket whale-copy \
+ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket spread-capture \
+  --series-slugs crypto-5m \
   --confirm-live \
   --verbose
 
-StandardOutput=append:/var/log/trading-tools/whale-copy-live.log
-StandardError=append:/var/log/trading-tools/whale-copy-live.log
+StandardOutput=append:/var/log/trading-tools/spread-capture-live.log
+StandardError=append:/var/log/trading-tools/spread-capture-live.log
 
 Restart=on-failure
 RestartSec=30
@@ -379,15 +381,15 @@ systemctl daemon-reload
 systemctl enable trading-bot-paper.service
 systemctl enable tick-collector.service
 systemctl enable whale-monitor.service
-systemctl enable whale-copy-paper.service
-systemctl enable whale-copy-live.service
+systemctl enable spread-capture-paper.service
+systemctl enable spread-capture-live.service
 
 # Start all enabled services
 systemctl start trading-bot-paper.service
 systemctl start tick-collector.service
 systemctl start whale-monitor.service
-systemctl start whale-copy-paper.service
-systemctl start whale-copy-live.service
+systemctl start spread-capture-paper.service
+systemctl start spread-capture-live.service
 
 # Live bot is installed but NOT enabled/started
 echo "All services started. Live trading bot installed but disabled."

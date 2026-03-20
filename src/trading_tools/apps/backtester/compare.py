@@ -8,34 +8,11 @@ single-strategy ``run`` module.
 import asyncio
 from decimal import Decimal
 
+from trading_tools.apps.backtester._providers import CachedProvider
 from trading_tools.apps.backtester.engine import BacktestEngine
 from trading_tools.apps.backtester.strategy_factory import STRATEGY_NAMES, build_strategy
-from trading_tools.core.models import BacktestResult, Candle, ExecutionConfig, Interval, RiskConfig
+from trading_tools.core.models import BacktestResult, ExecutionConfig, Interval, RiskConfig
 from trading_tools.core.protocols import CandleProvider
-
-
-class _CachedProvider:
-    """Candle provider that returns pre-fetched candles.
-
-    Wrap a list of candles already retrieved from the real provider so
-    that each concurrent strategy evaluation reuses the same data without
-    making redundant network or I/O calls.
-    """
-
-    def __init__(self, candles: list[Candle]) -> None:
-        """Initialize with a fixed list of candles."""
-        self._candles = candles
-
-    async def get_candles(
-        self,
-        symbol: str,  # noqa: ARG002
-        interval: Interval,  # noqa: ARG002
-        start_ts: int,  # noqa: ARG002
-        end_ts: int,  # noqa: ARG002
-    ) -> list[Candle]:
-        """Return the pre-fetched candles ignoring filter parameters."""
-        return self._candles
-
 
 _SORT_METRICS = (
     "total_return",
@@ -51,7 +28,7 @@ _SORT_METRICS = (
 _ASCENDING_METRICS = frozenset({"max_drawdown", "total_fees"})
 
 
-async def run_comparison(  # noqa: PLR0913
+async def run_comparison(
     *,
     provider: CandleProvider,
     symbol: str,
@@ -108,7 +85,7 @@ async def run_comparison(  # noqa: PLR0913
 
     """
     candles = await provider.get_candles(symbol, interval, start, end)
-    cached = _CachedProvider(candles)
+    cached = CachedProvider(candles)
 
     async def _run_one(name: str) -> BacktestResult:
         strategy = build_strategy(

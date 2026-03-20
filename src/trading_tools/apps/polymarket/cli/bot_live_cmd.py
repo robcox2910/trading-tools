@@ -13,22 +13,19 @@ from typing import Annotated
 import typer
 
 from trading_tools.apps.polymarket.cli._helpers import (
+    StrategyParams,
     build_authenticated_client,
     configure_logging,
-    discover_markets,
-    parse_series_slugs,
+    resolve_market_ids,
 )
 from trading_tools.apps.polymarket_bot.live_engine import LiveTradingEngine
 from trading_tools.apps.polymarket_bot.models import BotConfig, LiveTradingResult
-from trading_tools.apps.polymarket_bot.strategy_factory import (
-    PM_STRATEGY_NAMES,
-    build_pm_strategy,
-)
+from trading_tools.apps.polymarket_bot.strategy_factory import PM_STRATEGY_NAMES
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 
 
-def bot_live(  # noqa: PLR0913
+def bot_live(
     strategy: Annotated[
         str, typer.Option(help=f"Strategy name: {', '.join(PM_STRATEGY_NAMES)}")
     ] = "pm_late_snipe",
@@ -48,7 +45,7 @@ def bot_live(  # noqa: PLR0913
     max_loss_pct: Annotated[
         float, typer.Option(help="Max drawdown fraction before auto-stop (0-1)")
     ] = 0.10,
-    market_orders: Annotated[  # noqa: FBT002
+    market_orders: Annotated[
         bool, typer.Option("--market-orders/--limit-orders", help="Use FOK market or GTC limit")
     ] = True,
     period: Annotated[int, typer.Option(help="Rolling window period (mean reversion)")] = 20,
@@ -64,17 +61,17 @@ def bot_live(  # noqa: PLR0913
     snipe_window: Annotated[
         int, typer.Option(help="Seconds before market end to start sniping")
     ] = 60,
-    confirm_live: Annotated[  # noqa: FBT002
+    confirm_live: Annotated[
         bool, typer.Option("--confirm-live", help="Required flag to enable live trading")
     ] = False,
-    auto_redeem: Annotated[  # noqa: FBT002
+    auto_redeem: Annotated[
         bool,
         typer.Option(
             "--auto-redeem/--no-auto-redeem",
             help="Redeem winning tokens on-chain via CTF contract on rotation",
         ),
     ] = True,
-    verbose: Annotated[  # noqa: FBT002
+    verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable tick-by-tick logging")
     ] = False,
 ) -> None:
@@ -92,6 +89,16 @@ def bot_live(  # noqa: PLR0913
 
     configure_logging(verbose=verbose)
 
+    strategy_params = StrategyParams(
+        period=period,
+        z_threshold=z_threshold,
+        spread_pct=spread_pct,
+        imbalance_threshold=imbalance_threshold,
+        min_edge=min_edge,
+        snipe_threshold=snipe_threshold,
+        snipe_window=snipe_window,
+    )
+
     asyncio.run(
         _bot_live(
             strategy=strategy,
@@ -103,13 +110,7 @@ def bot_live(  # noqa: PLR0913
             kelly_frac=kelly_frac,
             max_loss_pct=max_loss_pct,
             market_orders=market_orders,
-            period=period,
-            z_threshold=z_threshold,
-            spread_pct=spread_pct,
-            imbalance_threshold=imbalance_threshold,
-            min_edge=min_edge,
-            snipe_threshold=snipe_threshold,
-            snipe_window=snipe_window,
+            strategy_params=strategy_params,
             auto_redeem=auto_redeem,
         )
     )
@@ -171,7 +172,7 @@ def _display_results(result: LiveTradingResult) -> None:
             typer.echo(f"  {key}: {value:.4f}")
 
 
-async def _bot_live(  # noqa: PLR0913
+async def _bot_live(
     *,
     strategy: str,
     markets: str,
@@ -182,13 +183,7 @@ async def _bot_live(  # noqa: PLR0913
     kelly_frac: float,
     max_loss_pct: float,
     market_orders: bool,
-    period: int,
-    z_threshold: float,
-    spread_pct: float,
-    imbalance_threshold: float,
-    min_edge: float,
-    snipe_threshold: float,
-    snipe_window: int,
+    strategy_params: StrategyParams,
     auto_redeem: bool,
 ) -> None:
     """Run the live trading bot asynchronously.
@@ -203,60 +198,20 @@ async def _bot_live(  # noqa: PLR0913
         kelly_frac: Fractional Kelly multiplier.
         max_loss_pct: Maximum drawdown before auto-stop.
         market_orders: Use FOK market orders or GTC limit orders.
-        period: Rolling window period for mean reversion.
-        z_threshold: Z-score threshold for mean reversion.
-        spread_pct: Half-spread for market making.
-        imbalance_threshold: Threshold for liquidity imbalance.
-        min_edge: Minimum edge for cross-market arb.
-        snipe_threshold: Price threshold for late snipe strategy.
-        snipe_window: Window in seconds before market end for sniping.
+        strategy_params: Shared strategy configuration parameters.
         auto_redeem: Auto-redeem resolved positions on rotation.
 
     """
-    market_ids = tuple(m.strip() for m in markets.split(",") if m.strip())
-    market_end_times: tuple[tuple[str, str], ...] = ()
-    series_slugs = parse_series_slugs(series)
-
-    # Discover markets from series slugs — create the client once and
-    # keep it open for both discovery and subsequent trading.
     client = build_authenticated_client()
-    if series_slugs:
-        try:
-            discovered = await discover_markets(client, series_slugs)
-        except PolymarketAPIError as exc:
-            typer.echo(f"Warning: Series discovery failed: {exc}", err=True)
-            discovered = []
 
-        if discovered:
-            discovered_ids = tuple(cid for cid, _ in discovered)
-            market_end_times = tuple(discovered)
-            market_ids = (*market_ids, *discovered_ids)
+    # Discover markets — keep client open for both discovery and trading.
+    market_ids, market_end_times, series_slugs = await resolve_market_ids(client, markets, series)
 
-    if not market_ids:
-        typer.echo(
-            "Error: specify --markets or --series (e.g. --series crypto-5m)",
-            err=True,
-        )
-        raise typer.Exit(code=1)
-
-    try:
-        pm_strategy = build_pm_strategy(
-            strategy,
-            period=period,
-            z_threshold=z_threshold,
-            spread_pct=spread_pct,
-            imbalance_threshold=imbalance_threshold,
-            min_edge=min_edge,
-            snipe_threshold=snipe_threshold,
-            snipe_window=snipe_window,
-        )
-    except typer.BadParameter as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+    pm_strategy = strategy_params.build_strategy(strategy)
 
     config = BotConfig(
         order_book_refresh_seconds=ob_refresh,
-        snipe_window_seconds=snipe_window,
+        snipe_window_seconds=strategy_params.snipe_window,
         max_position_pct=Decimal(str(max_position_pct)),
         kelly_fraction=Decimal(str(kelly_frac)),
         markets=market_ids,

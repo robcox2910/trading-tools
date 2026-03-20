@@ -220,7 +220,7 @@ class TestBotCommand:
             patch(
                 "trading_tools.apps.polymarket.cli.bot_cmd.PaperTradingEngine"
             ) as mock_engine_cls,
-            patch("trading_tools.apps.polymarket.cli.bot_cmd.build_pm_strategy") as mock_build,
+            patch("trading_tools.apps.polymarket.cli._helpers.build_pm_strategy") as mock_build,
         ):
             mock_strategy = AsyncMock()
             mock_strategy.name = "pm_late_snipe_0.85_45s"
@@ -347,5 +347,5 @@ class TestBotCommand:
         # Should have expanded crypto-5m into 4 slugs
         mock_client.discover_series_markets.assert_called_once()
         slugs = mock_client.discover_series_markets.call_args[0][0]
-        expected_slug_count = 4
+        expected_slug_count = 7
         assert len(slugs) == expected_slug_count

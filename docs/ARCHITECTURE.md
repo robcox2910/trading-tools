@@ -13,6 +13,7 @@ trading-tools/
 │   │   ├── backtester/              # Candle-based backtesting engine
 │   │   │   ├── cli/                 # CLI commands (run, compare, monte-carlo, walk-forward)
 │   │   │   ├── strategies/          # 10 pluggable trading strategies
+│   │   │   ├── _providers.py        # Internal candle provider helpers
 │   │   │   ├── engine.py            # Backtest orchestration
 │   │   │   ├── portfolio.py         # Portfolio state tracking
 │   │   │   ├── metrics.py           # Performance metrics (Sharpe, drawdown, etc.)
@@ -25,15 +26,29 @@ trading-tools/
 │   │   │   ├── backtest_common.py   # Shared backtest utilities
 │   │   │   ├── grid_backtest.py     # Grid search engine
 │   │   │   └── run.py               # CLI entry point
+│   │   ├── bot_framework/           # Shared composable services for trading bots
+│   │   │   ├── balance_manager.py   # USDC balance tracking and available-to-trade accounting
+│   │   │   ├── heartbeat.py         # Periodic status logging for monitoring
+│   │   │   ├── order_executor.py    # CLOB order placement wrapper
+│   │   │   ├── redeemer.py          # CTF position redemption service
+│   │   │   └── shutdown.py          # Graceful shutdown signal handling
 │   │   ├── polymarket_bot/          # Paper and live trading bot engines
 │   │   │   ├── strategies/          # 5 Polymarket-specific strategies
-│   │   │   ├── bot_engine.py        # Paper trading engine
-│   │   │   └── live_engine.py       # Live trading engine
+│   │   │   ├── base_engine.py       # Abstract base engine with shared lifecycle
+│   │   │   ├── base_portfolio.py    # Abstract base portfolio with shared accounting
+│   │   │   ├── engine.py            # Paper trading engine
+│   │   │   ├── kelly.py             # Kelly criterion position sizing
+│   │   │   ├── live_engine.py       # Live trading engine
+│   │   │   ├── live_portfolio.py    # Live portfolio with real balance tracking
+│   │   │   ├── price_tracker.py     # Real-time price tracking for open positions
+│   │   │   └── snapshot_simulator.py # Synthetic market snapshot generator
 │   │   ├── tick_collector/          # Real-time WebSocket tick streaming
-│   │   │   ├── collector.py         # WebSocket consumer and DB writer
-│   │   │   └── models.py            # Tick and order book SQLAlchemy models
+│   │   │   ├── collector.py         # WebSocket consumer and DB writer (also persists MarketMetadata)
+│   │   │   ├── models.py            # Tick, OrderBookSnapshot, and MarketMetadata SQLAlchemy models
+│   │   │   ├── ws_client.py         # WebSocket connection management and reconnection
+│   │   │   └── snapshot_builder.py  # Order book snapshot construction from raw data
 │   │   ├── whale_monitor/           # Whale trade monitoring service
-│   │   │   ├── monitor.py           # Polling service
+│   │   │   ├── whale_spotter.py     # Polling service
 │   │   │   ├── models.py            # Whale and trade SQLAlchemy models
 │   │   │   ├── repository.py        # Async SQLAlchemy repository for whales and trades
 │   │   │   ├── analyser.py          # Aggregate trades into WhaleAnalysis / MarketBreakdown
@@ -42,11 +57,38 @@ trading-tools/
 │   │   │   ├── leaderboard.py       # Discover profitable traders via leaderboard or market enumeration
 │   │   │   ├── collector.py         # Shared trade-fetching utilities
 │   │   │   └── config.py            # Whale monitor configuration dataclasses
-│   │   └── whale_copy_trader/       # Real-time whale copy-trading service
-│   │       ├── config.py            # WhaleCopyConfig (frozen dataclass)
-│   │       ├── models.py            # CopySignal, SideLeg, OpenPosition, CopyResult
-│   │       ├── signal_detector.py   # Incremental polling and signal detection
-│   │       └── copy_trader.py       # Dual-side spread copy-trading engine
+│   │   ├── spread_capture/          # Real-time spread capture bot + backtester
+│   │   │   ├── config.py            # SpreadCaptureConfig (frozen dataclass)
+│   │   │   ├── models.py            # SpreadOpportunity, SideLeg, PairedPosition, SpreadResult, SpreadResultRecord (ORM)
+│   │   │   ├── ports.py             # ExecutionPort and MarketDataPort protocols + FillResult
+│   │   │   ├── adapters.py          # Live, Paper, Backtest execution + Live/Replay market data adapters
+│   │   │   ├── engine.py            # SpreadEngine — pure decision logic (no I/O)
+│   │   │   ├── repository.py        # Async SQLAlchemy repository for persisting closed trade results
+│   │   │   ├── market_scanner.py    # Incremental polling and signal detection
+│   │   │   ├── spread_trader.py     # Thin wrapper: simultaneous both-sides strategy
+│   │   │   ├── accumulating_trader.py # Thin wrapper: directional entry + opportunistic hedge
+│   │   │   ├── backtest_runner.py   # Replay engine: feed historical windows through SpreadEngine
+│   │   │   ├── grid_backtest.py     # Parameter sweep over hedge thresholds and signal delay
+│   │   │   └── limit_backtest.py    # Limit order fill simulation, grid sweep, and P&L aggregation
+│   │   ├── whale_copy/              # Whale copy trading bot — mirror whale directional positioning
+│   │   │   ├── config.py            # WhaleCopyConfig (frozen dataclass, YAML + CLI)
+│   │   │   ├── models.py            # WhalePosition — tracks position with dynamic whale_side
+│   │   │   ├── signal.py            # WhaleSignalClient — real-time Polymarket Data API queries
+│   │   │   └── trader.py            # WhaleCopyTrader — polling loop, fill logic, settlement
+│   │   └── directional/             # Directional trading algorithm for crypto Up/Down markets
+│   │       ├── config.py            # DirectionalConfig (frozen dataclass, YAML + CLI)
+│   │       ├── models.py            # MarketOpportunity, FeatureVector, DirectionalPosition, DirectionalResult (ORM)
+│   │       ├── features.py          # Pure feature extraction: momentum, volatility, volume, book imbalance, RSI
+│   │       ├── estimator.py         # ProbabilityEstimator: weighted ensemble → logistic sigmoid → P(Up)
+│   │       ├── weight_trainer.py    # Logistic regression trainer: fit all 7 weights via gradient descent
+│   │       ├── kelly.py             # Kelly criterion sizing for binary outcome tokens
+│   │       ├── ports.py             # ExecutionPort and MarketDataPort protocols + FillResult
+│   │       ├── adapters.py          # Paper, Backtest execution + Replay market data adapters
+│   │       ├── engine.py            # DirectionalEngine — scan → features → estimate → Kelly → fill → settle
+│   │       ├── repository.py        # Async SQLAlchemy repository for directional trade results
+│   │       ├── market_data_live.py  # Live market data adapter (MarketScanner + Binance + Polymarket)
+│   │       ├── trader.py            # DirectionalTrader — polling loop, shutdown, logging
+│   │       └── backtest_runner.py   # Replay engine with Brier score calibration tracking
 │   ├── clients/                     # External API clients
 │   │   ├── revolut_x/               # Revolut X API client
 │   │   │   ├── auth/                # Ed25519 authentication
@@ -118,13 +160,15 @@ Runnable applications and long-lived services. Each application has:
 
 | App | Purpose |
 |-----|---------|
+| `bot_framework` | Shared composable services (balance management, order execution, redemption) for trading bots |
 | `fetcher` | Download historical OHLCV data from Revolut X or Binance |
 | `backtester` | Run strategies against candle data, compare, simulate, and optimise |
 | `polymarket` | CLI for market queries, trading, bots, tick collection, and whale monitoring |
 | `polymarket_bot` | Paper and live trading engines with fee/slippage modelling and loss limits (consumed by `polymarket` CLI) |
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
 | `whale_monitor` | Polling service that tracks whale trades, with analysis, per-market breakdown, trade enrichment, and Binance spot correlation |
-| `whale_copy_trader` | Dual-side spread whale copy-trading (paper and live) |
+| `spread_capture` | Spread capture bot (paper, live, and backtest) with port-based adapters, pure decision engine, hedge urgency, circuit breaker, historical replay, limit order fill backtester, and maker strategy (resting GTC limit bids on both sides) |
+| `directional` | Directional trading algorithm — buy predicted winning side of binary crypto markets using features (momentum, volatility, volume, book imbalance, RSI), weighted ensemble estimator, and Kelly criterion sizing |
 
 ### `/clients` — API Clients
 
@@ -265,6 +309,7 @@ The tick collector and whale monitor use SQLAlchemy with async drivers:
 |-------|-----|-------------|
 | `ticks` | tick_collector | Trade events (timestamp, token_id, price, size) |
 | `order_book_snapshots` | tick_collector | Order book state at each poll interval |
+| `market_metadata` | tick_collector | Cached market fields (asset, tokens, window timestamps) for backtesting |
 | `tracked_whales` | whale_monitor | Registered whale addresses and labels |
 | `whale_trades` | whale_monitor | Historical whale trade records |
 
@@ -282,6 +327,70 @@ Production infrastructure is defined in `infra/` using Terraform:
 - **CloudWatch** — log aggregation and alarms
 - **Secrets Manager** — API keys and database credentials
 
+### Deployment
+
+```bash
+# SSH into EC2
+ssh -i ~/.ssh/trading-tools-key ubuntu@54.229.75.103
+
+# Pull latest code and sync dependencies
+cd /opt/trading-tools && sudo git pull origin main
+sudo /root/.local/bin/uv sync --all-extras
+
+# Restart services (pick relevant ones)
+sudo systemctl restart tick-collector whale-monitor trading-bot-paper spread-capture-paper
+```
+
+### Systemd Services
+
+| Service | Description |
+|---------|-------------|
+| `tick-collector` | Polymarket tick collector (WebSocket → PostgreSQL) |
+| `whale-monitor` | Polymarket whale trade monitor (→ PostgreSQL) |
+| `trading-bot-paper` | Paper trading bot (late snipe strategy) |
+| `trading-bot-live` | Live trading bot (late snipe strategy, disabled by default) |
+| `spread-capture-paper` | Spread capture paper bot (dual-side spread capture) |
+| `spread-capture-live` | Spread capture live bot (dual-side spread capture, real orders) |
+| `directional-paper` | Directional trading bot paper (buy predicted winning side) |
+
+**Useful commands:**
+
+```bash
+# Quick health check
+sudo systemctl is-active tick-collector whale-monitor trading-bot-paper spread-capture-paper
+
+# Service status details
+sudo systemctl status spread-capture-paper
+
+# If a service is stuck in deactivating
+sudo systemctl kill <service> && sudo systemctl start <service>
+```
+
+### Application Logs
+
+All services log to `/var/log/trading-tools/`. Logs are **not** in journald — use `tail`/`grep` on the log files directly.
+
+| Service | Log file |
+|---------|----------|
+| `tick-collector` | `/var/log/trading-tools/tick-collector.log` |
+| `whale-monitor` | `/var/log/trading-tools/whale-monitor.log` |
+| `trading-bot-paper` | `/var/log/trading-tools/trading-bot-paper.log` |
+| `trading-bot-live` | `/var/log/trading-tools/trading-bot-live.log` |
+| `spread-capture-paper` | `/var/log/trading-tools/spread-capture-paper.log` |
+| `spread-capture-live` | `/var/log/trading-tools/spread-capture-live.log` |
+| `directional-paper` | `/var/log/trading-tools/directional-paper.log` |
+
+```bash
+# Follow a log
+sudo tail -f /var/log/trading-tools/spread-capture-paper.log
+
+# Filter out noisy third-party debug output
+sudo grep -v 'Encoding\|Decoded\|Decoding\|Adding.*header table\|Encoded header\|Resizing header' \
+  /var/log/trading-tools/spread-capture-paper.log | tail -50
+```
+
+**Log rotation:** configured via `/etc/logrotate.d/trading-tools` — daily rotation, 7 days retained, compressed.
+
 See [Getting Started](GETTING_STARTED.md) for local development setup.
 
 ## Testing Strategy
@@ -294,11 +403,12 @@ Tests mirror the source structure:
 tests/
 ├── apps/
 │   ├── backtester/
+│   ├── bot_framework/
 │   ├── polymarket/
 │   ├── polymarket_bot/
 │   ├── tick_collector/
 │   ├── whale_monitor/
-│   └── whale_copy_trader/
+│   └── spread_capture/
 ├── clients/
 │   ├── revolut_x/
 │   ├── polymarket/

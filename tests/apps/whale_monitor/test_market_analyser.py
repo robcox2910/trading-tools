@@ -83,7 +83,7 @@ class TestAnalyseMarkets:
         expected_up_volume = 100.0 * 0.60 + 50.0 * 0.70
         assert row["up_volume"] == expected_up_volume
         assert row["down_volume"] == 0.0
-        assert row["up_size"] == 150.0  # noqa: PLR2004
+        assert row["up_size"] == 150.0
         assert row["down_size"] == 0.0
         assert row["trade_count"] == _MIN_TRADES_2
         assert row["favoured_side"] == "Up"

@@ -10,7 +10,6 @@ Also provides ``get_onchain_usdc_balance()`` for querying the proxy
 wallet's on-chain USDC.e balance via a Polygon RPC endpoint.
 """
 
-import logging
 from typing import Any, cast
 
 from eth_account import Account  # type: ignore[import-untyped]
@@ -28,10 +27,9 @@ from py_clob_client.clob_types import (  # type: ignore[import-untyped]
 from py_clob_client.exceptions import PolyApiException  # type: ignore[import-untyped]
 from web3 import Web3
 
+from trading_tools.clients._http_status import HTTP_INTERNAL_ERROR, HTTP_NOT_FOUND
+from trading_tools.clients.polymarket._constants import USDC_E_ADDRESS
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
-
-_HTTP_INTERNAL_ERROR = 500
-_USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
 # Minimal ERC-20 ABI for balanceOf
 _ERC20_BALANCE_ABI: list[dict[str, Any]] = [
@@ -43,10 +41,7 @@ _ERC20_BALANCE_ABI: list[dict[str, Any]] = [
         "outputs": [{"name": "", "type": "uint256"}],
     },
 ]
-_HTTP_NOT_FOUND = 404
 _POLYGON_PROXY_WALLET = 1
-
-_logger = logging.getLogger(__name__)
 
 
 def _safe_clob_call(
@@ -81,17 +76,16 @@ def _safe_clob_call(
     try:
         return fn(*args)
     except PolyApiException as exc:
-        if allow_404 and getattr(exc, "status_code", None) == _HTTP_NOT_FOUND:
-            _logger.debug("404 for %s, returning None", action)
+        if allow_404 and getattr(exc, "status_code", None) == HTTP_NOT_FOUND:
             return None
         raise PolymarketAPIError(
             msg=f"Failed to {action}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
+            status_code=HTTP_INTERNAL_ERROR,
         ) from exc
-    except Exception as exc:
+    except (KeyError, ValueError, TypeError, OSError) as exc:
         raise PolymarketAPIError(
             msg=f"Failed to {action}: {exc}",
-            status_code=_HTTP_INTERNAL_ERROR,
+            status_code=HTTP_INTERNAL_ERROR,
         ) from exc
 
 
@@ -139,13 +133,14 @@ def _normalize_order_book(raw: Any) -> dict[str, Any]:
     """Normalize an order book response to a plain dict.
 
     The CLOB client may return an ``OrderBookSummary`` dataclass or a plain
-    dict depending on the version. Normalize to ``{"bids": [...], "asks": [...]}``.
+    dict depending on the version.  Normalize to a plain dict, preserving
+    ``min_order_size`` when present in the response.
 
     Args:
         raw: Raw response from the CLOB client's ``get_order_book()``.
 
     Returns:
-        Dictionary with ``bids`` and ``asks`` lists of price/size dicts.
+        Dictionary with ``bids``, ``asks``, and optionally ``min_order_size``.
 
     """
     if isinstance(raw, dict):
@@ -154,7 +149,11 @@ def _normalize_order_book(raw: Any) -> dict[str, Any]:
     ask_levels: list[Any] = getattr(raw, "asks", [])
     bids: list[dict[str, str]] = [{"price": str(b.price), "size": str(b.size)} for b in bid_levels]
     asks: list[dict[str, str]] = [{"price": str(a.price), "size": str(a.size)} for a in ask_levels]
-    return {"bids": bids, "asks": asks}
+    result: dict[str, Any] = {"bids": bids, "asks": asks}
+    min_order_size = getattr(raw, "min_order_size", None)
+    if min_order_size is not None:
+        result["min_order_size"] = str(min_order_size)
+    return result
 
 
 def fetch_price(client: Any, token_id: str, side: str) -> str | None:
@@ -565,21 +564,21 @@ def get_onchain_usdc_balance(rpc_url: str, wallet_address: str) -> int:
     if not w3.is_connected():
         raise PolymarketAPIError(
             msg=f"Cannot connect to Polygon RPC at {rpc_url}",
-            status_code=0,
+            status_code=None,
         )
 
     usdc = w3.eth.contract(
-        address=Web3.to_checksum_address(_USDC_E_ADDRESS),
+        address=Web3.to_checksum_address(USDC_E_ADDRESS),
         abi=_ERC20_BALANCE_ABI,
     )
     try:
         balance: int = usdc.functions.balanceOf(
             Web3.to_checksum_address(wallet_address),
         ).call()
-    except Exception as exc:
+    except (KeyError, ValueError, TypeError, OSError) as exc:
         raise PolymarketAPIError(
             msg=f"Failed to query on-chain USDC.e balance: {exc}",
-            status_code=0,
+            status_code=None,
         ) from exc
 
     return balance

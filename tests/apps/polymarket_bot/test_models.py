@@ -1,6 +1,7 @@
 """Tests for Polymarket bot data models."""
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -28,7 +29,7 @@ def _empty_order_book() -> OrderBook:
     return OrderBook(token_id="tok1", bids=(), asks=(), spread=ZERO, midpoint=ZERO)
 
 
-def _snapshot(**kwargs: object) -> MarketSnapshot:
+def _snapshot(**kwargs: Any) -> MarketSnapshot:
     """Create a MarketSnapshot with sensible defaults.
 
     Args:
@@ -38,7 +39,7 @@ def _snapshot(**kwargs: object) -> MarketSnapshot:
         MarketSnapshot instance.
 
     """
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "condition_id": _CONDITION_ID,
         "question": _QUESTION,
         "timestamp": _TIMESTAMP,
@@ -50,7 +51,7 @@ def _snapshot(**kwargs: object) -> MarketSnapshot:
         "end_date": _END_DATE,
     }
     defaults.update(kwargs)
-    return MarketSnapshot(**defaults)  # type: ignore[arg-type]
+    return MarketSnapshot(**defaults)
 
 
 class TestMarketSnapshot:
@@ -106,12 +107,12 @@ class TestBotConfig:
     def test_defaults(self) -> None:
         """Test that BotConfig has sensible defaults."""
         config = BotConfig()
-        assert config.order_book_refresh_seconds == 30  # noqa: PLR2004
-        assert config.balance_refresh_seconds == 60  # noqa: PLR2004
+        assert config.order_book_refresh_seconds == 30
+        assert config.balance_refresh_seconds == 60
         assert config.initial_capital == Decimal(1000)
         assert config.max_position_pct == Decimal("0.1")
         assert config.kelly_fraction == Decimal("0.25")
-        assert config.max_history == 500  # noqa: PLR2004
+        assert config.max_history == 500
         assert config.markets == ()
         assert config.series_slugs == ()
 
@@ -138,16 +139,16 @@ class TestBotConfig:
             initial_capital=Decimal(5000),
             markets=("cond1", "cond2"),
         )
-        assert config.order_book_refresh_seconds == 15  # noqa: PLR2004
+        assert config.order_book_refresh_seconds == 15
         assert config.initial_capital == Decimal(5000)
-        assert len(config.markets) == 2  # noqa: PLR2004
+        assert len(config.markets) == 2
 
     def test_series_slugs(self) -> None:
         """Test that series_slugs can be set for market rotation."""
         config = BotConfig(
             series_slugs=("btc-updown-5m", "eth-updown-5m"),
         )
-        assert len(config.series_slugs) == 2  # noqa: PLR2004
+        assert len(config.series_slugs) == 2
         assert config.series_slugs[0] == "btc-updown-5m"
 
 

@@ -117,7 +117,7 @@ class TestOpenPosition:
             reason="market B",
             edge=Decimal("0.03"),
         )
-        assert len(portfolio.positions) == 2  # noqa: PLR2004
+        assert len(portfolio.positions) == 2
         # 1000 - 25 - 15 = 960
         assert portfolio.capital == Decimal(960)
 

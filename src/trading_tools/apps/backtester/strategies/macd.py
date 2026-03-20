@@ -41,7 +41,7 @@ Params:
 
 from decimal import Decimal
 
-from trading_tools.apps.backtester.indicators import ema_from_values
+from trading_tools.apps.backtester.indicators import detect_crossover, ema_from_values
 from trading_tools.core.models import ONE, TWO, Candle, Side, Signal
 
 
@@ -116,7 +116,8 @@ class MacdStrategy:
         self._candle_count = all_count
         self._seeded = True
 
-        if prev_macd <= prev_signal and curr_macd > curr_signal:
+        cross = detect_crossover(prev_macd, curr_macd, prev_signal, curr_signal)
+        if cross == 1:
             return Signal(
                 side=Side.BUY,
                 symbol=candle.symbol,
@@ -126,7 +127,7 @@ class MacdStrategy:
                     f"crossed above signal({self._signal_period})"
                 ),
             )
-        if prev_macd >= prev_signal and curr_macd < curr_signal:
+        if cross == -1:
             return Signal(
                 side=Side.SELL,
                 symbol=candle.symbol,
