@@ -508,6 +508,10 @@ async def _replay_window(
     if signal is not None:
         replay_md.set_whale_signal(meta.condition_id, signal)
 
+    # Register BTC candles for non-BTC assets (leader momentum feature)
+    if meta.asset != "BTC-USD" and "BTC-USD" in candles:
+        replay_md.set_candles("BTC-USD", candles["BTC-USD"])
+
     execution = BacktestExecution(capital=config.capital)
     estimator = ProbabilityEstimator.for_slug(config, meta.series_slug)
 

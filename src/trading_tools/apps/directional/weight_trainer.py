@@ -44,6 +44,7 @@ FEATURE_NAMES: tuple[str, ...] = (
     "rsi_signal",
     "price_change_pct",
     "whale_signal",
+    "leader_momentum",
 )
 
 WEIGHT_NAMES: tuple[str, ...] = (
@@ -54,6 +55,7 @@ WEIGHT_NAMES: tuple[str, ...] = (
     "w_rsi",
     "w_price_change",
     "w_whale",
+    "w_leader_momentum",
 )
 
 _DEFAULT_WEIGHTS: tuple[Decimal, ...] = (
@@ -64,7 +66,10 @@ _DEFAULT_WEIGHTS: tuple[Decimal, ...] = (
     Decimal("0.05"),
     Decimal("0.10"),
     Decimal("0.50"),
+    Decimal("0.0"),
 )
+
+_LEADER_ASSET = "BTC-USD"
 
 _DEFAULT_BIAS = Decimal("0.0")
 
@@ -235,11 +240,23 @@ def build_training_dataset(
         if whale_cache is not None:
             whale_direction = whale_cache.get_signal(meta.condition_id, before_ts=entry_eval_ts)
 
+        # Leader (BTC) candles for cross-asset momentum — None for BTC itself
+        leader_candles_for_window: list[Candle] | None = None
+        if meta.asset != _LEADER_ASSET:
+            btc_candles = candles_by_asset.get(_LEADER_ASSET, [])
+            if btc_candles:
+                leader_candles_for_window = [
+                    c
+                    for c in btc_candles
+                    if lookback_start <= c.timestamp <= meta.window_end_ts  # type: ignore[union-attr]
+                ]
+
         features = extract_features(
             lookback_candles,
             up_book,
             down_book,
             whale_direction=whale_direction,
+            leader_candles=leader_candles_for_window,
         )
 
         rows.append(_feature_vector_to_array(features))

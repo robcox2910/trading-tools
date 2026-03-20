@@ -75,6 +75,10 @@ class FeatureVector:
         whale_signal: Whale net directional positioning.  ``1`` = whales
             heavily buying Up, ``-1`` = heavily buying Down, ``0`` = no
             whale activity or balanced.
+        leader_momentum: BTC price momentum over the last 60 seconds,
+            normalised to ``[-1, 1]``.  Captures the "BTC leads altcoins"
+            effect.  Set to ``0`` for BTC markets to avoid double-counting
+            with the momentum feature.
 
     """
 
@@ -85,6 +89,7 @@ class FeatureVector:
     rsi_signal: Decimal
     price_change_pct: Decimal
     whale_signal: Decimal = Decimal(0)
+    leader_momentum: Decimal = Decimal(0)
 
 
 @dataclass
@@ -203,6 +208,7 @@ class DirectionalResultRecord(DirectionalBase):
         f_book_imbalance: Book imbalance feature value at entry.
         f_rsi: RSI signal feature value at entry.
         f_price_change: Price change feature value at entry.
+        f_leader_momentum: Leader (BTC) momentum feature value at entry.
 
     """
 
@@ -233,6 +239,7 @@ class DirectionalResultRecord(DirectionalBase):
     f_rsi: Mapped[float] = mapped_column(Float)
     f_price_change: Mapped[float] = mapped_column(Float)
     f_whale: Mapped[float] = mapped_column(Float, default=0.0)
+    f_leader_momentum: Mapped[float] = mapped_column(Float, default=0.0)
 
     __table_args__ = (
         Index("ix_directional_condition_settled", "condition_id", "settled_at"),
@@ -281,4 +288,5 @@ class DirectionalResultRecord(DirectionalBase):
             f_rsi=float(feat.rsi_signal),
             f_price_change=float(feat.price_change_pct),
             f_whale=float(feat.whale_signal),
+            f_leader_momentum=float(feat.leader_momentum),
         )

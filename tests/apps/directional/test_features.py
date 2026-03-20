@@ -6,6 +6,7 @@ import pytest
 
 from trading_tools.apps.directional.features import (
     compute_book_imbalance,
+    compute_leader_momentum,
     compute_momentum,
     compute_price_change,
     compute_rsi_signal,
@@ -310,6 +311,54 @@ class TestComputeWhaleSignal:
         assert compute_whale_signal(None) == ZERO
 
 
+class TestComputeLeaderMomentum:
+    """Test leader (BTC) momentum feature extraction."""
+
+    def test_rising_btc_returns_positive(self) -> None:
+        """Rising BTC price produces positive leader momentum."""
+        candles = _make_rising_candles(5)
+        result = compute_leader_momentum(candles)
+        assert result > ZERO
+
+    def test_falling_btc_returns_negative(self) -> None:
+        """Falling BTC price produces negative leader momentum."""
+        candles = _make_falling_candles(5)
+        result = compute_leader_momentum(candles)
+        assert result < ZERO
+
+    def test_none_returns_zero(self) -> None:
+        """None leader candles return 0 (e.g. for BTC itself)."""
+        assert compute_leader_momentum(None) == ZERO
+
+    def test_empty_returns_zero(self) -> None:
+        """Empty candle list returns 0."""
+        assert compute_leader_momentum([]) == ZERO
+
+    def test_single_candle_returns_zero(self) -> None:
+        """Single candle is not enough for a change signal."""
+        candles = [_make_candle(_BASE_TS, _BASE_PRICE, _BASE_PRICE + Decimal(1))]
+        assert compute_leader_momentum(candles) == ZERO
+
+    def test_result_in_range(self) -> None:
+        """Leader momentum is always in [-1, 1]."""
+        candles = _make_rising_candles(10)
+        result = compute_leader_momentum(candles)
+        assert Decimal(-1) <= result <= Decimal(1)
+
+    def test_lookback_window_respected(self) -> None:
+        """Only candles within lookback_seconds are used."""
+        # 5 candles 60s apart — with lookback=60, only last 2 should be used
+        candles: list[Candle] = []
+        for i in range(5):
+            ts = _BASE_TS + i * 60
+            candles.append(_make_candle(ts, _BASE_PRICE, _BASE_PRICE + Decimal(i)))
+        result_short = compute_leader_momentum(candles, lookback_seconds=60)
+        result_long = compute_leader_momentum(candles, lookback_seconds=300)
+        # Both should be valid, but may differ
+        assert Decimal(-1) <= result_short <= Decimal(1)
+        assert Decimal(-1) <= result_long <= Decimal(1)
+
+
 class TestExtractFeatures:
     """Test the feature extraction orchestrator."""
 
@@ -326,13 +375,17 @@ class TestExtractFeatures:
         assert isinstance(result.rsi_signal, Decimal)
         assert isinstance(result.price_change_pct, Decimal)
         assert isinstance(result.whale_signal, Decimal)
+        assert isinstance(result.leader_momentum, Decimal)
 
     def test_all_features_in_range(self) -> None:
         """All features are in [-1, 1]."""
         candles = _make_rising_candles(20)
         up_book = _make_order_book("up", [Decimal(100)], [Decimal(50)])
         down_book = _make_order_book("down", [Decimal(50)], [Decimal(50)])
-        result = extract_features(candles, up_book, down_book, whale_direction="Up")
+        leader_candles = _make_rising_candles(5)
+        result = extract_features(
+            candles, up_book, down_book, whale_direction="Up", leader_candles=leader_candles
+        )
         for field_name in (
             "momentum",
             "volatility_regime",
@@ -341,6 +394,15 @@ class TestExtractFeatures:
             "rsi_signal",
             "price_change_pct",
             "whale_signal",
+            "leader_momentum",
         ):
             val = getattr(result, field_name)
             assert -1 <= val <= 1, f"{field_name}={val} out of range"
+
+    def test_leader_candles_none_gives_zero(self) -> None:
+        """Without leader candles, leader_momentum is 0."""
+        candles = _make_rising_candles(20)
+        up_book = _make_order_book("up", [Decimal(100)], [Decimal(50)])
+        down_book = _make_order_book("down", [Decimal(50)], [Decimal(50)])
+        result = extract_features(candles, up_book, down_book)
+        assert result.leader_momentum == ZERO

@@ -226,6 +226,49 @@ def compute_price_change(candles: Sequence[Candle]) -> Decimal:
     return _clamp(scaled)
 
 
+def compute_leader_momentum(
+    leader_candles: Sequence[Candle] | None,
+    lookback_seconds: int = 60,
+) -> Decimal:
+    """Compute the leader asset's (BTC) recent price change as a signal.
+
+    Measure BTC's price change over the last ``lookback_seconds`` to
+    capture the "BTC leads altcoins by seconds" effect.  Normalise to
+    ``[-1, 1]`` using the same scaling as ``compute_price_change`` (1%
+    move -> ~0.5).
+
+    Return ``0`` when *leader_candles* is ``None`` or empty (e.g. for
+    BTC itself where this feature would double-count momentum).
+
+    Args:
+        leader_candles: Recent 1-min candles for the leader asset (BTC),
+            ordered oldest to newest.  ``None`` disables the feature.
+        lookback_seconds: Seconds of history to consider (default 60).
+
+    Returns:
+        Leader momentum signal in ``[-1, 1]``.
+
+    """
+    if not leader_candles:
+        return ZERO
+
+    # Use only candles within the lookback window from the most recent
+    latest_ts = leader_candles[-1].timestamp
+    cutoff = latest_ts - lookback_seconds
+    recent = [c for c in leader_candles if c.timestamp >= cutoff]
+    if len(recent) < 2:  # noqa: PLR2004 — need at least 2 candles for a change
+        return ZERO
+
+    first_close = recent[0].close
+    last_close = recent[-1].close
+    if first_close == ZERO:
+        return ZERO
+
+    pct_change = (last_close - first_close) / first_close * HUNDRED
+    scaled = pct_change * _FIFTY / HUNDRED
+    return _clamp(scaled)
+
+
 def compute_whale_signal(whale_direction: str | None) -> Decimal:
     """Convert a whale directional signal to a normalised feature value.
 
@@ -256,6 +299,7 @@ def extract_features(
     rsi_period: int = 14,
     volume_recent_bars: int = 5,
     whale_direction: str | None = None,
+    leader_candles: Sequence[Candle] | None = None,
 ) -> FeatureVector:
     """Extract all features from market data and return a ``FeatureVector``.
 
@@ -272,9 +316,11 @@ def extract_features(
         volume_recent_bars: Recent bars for volume profile.
         whale_direction: Whale net positioning (``"Up"``, ``"Down"``,
             or ``None``).
+        leader_candles: Recent BTC 1-min candles for leader momentum.
+            Pass ``None`` for BTC itself to avoid double-counting.
 
     Returns:
-        A ``FeatureVector`` with all seven features populated.
+        A ``FeatureVector`` with all eight features populated.
 
     """
     return FeatureVector(
@@ -285,4 +331,5 @@ def extract_features(
         rsi_signal=compute_rsi_signal(candles, period=rsi_period),
         price_change_pct=compute_price_change(candles),
         whale_signal=compute_whale_signal(whale_direction),
+        leader_momentum=compute_leader_momentum(leader_candles),
     )
