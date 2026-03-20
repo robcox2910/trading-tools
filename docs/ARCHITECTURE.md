@@ -107,7 +107,8 @@ trading-tools/
 │   │   └── providers/               # Pluggable candle data sources
 │   │       ├── csv_provider.py      # Offline CSV candle provider
 │   │       ├── revolut_x.py         # Revolut X API candle provider
-│   │       └── binance.py           # Binance API candle provider
+│   │       ├── binance.py           # Binance API candle provider
+│   │       └── order_book_feed.py   # WebSocket order book cache (Polymarket)
 │   └── config/                      # Configuration files (YAML)
 │       ├── settings.yaml            # Base configuration (committed)
 │       └── settings.local.yaml      # Local overrides (gitignored)
@@ -203,6 +204,7 @@ Data providers implement the `CandleProvider` protocol for pluggable data source
 | `csv_provider.py` | Local CSV files | No |
 | `revolut_x.py` | Revolut X API | Yes |
 | `binance.py` | Binance API | No |
+| `order_book_feed.py` | Polymarket WebSocket | No |
 
 ### `/config` — Configuration Files
 

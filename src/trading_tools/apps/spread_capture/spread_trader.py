@@ -33,6 +33,7 @@ from trading_tools.clients.binance.exceptions import BinanceError
 from trading_tools.clients.polymarket.models import OrderBook
 from trading_tools.core.models import ONE, ZERO, Interval, Side
 from trading_tools.data.providers.binance import BinanceCandleProvider
+from trading_tools.data.providers.order_book_feed import OrderBookFeed
 
 from .market_scanner import MarketScanner
 from .models import (
@@ -43,7 +44,6 @@ from .models import (
     SpreadResult,
     SpreadResultRecord,
 )
-from .order_book_feed import OrderBookFeed
 
 if TYPE_CHECKING:
     from trading_tools.clients.polymarket.client import PolymarketClient

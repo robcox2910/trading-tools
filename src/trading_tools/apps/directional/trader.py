@@ -18,6 +18,7 @@ from trading_tools.apps.bot_framework.shutdown import GracefulShutdown
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.core.models import ZERO
 from trading_tools.data.providers.binance import BinanceCandleProvider
+from trading_tools.data.providers.order_book_feed import OrderBookFeed
 
 from .adapters import PaperExecution
 from .engine import DirectionalEngine
@@ -64,6 +65,7 @@ class DirectionalTrader:
     _summary_due: float = field(default=0.0, init=False, repr=False)
     _binance: BinanceClient | None = field(default=None, init=False, repr=False)
     _candle_provider: BinanceCandleProvider | None = field(default=None, init=False, repr=False)
+    _book_feed: OrderBookFeed | None = field(default=None, init=False, repr=False)
     _repo: DirectionalResultRepository | None = field(default=None, init=False, repr=False)
     _whale_repo: WhaleRepository | None = field(default=None, init=False, repr=False)
 
@@ -75,6 +77,8 @@ class DirectionalTrader:
         """
         self._binance = BinanceClient()
         self._candle_provider = BinanceCandleProvider(self._binance)
+        self._book_feed = OrderBookFeed()
+        await self._book_feed.start([])
         self._shutdown.install()
 
         engine = self._create_engine()
@@ -115,6 +119,8 @@ class DirectionalTrader:
             pass
         finally:
             self._log_summary()
+            if self._book_feed is not None:  # pyright: ignore[reportUnnecessaryComparison]
+                await self._book_feed.stop()
             if self._binance is not None:  # pyright: ignore[reportUnnecessaryComparison]
                 await self._binance.close()
 
@@ -141,6 +147,7 @@ class DirectionalTrader:
             candle_provider=self._candle_provider,
             series_slugs=self.config.series_slugs,
             whale_repo=self._whale_repo,
+            book_feed=self._book_feed,
         )
 
         estimator = ProbabilityEstimator(self.config)

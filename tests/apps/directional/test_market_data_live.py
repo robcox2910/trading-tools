@@ -72,6 +72,7 @@ class TestLiveMarketData:
         adapter = LiveMarketData.__new__(LiveMarketData)
         adapter._client = client
         adapter._candle_provider = candle_provider
+        adapter._book_feed = None
 
         scanner = AsyncMock()
         scanner.scan_per_side = AsyncMock(return_value=[_make_spread_opp()])
@@ -92,6 +93,7 @@ class TestLiveMarketData:
 
         adapter = LiveMarketData.__new__(LiveMarketData)
         adapter._client = client
+        adapter._book_feed = None
 
         result = await adapter.get_order_books("up_tok", "down_tok")
         assert result == (up_book, down_book)

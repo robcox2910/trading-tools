@@ -4,6 +4,10 @@ Compose ``MarketScanner``, ``PolymarketClient``, and
 ``BinanceCandleProvider`` to provide real-time market data through the
 ``MarketDataPort`` protocol.  Discover active Up/Down markets, fetch
 order books, load Binance candles, and resolve market outcomes.
+
+When an ``OrderBookFeed`` is provided, order book reads use the
+WebSocket cache first and fall back to REST only when the cache is
+stale or missing.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ if TYPE_CHECKING:
     from trading_tools.clients.polymarket.models import OrderBook
     from trading_tools.core.models import Candle
     from trading_tools.data.providers.binance import BinanceCandleProvider
+    from trading_tools.data.providers.order_book_feed import OrderBookFeed
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +43,17 @@ class LiveMarketData:
     (for order books and outcome resolution), and ``BinanceCandleProvider``
     (for 1-min candle data) into a single ``MarketDataPort`` implementation.
 
+    When ``book_feed`` is supplied, ``get_order_books`` reads from the
+    WebSocket cache first and only falls back to REST when the cached
+    book is stale or missing.  ``get_active_markets`` eagerly syncs
+    discovered token IDs into the feed's subscription.
+
     Args:
         client: Authenticated Polymarket client.
         candle_provider: Binance candle provider for historical data.
         series_slugs: Event series slugs to scan for markets.
+        whale_repo: Optional whale trade repository for signal queries.
+        book_feed: Optional WebSocket order book feed for low-latency reads.
 
     """
 
@@ -51,6 +63,7 @@ class LiveMarketData:
         candle_provider: BinanceCandleProvider,
         series_slugs: tuple[str, ...] = ("btc-updown-5m", "eth-updown-5m"),
         whale_repo: WhaleRepository | None = None,
+        book_feed: OrderBookFeed | None = None,
     ) -> None:
         """Initialize with API clients and create the market scanner.
 
@@ -59,11 +72,13 @@ class LiveMarketData:
             candle_provider: Binance candle provider for fetching candles.
             series_slugs: Series slugs to scan for active markets.
             whale_repo: Optional whale trade repository for signal queries.
+            book_feed: Optional WebSocket order book feed for low-latency reads.
 
         """
         self._client = client
         self._candle_provider = candle_provider
         self._whale_repo = whale_repo
+        self._book_feed = book_feed
         self._scanner = MarketScanner(
             client=client,
             series_slugs=series_slugs,
@@ -84,6 +99,10 @@ class LiveMarketData:
         get all active markets (no spread filtering — we want every market).
         Convert ``SpreadOpportunity`` objects to ``MarketOpportunity``.
 
+        After discovery, eagerly sync discovered token IDs into the
+        ``OrderBookFeed`` subscription so WebSocket data is available
+        by the next poll cycle.
+
         Args:
             open_cids: Condition IDs of currently open positions.
 
@@ -92,7 +111,7 @@ class LiveMarketData:
 
         """
         opportunities = await self._scanner.scan_per_side(open_cids, _PER_SIDE_THRESHOLD)
-        return [
+        markets = [
             MarketOpportunity(
                 condition_id=opp.condition_id,
                 title=opp.title,
@@ -110,12 +129,43 @@ class LiveMarketData:
             for opp in opportunities
         ]
 
+        await self._sync_book_feed(markets)
+        return markets
+
+    async def _sync_book_feed(
+        self,
+        markets: list[MarketOpportunity],
+    ) -> None:
+        """Update the book feed subscription with all discovered token IDs.
+
+        Args:
+            markets: Currently discovered market opportunities.
+
+        """
+        if self._book_feed is None:
+            return
+
+        token_ids: list[str] = []
+        seen: set[str] = set()
+        for m in markets:
+            for tid in (m.up_token_id, m.down_token_id):
+                if tid not in seen:
+                    seen.add(tid)
+                    token_ids.append(tid)
+
+        if sorted(token_ids) != sorted(self._book_feed.subscribed_tokens):
+            await self._book_feed.update_subscription(token_ids)
+
     async def get_order_books(
         self,
         up_token_id: str,
         down_token_id: str,
     ) -> tuple[OrderBook, OrderBook]:
         """Fetch live order books for both sides of a market.
+
+        When a ``book_feed`` is available, read from the WebSocket cache
+        first.  Fall back to REST for any token whose cached book is
+        stale or missing.
 
         Args:
             up_token_id: CLOB token ID for the Up outcome.
@@ -125,9 +175,25 @@ class LiveMarketData:
             Tuple of ``(up_book, down_book)``.
 
         """
-        up_book = await self._client.get_order_book(up_token_id)
-        down_book = await self._client.get_order_book(down_token_id)
+        up_book = await self._get_single_book(up_token_id)
+        down_book = await self._get_single_book(down_token_id)
         return up_book, down_book
+
+    async def _get_single_book(self, token_id: str) -> OrderBook:
+        """Return an order book, preferring the WS cache over REST.
+
+        Args:
+            token_id: CLOB token identifier.
+
+        Returns:
+            The order book from WebSocket cache or REST fallback.
+
+        """
+        if self._book_feed is not None and not self._book_feed.is_stale(token_id):
+            book = self._book_feed.get_book(token_id)
+            if book is not None:
+                return book
+        return await self._client.get_order_book(token_id)
 
     async def get_binance_candles(
         self,
