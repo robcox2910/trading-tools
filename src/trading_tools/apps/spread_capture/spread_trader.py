@@ -1305,6 +1305,55 @@ class SpreadTrader:
             return None
         return max(level.price for level in book.bids)
 
+    async def _record_expired_loss(
+        self, cid: str, pos: PairedPosition, *, up_still_open: bool, now: int
+    ) -> None:
+        """Record a loss when a pending position expires with one side filled.
+
+        Args:
+            cid: Condition ID.
+            pos: The expired position.
+            up_still_open: Whether the Up order was still open (unfilled).
+            now: Current epoch seconds.
+
+        """
+        down_still_open = not up_still_open or (
+            pos.pending_down_order_id is not None and up_still_open
+        )
+        one_filled = up_still_open != down_still_open
+        if not one_filled:
+            logger.info("LIVE CANCELLED %s: market expired, no fills", cid[:12])
+            return
+
+        filled_side = "Down" if up_still_open else "Up"
+        filled_leg = pos.down_leg if up_still_open else pos.up_leg
+        cost = filled_leg.cost_basis if filled_leg else ZERO
+        result = SpreadResult(
+            opportunity=pos.opportunity,
+            state=PositionState.SETTLED,
+            up_entry=pos.up_leg.entry_price,
+            up_qty=pos.up_leg.quantity,
+            down_entry=pos.down_leg.entry_price if pos.down_leg else None,
+            down_qty=pos.down_leg.quantity if pos.down_leg else None,
+            total_cost_basis=cost,
+            entry_time=pos.entry_time,
+            exit_time=now,
+            winning_side=None,
+            pnl=ZERO - cost,
+            is_paper=pos.is_paper,
+            outcome_known=False,
+        )
+        self._results.append(result)
+        await self._persist_result(result)
+        self._record_loss()
+        logger.info(
+            "LIVE EXPIRED-LOSS %s %s filled, cost=$%.4f asset=%s",
+            cid[:12],
+            filled_side,
+            cost,
+            pos.opportunity.asset,
+        )
+
     async def _manage_pending_orders(self) -> None:
         """Check fill status of pending GTC limit orders and transition states.
 
@@ -1359,11 +1408,8 @@ class SpreadTrader:
                 await self._cancel_pending_orders(
                     pos, up_open=up_still_open, down_open=down_still_open
                 )
+                await self._record_expired_loss(cid, pos, up_still_open=up_still_open, now=now)
                 del self._positions[cid]
-                logger.info(
-                    "LIVE CANCELLED %s: market expired while pending",
-                    cid[:12],
-                )
                 continue
 
             # Both filled — transition to PAIRED
