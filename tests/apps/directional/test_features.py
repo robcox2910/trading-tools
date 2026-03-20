@@ -13,6 +13,7 @@ from trading_tools.apps.directional.features import (
     compute_tick_imbalance,
     compute_tick_price_velocity,
     compute_tick_volume_accel,
+    compute_time_of_day,
     compute_volatility_regime,
     compute_volume_profile,
     compute_whale_signal,
@@ -363,6 +364,44 @@ class TestComputeLeaderMomentum:
         assert Decimal(-1) <= result_long <= Decimal(1)
 
 
+class TestComputeTimeOfDay:
+    """Test cyclic time-of-day encoding."""
+
+    def test_midnight_and_24h_are_equal(self) -> None:
+        """0h and 24h produce the same encoding (no discontinuity)."""
+        midnight = 0
+        next_midnight = 24 * 3600
+        sin_0, cos_0 = compute_time_of_day(midnight)
+        sin_24, cos_24 = compute_time_of_day(next_midnight)
+        assert sin_0 == sin_24
+        assert cos_0 == cos_24
+
+    def test_noon_vs_midnight(self) -> None:
+        """Noon and midnight produce different encodings."""
+        midnight = 0
+        noon = 12 * 3600
+        sin_m, cos_m = compute_time_of_day(midnight)
+        sin_n, cos_n = compute_time_of_day(noon)
+        assert (sin_m, cos_m) != (sin_n, cos_n)
+
+    def test_values_in_range(self) -> None:
+        """Both components are always in [-1, 1]."""
+        for hour in range(24):
+            s, c = compute_time_of_day(hour * 3600)
+            assert Decimal(-1) <= s <= Decimal(1), f"sin at hour {hour}"
+            assert Decimal(-1) <= c <= Decimal(1), f"cos at hour {hour}"
+
+    def test_midnight_sin_is_zero(self) -> None:
+        """sin(0) = 0 at midnight UTC."""
+        s, _ = compute_time_of_day(0)
+        assert s == Decimal(0)
+
+    def test_midnight_cos_is_one(self) -> None:
+        """cos(0) = 1 at midnight UTC."""
+        _, c = compute_time_of_day(0)
+        assert c == Decimal(1)
+
+
 _TICK_BASE_MS = _BASE_TS * 1000
 
 
@@ -488,6 +527,8 @@ class TestExtractFeatures:
         assert isinstance(result.tick_imbalance, Decimal)
         assert isinstance(result.tick_price_velocity, Decimal)
         assert isinstance(result.tick_volume_accel, Decimal)
+        assert isinstance(result.tod_sin, Decimal)
+        assert isinstance(result.tod_cos, Decimal)
 
     def test_all_features_in_range(self) -> None:
         """All features are in [-1, 1]."""
@@ -503,6 +544,7 @@ class TestExtractFeatures:
             whale_direction="Up",
             leader_candles=leader_candles,
             up_ticks=up_ticks,
+            utc_epoch=_BASE_TS,
         )
         for field_name in (
             "momentum",
@@ -513,6 +555,8 @@ class TestExtractFeatures:
             "price_change_pct",
             "whale_signal",
             "leader_momentum",
+            "tod_sin",
+            "tod_cos",
             "tick_imbalance",
             "tick_price_velocity",
             "tick_volume_accel",

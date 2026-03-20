@@ -30,6 +30,8 @@ _WEIGHT_FIELD_NAMES = frozenset(
         "w_price_change",
         "w_whale",
         "w_leader_momentum",
+        "w_tod_sin",
+        "w_tod_cos",
         "w_tick_imbalance",
         "w_tick_price_velocity",
         "w_tick_volume_accel",
@@ -164,6 +166,10 @@ class DirectionalConfig:
         w_whale: Estimator weight for the whale positioning feature.
         w_leader_momentum: Estimator weight for the leader (BTC)
             momentum feature.  Default ``0.0`` — zero until trained.
+        w_tod_sin: Estimator weight for the time-of-day sine component.
+            Default ``0.0`` — zero until trained.
+        w_tod_cos: Estimator weight for the time-of-day cosine component.
+            Default ``0.0`` — zero until trained.
         w_tick_imbalance: Estimator weight for the Polymarket tick
             buy/sell imbalance feature.  Default ``0.0``.
         w_tick_price_velocity: Estimator weight for the tick price
@@ -210,6 +216,8 @@ class DirectionalConfig:
     w_price_change: Decimal = Decimal("0.10")
     w_whale: Decimal = Decimal("0.50")
     w_leader_momentum: Decimal = Decimal("0.0")
+    w_tod_sin: Decimal = Decimal("0.0")
+    w_tod_cos: Decimal = Decimal("0.0")
     w_tick_imbalance: Decimal = Decimal("0.0")
     w_tick_price_velocity: Decimal = Decimal("0.0")
     w_tick_volume_accel: Decimal = Decimal("0.0")

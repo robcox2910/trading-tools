@@ -101,6 +101,11 @@ class FeatureVector:
             normalised to ``[-1, 1]``.  Captures the "BTC leads altcoins"
             effect.  Set to ``0`` for BTC markets to avoid double-counting
             with the momentum feature.
+        tod_sin: Sine component of cyclic time-of-day encoding.
+            ``sin(2π · hour / 24)`` where hour is UTC fractional hours.
+        tod_cos: Cosine component of cyclic time-of-day encoding.
+            ``cos(2π · hour / 24)``.  Together with ``tod_sin`` these
+            encode time without a midnight discontinuity.
         tick_imbalance: Polymarket trade flow imbalance.
             ``(buy_vol - sell_vol) / total_vol`` for the Up token in the
             last 60 seconds.  Positive = net buying (bullish).
@@ -119,6 +124,8 @@ class FeatureVector:
     price_change_pct: Decimal
     whale_signal: Decimal = Decimal(0)
     leader_momentum: Decimal = Decimal(0)
+    tod_sin: Decimal = Decimal(0)
+    tod_cos: Decimal = Decimal(0)
     tick_imbalance: Decimal = Decimal(0)
     tick_price_velocity: Decimal = Decimal(0)
     tick_volume_accel: Decimal = Decimal(0)
@@ -241,6 +248,8 @@ class DirectionalResultRecord(DirectionalBase):
         f_rsi: RSI signal feature value at entry.
         f_price_change: Price change feature value at entry.
         f_leader_momentum: Leader (BTC) momentum feature value at entry.
+        f_tod_sin: Time-of-day sine component at entry.
+        f_tod_cos: Time-of-day cosine component at entry.
         f_tick_imbalance: Tick trade flow imbalance at entry.
         f_tick_price_velocity: Tick price velocity at entry.
         f_tick_volume_accel: Tick volume acceleration at entry.
@@ -275,6 +284,8 @@ class DirectionalResultRecord(DirectionalBase):
     f_price_change: Mapped[float] = mapped_column(Float)
     f_whale: Mapped[float] = mapped_column(Float, default=0.0)
     f_leader_momentum: Mapped[float] = mapped_column(Float, default=0.0)
+    f_tod_sin: Mapped[float] = mapped_column(Float, default=0.0)
+    f_tod_cos: Mapped[float] = mapped_column(Float, default=0.0)
     f_tick_imbalance: Mapped[float] = mapped_column(Float, default=0.0)
     f_tick_price_velocity: Mapped[float] = mapped_column(Float, default=0.0)
     f_tick_volume_accel: Mapped[float] = mapped_column(Float, default=0.0)
@@ -327,6 +338,8 @@ class DirectionalResultRecord(DirectionalBase):
             f_price_change=float(feat.price_change_pct),
             f_whale=float(feat.whale_signal),
             f_leader_momentum=float(feat.leader_momentum),
+            f_tod_sin=float(feat.tod_sin),
+            f_tod_cos=float(feat.tod_cos),
             f_tick_imbalance=float(feat.tick_imbalance),
             f_tick_price_velocity=float(feat.tick_price_velocity),
             f_tick_volume_accel=float(feat.tick_volume_accel),

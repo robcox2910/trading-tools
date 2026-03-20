@@ -45,6 +45,8 @@ FEATURE_NAMES: tuple[str, ...] = (
     "price_change_pct",
     "whale_signal",
     "leader_momentum",
+    "tod_sin",
+    "tod_cos",
     "tick_imbalance",
     "tick_price_velocity",
     "tick_volume_accel",
@@ -59,6 +61,8 @@ WEIGHT_NAMES: tuple[str, ...] = (
     "w_price_change",
     "w_whale",
     "w_leader_momentum",
+    "w_tod_sin",
+    "w_tod_cos",
     "w_tick_imbalance",
     "w_tick_price_velocity",
     "w_tick_volume_accel",
@@ -72,6 +76,8 @@ _DEFAULT_WEIGHTS: tuple[Decimal, ...] = (
     Decimal("0.05"),
     Decimal("0.10"),
     Decimal("0.50"),
+    Decimal("0.0"),
+    Decimal("0.0"),
     Decimal("0.0"),
     Decimal("0.0"),
     Decimal("0.0"),
@@ -313,6 +319,7 @@ def build_training_dataset(
             whale_direction=whale_direction,
             leader_candles=leader_candles_for_window,
             up_ticks=up_ticks,
+            utc_epoch=entry_eval_ts,
         )
 
         rows.append(_feature_vector_to_array(features))
