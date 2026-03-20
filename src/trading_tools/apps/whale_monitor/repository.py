@@ -162,11 +162,13 @@ class WhaleRepository:
 
     async def get_whale_signal(
         self, condition_id: str, *, before_ts: int | None = None
-    ) -> str | None:
-        """Return the whale's directional bet for a market.
+    ) -> float | None:
+        """Return a continuous whale directional signal for a market.
 
-        Query BUY trades for the given condition_id, group by outcome, and
-        return the outcome with the larger total dollar volume (size * price).
+        Query BUY trades for the given condition_id, sum dollar volume
+        (size * price) per outcome, and return a normalised ratio:
+        ``(up_vol - down_vol) / (up_vol + down_vol)``, ranging from
+        ``-1`` (all Down) to ``+1`` (all Up).
 
         Args:
             condition_id: Polymarket market condition identifier.
@@ -175,8 +177,8 @@ class WhaleRepository:
                 When ``None``, all trades are included (live behaviour).
 
         Returns:
-            ``"Up"`` or ``"Down"`` if a whale has a clear directional
-            bet, ``None`` if no whale activity.
+            Continuous signal in ``[-1, 1]``, or ``None`` if no whale
+            activity for this market.
 
         """
         filters = [
@@ -193,17 +195,19 @@ class WhaleRepository:
             )
             .where(*filters)
             .group_by(WhaleTrade.outcome)
-            .order_by(func.sum(WhaleTrade.size * WhaleTrade.price).desc())
         )
         async with self._session_factory() as session:
             result = await session.execute(stmt)
             rows = result.all()
             if not rows:
                 return None
-            top_outcome = rows[0][0]
-            if top_outcome in ("Up", "Down"):
-                return top_outcome
-            return None
+            vol_by_outcome: dict[str, float] = {row[0]: float(row[1]) for row in rows}
+            up_vol = vol_by_outcome.get("Up", 0.0)
+            down_vol = vol_by_outcome.get("Down", 0.0)
+            total = up_vol + down_vol
+            if total == 0.0:
+                return None
+            return (up_vol - down_vol) / total
 
     async def get_buy_trades_for_conditions(
         self,

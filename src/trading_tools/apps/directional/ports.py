@@ -147,15 +147,15 @@ class MarketDataPort(Protocol):
     async def get_whale_signal(
         self,
         condition_id: str,
-    ) -> str | None:
-        """Return the whale's net directional positioning for a market.
+    ) -> float | None:
+        """Return a continuous whale directional signal for a market.
 
         Args:
             condition_id: Polymarket market condition identifier.
 
         Returns:
-            ``"Up"`` or ``"Down"`` if whales have a clear directional
-            bet, ``None`` if no whale activity.
+            Signal in ``[-1, 1]`` based on whale dollar volume ratio,
+            or ``None`` if no whale activity.
 
         """
         ...  # pragma: no cover

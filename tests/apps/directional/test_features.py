@@ -303,13 +303,21 @@ class TestComputePriceChange:
 class TestComputeWhaleSignal:
     """Test whale signal conversion."""
 
-    def test_up_returns_one(self) -> None:
-        """Up whale direction returns 1."""
-        assert compute_whale_signal("Up") == Decimal(1)
+    def test_positive_signal_returns_positive(self) -> None:
+        """Positive continuous signal (80% Up volume) returns 0.6."""
+        assert compute_whale_signal(0.6) == Decimal("0.6")
 
-    def test_down_returns_negative_one(self) -> None:
-        """Down whale direction returns -1."""
-        assert compute_whale_signal("Down") == Decimal(-1)
+    def test_negative_signal_returns_negative(self) -> None:
+        """Negative continuous signal returns negative Decimal."""
+        assert compute_whale_signal(-0.8) == Decimal("-0.8")
+
+    def test_full_up_returns_one(self) -> None:
+        """100% Up volume returns 1."""
+        assert compute_whale_signal(1.0) == Decimal(1)
+
+    def test_full_down_returns_negative_one(self) -> None:
+        """100% Down volume returns -1."""
+        assert compute_whale_signal(-1.0) == Decimal(-1)
 
     def test_none_returns_zero(self) -> None:
         """No whale activity returns 0."""
@@ -541,7 +549,7 @@ class TestExtractFeatures:
             candles,
             up_book,
             down_book,
-            whale_direction="Up",
+            whale_signal=0.8,
             leader_candles=leader_candles,
             up_ticks=up_ticks,
             utc_epoch=_BASE_TS,

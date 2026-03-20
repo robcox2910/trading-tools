@@ -261,7 +261,7 @@ class ReplayMarketData:
         self._order_books: dict[str, tuple[OrderBook, OrderBook]] = {}
         self._candles: dict[str, list[Candle]] = {}
         self._outcomes: dict[str, str] = {}
-        self._whale_signals: dict[str, str] = {}
+        self._whale_signals: dict[str, float] = {}
         self._ticks: dict[str, list[TickSample]] = {}
 
     def set_markets(self, markets: list[MarketOpportunity]) -> None:
@@ -309,15 +309,15 @@ class ReplayMarketData:
         """
         self._outcomes[condition_id] = outcome
 
-    def set_whale_signal(self, condition_id: str, direction: str) -> None:
-        """Register a whale directional signal for a market.
+    def set_whale_signal(self, condition_id: str, signal: float) -> None:
+        """Register a continuous whale signal for a market.
 
         Args:
             condition_id: Market condition ID.
-            direction: ``"Up"`` or ``"Down"``.
+            signal: Continuous signal in ``[-1, 1]``.
 
         """
-        self._whale_signals[condition_id] = direction
+        self._whale_signals[condition_id] = signal
 
     def set_ticks(self, token_id: str, ticks: list[TickSample]) -> None:
         """Register tick samples for a token.
@@ -391,14 +391,14 @@ class ReplayMarketData:
     async def get_whale_signal(
         self,
         condition_id: str,
-    ) -> str | None:
+    ) -> float | None:
         """Return pre-loaded whale signal for a market.
 
         Args:
             condition_id: Market condition ID.
 
         Returns:
-            ``"Up"`` or ``"Down"`` if registered, ``None`` otherwise.
+            Continuous signal in ``[-1, 1]``, or ``None`` if not registered.
 
         """
         return self._whale_signals.get(condition_id)

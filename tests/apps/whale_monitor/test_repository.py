@@ -225,8 +225,8 @@ class TestWhaleRepository:
         assert count == 0
 
     @pytest.mark.asyncio
-    async def test_whale_signal_returns_favoured_side(self, repo: WhaleRepository) -> None:
-        """Return the outcome with the larger BUY dollar volume."""
+    async def test_whale_signal_returns_continuous_ratio(self, repo: WhaleRepository) -> None:
+        """Return continuous (up_vol - down_vol) / total_vol ratio."""
         trades = [
             _make_trade(transaction_hash="tx_up1", outcome="Up", size=100, price=0.50),
             _make_trade(transaction_hash="tx_up2", outcome="Up", size=50, price=0.55),
@@ -234,7 +234,10 @@ class TestWhaleRepository:
         ]
         await repo.save_trades(trades)
         result = await repo.get_whale_signal(_CONDITION_A)
-        assert result == "Up"
+        assert result is not None
+        # Up vol = 50 + 27.5 = 77.5, Down vol = 13.5, ratio = (77.5-13.5)/91 ≈ 0.70
+        assert result > 0
+        assert result < 1.0
 
     @pytest.mark.asyncio
     async def test_whale_signal_none_when_no_trades(self, repo: WhaleRepository) -> None:

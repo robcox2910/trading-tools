@@ -290,10 +290,10 @@ def build_training_dataset(
             else make_default_book(meta.down_token_id)
         )
 
-        # Whale signal
-        whale_direction: str | None = None
+        # Whale signal (continuous)
+        whale_signal_val: float | None = None
         if whale_cache is not None:
-            whale_direction = whale_cache.get_signal(meta.condition_id, before_ts=entry_eval_ts)
+            whale_signal_val = whale_cache.get_signal(meta.condition_id, before_ts=entry_eval_ts)
 
         # Leader (BTC) candles for cross-asset momentum — None for BTC itself
         leader_candles_for_window: list[Candle] | None = None
@@ -316,7 +316,7 @@ def build_training_dataset(
             lookback_candles,
             up_book,
             down_book,
-            whale_direction=whale_direction,
+            whale_signal=whale_signal_val,
             leader_candles=leader_candles_for_window,
             up_ticks=up_ticks,
             utc_epoch=entry_eval_ts,

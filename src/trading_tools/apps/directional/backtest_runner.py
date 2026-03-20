@@ -132,11 +132,11 @@ class WhaleTradeCache:
         for trade in trades:
             self._by_condition[trade.condition_id].append(trade)
 
-    def get_signal(self, condition_id: str, *, before_ts: int | None = None) -> str | None:
-        """Return the whale directional bet for a market.
+    def get_signal(self, condition_id: str, *, before_ts: int | None = None) -> float | None:
+        """Return a continuous whale directional signal for a market.
 
-        Filter BUY trades by timestamp, group by outcome, and return
-        the outcome with the larger total dollar volume (size * price).
+        Filter BUY trades by timestamp, sum dollar volume per outcome,
+        and return ``(up_vol - down_vol) / total_vol`` in ``[-1, 1]``.
 
         Args:
             condition_id: Polymarket market condition identifier.
@@ -144,8 +144,8 @@ class WhaleTradeCache:
                 timestamp.  Use in backtesting to prevent look-ahead bias.
 
         Returns:
-            ``"Up"`` or ``"Down"`` if a whale has a clear directional
-            bet, ``None`` if no whale activity.
+            Continuous signal in ``[-1, 1]``, or ``None`` if no whale
+            activity.
 
         """
         trades = self._by_condition.get(condition_id)
@@ -161,10 +161,12 @@ class WhaleTradeCache:
         if not volume_by_outcome:
             return None
 
-        top_outcome = max(volume_by_outcome, key=lambda k: volume_by_outcome[k])
-        if top_outcome in ("Up", "Down"):
-            return top_outcome
-        return None
+        up_vol = volume_by_outcome.get("Up", 0.0)
+        down_vol = volume_by_outcome.get("Down", 0.0)
+        total = up_vol + down_vol
+        if total == 0.0:
+            return None
+        return (up_vol - down_vol) / total
 
 
 @dataclass(frozen=True)
@@ -500,7 +502,7 @@ async def _replay_window(
     replay_md.set_order_books(meta.condition_id, up_book, down_book)
 
     # Load whale signal — prefer cache, fall back to DB query
-    signal: str | None = None
+    signal: float | None = None
     if whale_cache is not None:
         signal = whale_cache.get_signal(meta.condition_id, before_ts=entry_eval_ts)
     elif whale_repo is not None:
