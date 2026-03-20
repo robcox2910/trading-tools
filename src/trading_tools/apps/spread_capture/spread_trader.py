@@ -520,6 +520,8 @@ class SpreadTrader:
             result = await self._place_spread_orders(opp, up_leg, down_leg)
             up_result, down_result = result
             if up_result is None and down_result is None:
+                # Cancel any orders that may have been placed despite the error
+                await self._cancel_orders_for_market(opp)
                 logger.warning("Both maker orders failed for %s", opp.condition_id[:12])
                 return
 
@@ -693,6 +695,7 @@ class SpreadTrader:
         result = await self._place_spread_orders(opp, up_leg, down_leg)
         up_leg_result, down_leg_result = result
         if up_leg_result is None and down_leg_result is None:
+            await self._cancel_orders_for_market(opp)
             logger.warning("Both leg orders failed for %s", opp.condition_id[:12])
             return None
 
@@ -1473,6 +1476,32 @@ class SpreadTrader:
             await self._cancel_order_safe(pos.pending_up_order_id)
         if down_open and pos.pending_down_order_id is not None:
             await self._cancel_order_safe(pos.pending_down_order_id)
+
+    async def _cancel_orders_for_market(self, opp: SpreadOpportunity) -> None:
+        """Cancel any open orders on a market's token IDs.
+
+        Called after a failed order placement to clean up orders that may
+        have been accepted by the CLOB despite an error response.
+
+        Args:
+            opp: The opportunity whose token orders to cancel.
+
+        """
+        if self.client is None:
+            return
+        try:
+            open_orders = await self.client.get_open_orders()
+        except (httpx.HTTPError, Exception):
+            return
+        token_ids = {opp.up_token_id, opp.down_token_id}
+        for order in open_orders:
+            if order.token_id in token_ids:
+                await self._cancel_order_safe(order.order_id)
+                logger.info(
+                    "Cancelled orphaned order %s for %s",
+                    order.order_id[:12],
+                    opp.condition_id[:12],
+                )
 
     async def _cancel_order_safe(self, order_id: str | None) -> None:
         """Cancel an order, swallowing errors.
