@@ -1,29 +1,110 @@
 """Concrete adapters for the directional trading engine ports.
 
-Provide paper and backtest implementations of ``ExecutionPort`` and
-``MarketDataPort``.  The paper execution adapter maintains virtual
-capital with configurable slippage.  The backtest execution adapter
-computes fills from historical order books.  The replay market data
-adapter serves pre-loaded snapshots with a controllable clock.
+Provide live, paper, and backtest implementations of ``ExecutionPort``
+and ``MarketDataPort``.  The live execution adapter wraps
+``OrderExecutor`` and ``BalanceManager`` for real CLOB order placement.
+The paper execution adapter maintains virtual capital with configurable
+slippage.  The backtest execution adapter computes fills from historical
+order books.  The replay market data adapter serves pre-loaded snapshots
+with a controllable clock.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
+
+import httpx
+
+from trading_tools.core.models import ZERO
 
 from .ports import FillResult
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
+    from trading_tools.apps.bot_framework.balance_manager import BalanceManager
+    from trading_tools.apps.bot_framework.order_executor import OrderExecutor
     from trading_tools.clients.polymarket.models import OrderBook
     from trading_tools.core.models import Candle
 
     from .models import MarketOpportunity
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LiveExecution:
+    """Execute fills via the Polymarket CLOB with real orders.
+
+    Wrap ``OrderExecutor`` for order placement and ``BalanceManager``
+    for capital queries.  Unlike paper mode, capital is not tracked
+    internally — the CLOB balance auto-updates as positions settle.
+
+    Attributes:
+        executor: Order executor for placing real CLOB orders.
+        balance_manager: Manages and caches the real USDC balance.
+        committed_capital_fn: Callable that returns current committed
+            capital across all open positions.
+
+    """
+
+    executor: OrderExecutor
+    balance_manager: BalanceManager
+    committed_capital_fn: Callable[[], Decimal]
+
+    async def execute_fill(
+        self,
+        token_id: str,
+        side: str,  # noqa: ARG002
+        price: Decimal,
+        quantity: Decimal,
+    ) -> FillResult | None:
+        """Place a real order via the CLOB and return the fill result.
+
+        Args:
+            token_id: CLOB token identifier.
+            side: Trade direction (always ``"BUY"``).
+            price: Desired execution price.
+            quantity: Desired token quantity.
+
+        Returns:
+            A ``FillResult`` on success, ``None`` if the order failed
+            or was not filled.
+
+        """
+        try:
+            resp = await self.executor.place_order(token_id, "BUY", price, quantity)
+            if resp is None or resp.filled <= ZERO:
+                return None
+            return FillResult(
+                price=resp.price,
+                quantity=resp.filled,
+                order_id=resp.order_id,
+            )
+        except (httpx.HTTPError, Exception):
+            logger.debug("Live fill failed for %s", token_id[:12])
+            return None
+
+    def get_capital(self) -> Decimal:
+        """Return available USDC balance from the balance manager.
+
+        Returns:
+            Available capital in USDC.
+
+        """
+        return self.balance_manager.balance
+
+    def total_capital(self) -> Decimal:
+        """Return total capital (balance + committed).
+
+        Returns:
+            Total capital in USDC.
+
+        """
+        return self.balance_manager.balance + self.committed_capital_fn()
 
 
 class PaperExecution:

@@ -11,16 +11,19 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from trading_tools.apps.bot_framework.balance_manager import BalanceManager
 from trading_tools.apps.bot_framework.heartbeat import HeartbeatLogger
+from trading_tools.apps.bot_framework.order_executor import OrderExecutor
 from trading_tools.apps.bot_framework.shutdown import GracefulShutdown
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.core.models import ZERO
 from trading_tools.data.providers.binance import BinanceCandleProvider
 from trading_tools.data.providers.order_book_feed import OrderBookFeed
 
-from .adapters import PaperExecution
+from .adapters import LiveExecution, PaperExecution
 from .engine import DirectionalEngine
 from .estimator import ProbabilityEstimator
 from .market_data_live import LiveMarketData
@@ -38,6 +41,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SUMMARY_INTERVAL = 900  # 15 minutes
+_BALANCE_REFRESH_POLLS = 60
 
 
 @dataclass
@@ -68,6 +72,8 @@ class DirectionalTrader:
     _book_feed: OrderBookFeed | None = field(default=None, init=False, repr=False)
     _repo: DirectionalResultRepository | None = field(default=None, init=False, repr=False)
     _whale_repo: WhaleRepository | None = field(default=None, init=False, repr=False)
+    _executor: OrderExecutor | None = field(default=None, init=False, repr=False)
+    _balance_manager: BalanceManager | None = field(default=None, init=False, repr=False)
 
     async def run(self) -> None:
         """Run the polling loop until interrupted.
@@ -80,6 +86,11 @@ class DirectionalTrader:
         self._book_feed = OrderBookFeed()
         await self._book_feed.start([])
         self._shutdown.install()
+
+        if self.live:
+            self._executor = OrderExecutor(client=self.client, use_market_orders=True)
+            self._balance_manager = BalanceManager(client=self.client)
+            await self._balance_manager.refresh()
 
         engine = self._create_engine()
         self._engine = engine
@@ -108,6 +119,13 @@ class DirectionalTrader:
                 await engine.poll_cycle(now)
                 self._poll_count += 1
 
+                if (
+                    self.live
+                    and self._balance_manager is not None
+                    and self._poll_count % _BALANCE_REFRESH_POLLS == 0
+                ):
+                    await self._balance_manager.refresh()
+
                 self._log_heartbeat()
                 now_mono = time.monotonic()
                 if now_mono >= self._summary_due:
@@ -124,6 +142,21 @@ class DirectionalTrader:
             if self._binance is not None:  # pyright: ignore[reportUnnecessaryComparison]
                 await self._binance.close()
 
+    def _committed_capital(self) -> Decimal:
+        """Return total cost basis of all open positions.
+
+        Returns:
+            Sum of ``cost_basis`` across open positions, or ``ZERO``
+            if the engine is not yet initialised.
+
+        """
+        if self._engine is None:
+            return ZERO
+        return sum(
+            (pos.cost_basis for pos in self._engine.positions.values()),
+            start=ZERO,
+        )
+
     def _create_engine(self) -> DirectionalEngine:
         """Build the engine with appropriate adapters for the current mode.
 
@@ -133,10 +166,18 @@ class DirectionalTrader:
         """
         mode_label = "LIVE" if self.live else "PAPER"
 
-        execution = PaperExecution(
-            capital=self.config.capital,
-            slippage_pct=self.config.paper_slippage_pct,
-        )
+        execution: LiveExecution | PaperExecution
+        if self.live and self._executor is not None and self._balance_manager is not None:
+            execution = LiveExecution(
+                executor=self._executor,
+                balance_manager=self._balance_manager,
+                committed_capital_fn=self._committed_capital,
+            )
+        else:
+            execution = PaperExecution(
+                capital=self.config.capital,
+                slippage_pct=self.config.paper_slippage_pct,
+            )
 
         if self._candle_provider is None:
             msg = "BinanceCandleProvider must be initialised before creating engine"
