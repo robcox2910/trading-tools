@@ -152,6 +152,7 @@ async def _load_and_train(
         )
         result = TrainingResult(
             weights=result.weights,
+            bias=result.bias,
             accuracy=result.accuracy,
             log_loss=result.log_loss,
             n_samples=result.n_samples,
@@ -281,7 +282,8 @@ def _write_yaml(result: TrainingResult, path: str) -> None:
         path: Output file path.
 
     """
-    data = {name: float(value) for name, value in result.weights.items()}
+    data: dict[str, object] = {name: float(value) for name, value in result.weights.items()}
+    data["bias"] = float(result.bias)
 
     output_path = Path(path)
     with output_path.open("w") as fh:
@@ -306,10 +308,13 @@ def _write_combined_yaml(
 
     """
     data: dict[str, object] = {name: float(value) for name, value in global_result.weights.items()}
+    data["bias"] = float(global_result.bias)
     if slug_results:
         weights_by_slug: dict[str, dict[str, float]] = {}
         for slug, result in sorted(slug_results.items()):
-            weights_by_slug[slug] = {name: float(value) for name, value in result.weights.items()}
+            slug_data = {name: float(value) for name, value in result.weights.items()}
+            slug_data["bias"] = float(result.bias)
+            weights_by_slug[slug] = slug_data
         data["weights_by_slug"] = weights_by_slug
 
     output_path = Path(path)

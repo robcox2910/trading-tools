@@ -118,6 +118,30 @@ class TestProbabilityEstimator:
         # p_pos + p_neg should be approximately 1.0 (sigmoid symmetry)
         assert abs(p_pos + p_neg - Decimal(1)) < _TOLERANCE
 
+    def test_positive_bias_shifts_baseline_above_half(self) -> None:
+        """Positive bias shifts P(Up) above 0.5 when features are zero."""
+        config = DirectionalConfig(bias=Decimal("0.5"))
+        estimator = ProbabilityEstimator(config)
+        features = _make_features()
+        p_up = estimator.estimate(features)
+        assert p_up > _NEUTRAL
+
+    def test_negative_bias_shifts_baseline_below_half(self) -> None:
+        """Negative bias shifts P(Up) below 0.5 when features are zero."""
+        config = DirectionalConfig(bias=Decimal("-0.5"))
+        estimator = ProbabilityEstimator(config)
+        features = _make_features()
+        p_up = estimator.estimate(features)
+        assert p_up < _NEUTRAL
+
+    def test_zero_bias_gives_half_for_neutral(self) -> None:
+        """Zero bias with zero features gives exactly 0.5."""
+        config = DirectionalConfig(bias=Decimal("0.0"))
+        estimator = ProbabilityEstimator(config)
+        features = _make_features()
+        p_up = estimator.estimate(features)
+        assert abs(p_up - _NEUTRAL) < _TOLERANCE
+
 
 class TestForSlug:
     """Test slug-specific estimator construction."""

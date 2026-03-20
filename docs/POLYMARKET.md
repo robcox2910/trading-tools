@@ -560,7 +560,7 @@ Output includes standard metrics (P&L, win rate, avg P&L) plus calibration metri
 
 ### `train-weights` — Train Estimator Weights via Logistic Regression
 
-Fit all 7 feature weights simultaneously on historical market outcome data using gradient descent. The learned weights are mathematically optimal for the existing `P(Up) = sigmoid(dot(features, w))` model form and slot directly into `DirectionalConfig`.
+Fit all 7 feature weights and a bias (intercept) term simultaneously on historical market outcome data using gradient descent. The learned weights are mathematically optimal for the `P(Up) = sigmoid(dot(features, w) + bias)` model form and slot directly into `DirectionalConfig`. The bias term allows the model to learn the empirical base rate (e.g. crypto trending Up 55% of the time) rather than assuming symmetric markets.
 
 ```bash
 trading-tools-polymarket train-weights \

@@ -10,18 +10,13 @@ parameter, making it swappable from this weighted ensemble to a trained
 model in later phases.
 """
 
-from __future__ import annotations
-
 import math
 from decimal import Decimal
-from typing import TYPE_CHECKING
 
 from trading_tools.core.models import ZERO
 
 from .config import DirectionalConfig
-
-if TYPE_CHECKING:
-    from .models import FeatureVector
+from .models import FeatureVector
 
 
 def _sigmoid(x: float) -> float:
@@ -41,12 +36,15 @@ class ProbabilityEstimator:
     """Weighted ensemble estimator that maps features to P(Up).
 
     Compute the dot product of feature values and configurable weights,
-    then apply a logistic sigmoid to produce a probability.  When all
-    features are zero (neutral), the output is 0.5 (no directional bias).
+    add a bias (intercept) term, then apply a logistic sigmoid to produce
+    a probability.  When all features are zero and the bias is zero, the
+    output is 0.5.  A non-zero bias shifts the baseline probability to
+    reflect the empirical base rate (e.g. crypto trending Up 55% of the
+    time).
 
     Args:
-        config: Configuration containing the six feature weights
-            (``w_momentum``, ``w_volatility``, etc.).
+        config: Configuration containing the seven feature weights
+            (``w_momentum``, ``w_volatility``, etc.) and ``bias``.
 
     """
 
@@ -66,9 +64,10 @@ class ProbabilityEstimator:
             ("price_change_pct", config.w_price_change),
             ("whale_signal", config.w_whale),
         )
+        self._bias = config.bias
 
     @classmethod
-    def for_slug(cls, config: DirectionalConfig, slug: str | None) -> ProbabilityEstimator:
+    def for_slug(cls, config: DirectionalConfig, slug: str | None) -> "ProbabilityEstimator":
         """Create an estimator with slug-specific weights.
 
         Look up per-slug weight overrides from *config* and build a new
@@ -106,4 +105,4 @@ class ProbabilityEstimator:
             feature_val = getattr(features, attr_name)
             weighted_sum += weight * feature_val
 
-        return Decimal(str(_sigmoid(float(weighted_sum))))
+        return Decimal(str(_sigmoid(float(weighted_sum + self._bias))))

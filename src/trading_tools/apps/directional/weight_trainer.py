@@ -3,7 +3,11 @@
 Extract features and outcomes from historical market windows, then fit
 optimal estimator weights via gradient descent.  The learned weights
 slot directly into ``DirectionalConfig`` — the model form is identical
-to the hand-tuned weighted ensemble: ``P(Up) = sigmoid(dot(features, w))``.
+to the hand-tuned weighted ensemble:
+``P(Up) = sigmoid(dot(features, w) + bias)``.
+
+The bias (intercept) term allows the model to learn the empirical base
+rate rather than assuming symmetric markets (sigmoid(0) = 0.5).
 
 No new dependencies — uses numpy (available via pandas) for vectorised
 gradient descent.
@@ -62,6 +66,8 @@ _DEFAULT_WEIGHTS: tuple[Decimal, ...] = (
     Decimal("0.50"),
 )
 
+_DEFAULT_BIAS = Decimal("0.0")
+
 _MIN_CANDLES = 16
 
 
@@ -88,6 +94,7 @@ class TrainingResult:
 
     Attributes:
         weights: Mapping from config weight field name to learned value.
+        bias: Learned bias (intercept) term.
         accuracy: Fraction of correctly classified training samples.
         log_loss: Mean negative log-likelihood on training data.
         n_samples: Number of samples used for training.
@@ -97,6 +104,7 @@ class TrainingResult:
     """
 
     weights: dict[str, Decimal]
+    bias: Decimal
     accuracy: float
     log_loss: float
     n_samples: int
@@ -259,12 +267,13 @@ def train_weights(
     tolerance: float = 1e-7,
     l2_lambda: float = 0.0,
 ) -> TrainingResult:
-    """Fit logistic regression weights via gradient descent.
+    """Fit logistic regression weights and bias via gradient descent.
 
     Minimise the binary cross-entropy loss (with optional L2
-    regularisation) using batch gradient descent.  No intercept term
-    is used, matching the current estimator form where all features
-    are zero → P(Up) = 0.5.
+    regularisation) using batch gradient descent.  The bias (intercept)
+    term is learned alongside feature weights, allowing the model to
+    capture the empirical base rate rather than assuming symmetric
+    markets.
 
     Args:
         dataset: Training data with feature matrix and labels.
@@ -273,10 +282,11 @@ def train_weights(
         tolerance: Stop when the absolute change in loss is below this
             threshold.
         l2_lambda: L2 regularisation coefficient.  Zero disables
-            regularisation.
+            regularisation.  L2 is applied to feature weights only,
+            not the bias term.
 
     Returns:
-        A ``TrainingResult`` with the learned weights and metrics.
+        A ``TrainingResult`` with the learned weights, bias, and metrics.
 
     """
     x = dataset.x
@@ -286,6 +296,7 @@ def train_weights(
     if n == 0:
         return TrainingResult(
             weights=dict(zip(WEIGHT_NAMES, _DEFAULT_WEIGHTS, strict=True)),
+            bias=_DEFAULT_BIAS,
             accuracy=0.0,
             log_loss=0.0,
             n_samples=0,
@@ -293,17 +304,21 @@ def train_weights(
         )
 
     w = np.zeros(x.shape[1], dtype=np.float64)
+    b = 0.0
     prev_loss = float("inf")
 
     for _ in range(max_iterations):
-        z = x @ w
+        z = x @ w + b
         p = _stable_sigmoid(z)
 
-        gradient = x.T @ (p - y) / n
+        residual = p - y
+        w_gradient = x.T @ residual / n
+        b_gradient = float(np.mean(residual))
         if l2_lambda > 0:
-            gradient += l2_lambda * w
+            w_gradient += l2_lambda * w
 
-        w -= learning_rate * gradient
+        w -= learning_rate * w_gradient
+        b -= learning_rate * b_gradient
 
         # Binary cross-entropy loss (clipped for numerical stability)
         eps = 1e-15
@@ -317,7 +332,7 @@ def train_weights(
         prev_loss = loss
 
     # Compute final metrics
-    final_p = _stable_sigmoid(x @ w)
+    final_p = _stable_sigmoid(x @ w + b)
     decision_threshold = 0.5
     predictions = (final_p >= decision_threshold).astype(float)
     correct = predictions == y
@@ -332,6 +347,7 @@ def train_weights(
 
     return TrainingResult(
         weights=weight_dict,
+        bias=Decimal(str(round(b, 6))),
         accuracy=accuracy,
         log_loss=log_loss_val,
         n_samples=n,
@@ -406,6 +422,7 @@ def train_all_slugs(
         )
         results[slug] = TrainingResult(
             weights=result.weights,
+            bias=result.bias,
             accuracy=result.accuracy,
             log_loss=result.log_loss,
             n_samples=result.n_samples,
@@ -442,6 +459,9 @@ def format_training_report(result: TrainingResult) -> str:
         delta = learned - default
         lines.append(f"{name:<18} {learned:>10.4f} {default:>10.4f} {delta:>+10.4f}")
 
+    bias_delta = result.bias - _DEFAULT_BIAS
+    lines.append(f"{'bias':<18} {result.bias:>10.4f} {_DEFAULT_BIAS:>10.4f} {bias_delta:>+10.4f}")
+
     return "\n".join(lines)
 
 
@@ -474,5 +494,9 @@ def format_all_slugs_report(
             global_w = global_result.weights[name]
             delta = learned - global_w
             lines.append(f"{name:<18} {learned:>10.4f} {global_w:>10.4f} {delta:>+10.4f}")
+        bias_delta = result.bias - global_result.bias
+        lines.append(
+            f"{'bias':<18} {result.bias:>10.4f} {global_result.bias:>10.4f} {bias_delta:>+10.4f}"
+        )
 
     return "\n".join(lines)
