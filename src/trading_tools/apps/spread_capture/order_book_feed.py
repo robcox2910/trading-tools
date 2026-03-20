@@ -113,7 +113,7 @@ def _build_subscribe_message(asset_ids: list[str]) -> dict[str, object]:
     return {
         "type": "market",
         "assets_ids": asset_ids,
-        "custom_feature_enabled": False,
+        "custom_feature_enabled": True,
     }
 
 
