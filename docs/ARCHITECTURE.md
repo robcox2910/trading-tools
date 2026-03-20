@@ -83,7 +83,7 @@ trading-tools/
 │   │       ├── weight_trainer.py    # Logistic regression trainer: fit global + per-slug weights via gradient descent
 │   │       ├── kelly.py             # Kelly criterion sizing for binary outcome tokens
 │   │       ├── ports.py             # ExecutionPort and MarketDataPort protocols + FillResult
-│   │       ├── adapters.py          # Paper, Backtest execution + Replay market data adapters
+│   │       ├── adapters.py          # Live, Paper, Backtest execution + Replay market data adapters
 │   │       ├── engine.py            # DirectionalEngine — scan → features → estimate → Kelly → fill → settle
 │   │       ├── repository.py        # Async SQLAlchemy repository for directional trade results
 │   │       ├── market_data_live.py  # Live market data adapter (MarketScanner + Binance + Polymarket)
