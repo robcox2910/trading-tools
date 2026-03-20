@@ -70,6 +70,11 @@ class TestDefaults:
         )
         assert total == Decimal(1)
 
+    def test_default_bias_is_zero(self) -> None:
+        """Default bias is 0.0 (symmetric market assumption)."""
+        config = DirectionalConfig()
+        assert config.bias == Decimal("0.0")
+
 
 class TestFromYaml:
     """Test loading config from YAML files."""
@@ -111,6 +116,13 @@ class TestFromYaml:
         config = DirectionalConfig.from_yaml(yaml_file)
         assert config.w_momentum == Decimal("0.50")
         assert config.w_rsi == Decimal("0.20")
+
+    def test_load_bias_from_yaml(self, tmp_path: Path) -> None:
+        """Bias can be overridden via YAML."""
+        yaml_file = tmp_path / "config.yaml"
+        yaml_file.write_text("bias: 0.15\n")
+        config = DirectionalConfig.from_yaml(yaml_file)
+        assert config.bias == Decimal("0.15")
 
 
 class TestWithOverrides:
@@ -158,11 +170,12 @@ class TestWeightsBySlug:
         assert config.weights_by_slug == {}
 
     def test_weights_for_slug_returns_global_when_no_slug(self) -> None:
-        """Return global weights when slug is None."""
+        """Return global weights and bias when slug is None."""
         config = DirectionalConfig()
         weights = config.weights_for_slug(None)
         assert weights["w_momentum"] == Decimal("0.15")
         assert weights["w_whale"] == Decimal("0.50")
+        assert weights["bias"] == Decimal("0.0")
 
     def test_weights_for_slug_returns_global_when_slug_unknown(self) -> None:
         """Return global weights when slug has no override entry."""
@@ -186,13 +199,13 @@ class TestWeightsBySlug:
         # Non-overridden weights come from global
         assert weights["w_whale"] == Decimal("0.50")
 
-    def test_weights_for_slug_all_seven_keys(self) -> None:
-        """Return dict always contains all 7 weight keys."""
+    def test_weights_for_slug_all_eight_keys(self) -> None:
+        """Return dict always contains all 7 weight keys plus bias."""
         config = DirectionalConfig(
             weights_by_slug={"btc-updown-5m": {"w_momentum": Decimal("0.99")}},
         )
         weights = config.weights_for_slug("btc-updown-5m")
-        expected_keys = 7
+        expected_keys = 8
         assert len(weights) == expected_keys
 
     def test_from_yaml_weights_by_slug(self, tmp_path: Path) -> None:

@@ -335,7 +335,7 @@ class TestTrainWeights:
         assert mag_reg < mag_no_reg
 
     def test_empty_dataset_returns_defaults(self) -> None:
-        """Return default weights when the dataset is empty."""
+        """Return default weights and zero bias when the dataset is empty."""
         dataset = TrainingDataset(
             x=np.empty((0, 7), dtype=np.float64),
             y=np.empty(0, dtype=np.float64),
@@ -344,9 +344,10 @@ class TestTrainWeights:
         result = train_weights(dataset)
         assert result.n_samples == 0
         assert result.weights["w_whale"] == Decimal("0.50")
+        assert result.bias == Decimal("0.0")
 
     def test_returns_all_seven_weights(self) -> None:
-        """Result contains all 7 weight names."""
+        """Result contains all 7 weight names and a bias."""
         x = np.ones((10, 7), dtype=np.float64)
         y = np.array([1.0, 0.0] * 5)
         dataset = TrainingDataset(x=x, y=y, feature_names=FEATURE_NAMES)
@@ -355,6 +356,37 @@ class TestTrainWeights:
         assert len(result.weights) == 7
         for name in WEIGHT_NAMES:
             assert name in result.weights
+        assert isinstance(result.bias, Decimal)
+
+    def test_learns_positive_bias_from_skewed_data(self) -> None:
+        """Learn a positive bias when most labels are Up (1.0)."""
+        rng = np.random.default_rng(42)
+        n = 400
+        # 75% Up labels with zero features — bias must absorb the skew
+        x = rng.standard_normal((n, 7)) * 0.01  # near-zero features
+        up_ratio = 0.75
+        y = np.zeros(n, dtype=np.float64)
+        y[: int(n * up_ratio)] = 1.0
+
+        dataset = TrainingDataset(x=x, y=y, feature_names=FEATURE_NAMES)
+        result = train_weights(dataset, learning_rate=0.5, max_iterations=5000)
+
+        assert result.bias > Decimal(0)
+
+    def test_learns_negative_bias_from_skewed_data(self) -> None:
+        """Learn a negative bias when most labels are Down (0.0)."""
+        rng = np.random.default_rng(42)
+        n = 400
+        # 75% Down labels with zero features
+        x = rng.standard_normal((n, 7)) * 0.01
+        down_ratio = 0.75
+        y = np.ones(n, dtype=np.float64)
+        y[: int(n * down_ratio)] = 0.0
+
+        dataset = TrainingDataset(x=x, y=y, feature_names=FEATURE_NAMES)
+        result = train_weights(dataset, learning_rate=0.5, max_iterations=5000)
+
+        assert result.bias < Decimal(0)
 
 
 class TestFormatTrainingReport:
@@ -364,6 +396,7 @@ class TestFormatTrainingReport:
         """Report includes accuracy, log-loss, and sample count."""
         result = TrainingResult(
             weights={name: Decimal("0.1") for name in WEIGHT_NAMES},
+            bias=Decimal("0.05"),
             accuracy=0.75,
             log_loss=0.55,
             n_samples=1000,
@@ -376,9 +409,10 @@ class TestFormatTrainingReport:
         assert "50" in report
 
     def test_contains_all_weight_names(self) -> None:
-        """Report lists all 7 weight names."""
+        """Report lists all 7 weight names and bias."""
         result = TrainingResult(
             weights={name: Decimal("0.2") for name in WEIGHT_NAMES},
+            bias=Decimal("0.0"),
             accuracy=0.8,
             log_loss=0.4,
             n_samples=500,
@@ -387,12 +421,14 @@ class TestFormatTrainingReport:
         report = format_training_report(result)
         for name in WEIGHT_NAMES:
             assert name in report
+        assert "bias" in report
 
     def test_shows_delta_from_defaults(self) -> None:
         """Report shows the difference between learned and default weights."""
         weights = {name: Decimal("0.1") for name in WEIGHT_NAMES}
         result = TrainingResult(
             weights=weights,
+            bias=Decimal("0.0"),
             accuracy=0.7,
             log_loss=0.5,
             n_samples=100,
@@ -469,6 +505,7 @@ class TestFormatAllSlugsReport:
         """Report includes per-slug section headers."""
         global_result = TrainingResult(
             weights={name: Decimal("0.1") for name in WEIGHT_NAMES},
+            bias=Decimal("0.05"),
             accuracy=0.75,
             log_loss=0.5,
             n_samples=1000,
@@ -477,6 +514,7 @@ class TestFormatAllSlugsReport:
         slug_results = {
             "btc-updown-5m": TrainingResult(
                 weights={name: Decimal("0.2") for name in WEIGHT_NAMES},
+                bias=Decimal("0.10"),
                 accuracy=0.80,
                 log_loss=0.4,
                 n_samples=500,

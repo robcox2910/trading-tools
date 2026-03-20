@@ -29,6 +29,7 @@ _WEIGHT_FIELD_NAMES = frozenset(
         "w_rsi",
         "w_price_change",
         "w_whale",
+        "bias",
     }
 )
 
@@ -157,6 +158,10 @@ class DirectionalConfig:
         w_rsi: Estimator weight for the RSI signal feature.
         w_price_change: Estimator weight for the price change feature.
         w_whale: Estimator weight for the whale positioning feature.
+        bias: Intercept (bias) term for the estimator.  Shifts the
+            baseline probability away from 0.5 when features are zero,
+            allowing the model to learn the base rate (e.g. crypto trends
+            Up 55% of the time).
         min_token_price: Minimum token price to buy.  Skip tokens the
             market has already written off (e.g. $0.06 with 30s left
             means 94% decided against this side).
@@ -192,6 +197,7 @@ class DirectionalConfig:
     w_rsi: Decimal = Decimal("0.05")
     w_price_change: Decimal = Decimal("0.10")
     w_whale: Decimal = Decimal("0.50")
+    bias: Decimal = Decimal("0.0")
     weights_by_slug: dict[str, dict[str, Decimal]] = dataclasses.field(
         default_factory=_empty_slug_weights,
     )
