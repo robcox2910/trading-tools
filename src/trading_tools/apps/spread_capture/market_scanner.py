@@ -381,7 +381,9 @@ class MarketScanner:
         if self.max_window_seconds > 0 and window_duration > self.max_window_seconds:
             return None
 
-        if self.max_entry_age_pct > ZERO and window_duration > 0:
+        # Skip entry age check for future markets (allow_future_entry) or
+        # markets that haven't started yet (negative elapsed_pct is fine)
+        if window_start_ts <= now and self.max_entry_age_pct > ZERO and window_duration > 0:
             elapsed_pct = Decimal(str(now - window_start_ts)) / Decimal(str(window_duration))
             if elapsed_pct > self.max_entry_age_pct:
                 return None
@@ -396,22 +398,16 @@ class MarketScanner:
         # Use order book best ask prices when available, else midpoint
         up_price = up_ask_price if up_ask_price is not None else up_token.price
         down_price = down_ask_price if down_ask_price is not None else down_token.price
-
         if up_price <= ZERO or down_price <= ZERO:
             return None
 
         combined = up_price + down_price
         gross_margin = ONE - combined
-
-        if combined >= self.max_combined_cost:
-            return None
-
-        # Deduct Polymarket fees from margin
         up_fee = compute_poly_fee(up_price, self.fee_rate, self.fee_exponent)
         down_fee = compute_poly_fee(down_price, self.fee_rate, self.fee_exponent)
         net_margin = gross_margin - up_fee - down_fee
 
-        if net_margin < self.min_spread_margin:
+        if combined >= self.max_combined_cost or net_margin < self.min_spread_margin:
             return None
 
         return SpreadOpportunity(
