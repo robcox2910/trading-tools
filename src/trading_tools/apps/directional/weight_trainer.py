@@ -31,7 +31,7 @@ from .backtest_runner import (
     snapshot_to_order_book,
 )
 from .features import extract_features
-from .models import FeatureVector
+from .models import FeatureVector, TickSample
 
 _MS_PER_SECOND = 1000
 
@@ -45,6 +45,9 @@ FEATURE_NAMES: tuple[str, ...] = (
     "price_change_pct",
     "whale_signal",
     "leader_momentum",
+    "tick_imbalance",
+    "tick_price_velocity",
+    "tick_volume_accel",
 )
 
 WEIGHT_NAMES: tuple[str, ...] = (
@@ -56,6 +59,9 @@ WEIGHT_NAMES: tuple[str, ...] = (
     "w_price_change",
     "w_whale",
     "w_leader_momentum",
+    "w_tick_imbalance",
+    "w_tick_price_velocity",
+    "w_tick_volume_accel",
 )
 
 _DEFAULT_WEIGHTS: tuple[Decimal, ...] = (
@@ -67,11 +73,51 @@ _DEFAULT_WEIGHTS: tuple[Decimal, ...] = (
     Decimal("0.10"),
     Decimal("0.50"),
     Decimal("0.0"),
+    Decimal("0.0"),
+    Decimal("0.0"),
+    Decimal("0.0"),
 )
 
 _LEADER_ASSET = "BTC-USD"
 
 _DEFAULT_BIAS = Decimal("0.0")
+
+_TICK_LOOKBACK_MS = 60_000
+
+
+class TickCache:
+    """Pre-loaded tick data for O(1) lookups during training.
+
+    Group tick samples by token ID for fast retrieval when building
+    the training dataset.
+
+    """
+
+    def __init__(self, ticks_by_token: dict[str, list[TickSample]]) -> None:
+        """Initialize with pre-grouped tick data.
+
+        Args:
+            ticks_by_token: Mapping from token ID to tick samples,
+                each list ordered by timestamp.
+
+        """
+        self._by_token = ticks_by_token
+
+    def get_ticks(self, token_id: str, since_ms: int, until_ms: int) -> list[TickSample]:
+        """Return ticks for a token within a time range.
+
+        Args:
+            token_id: CLOB token identifier.
+            since_ms: Start epoch milliseconds (inclusive).
+            until_ms: End epoch milliseconds (inclusive).
+
+        Returns:
+            Filtered tick samples.
+
+        """
+        all_ticks = self._by_token.get(token_id, [])
+        return [t for t in all_ticks if since_ms <= t.timestamp_ms <= until_ms]
+
 
 _MIN_CANDLES = 16
 
@@ -162,6 +208,7 @@ def build_training_dataset(
     signal_lookback_seconds: int = 1200,
     snapshot_cache: BookSnapshotCache | None = None,
     whale_cache: WhaleTradeCache | None = None,
+    tick_cache: TickCache | None = None,
 ) -> TrainingDataset:
     """Build a training dataset from historical market windows.
 
@@ -180,6 +227,8 @@ def build_training_dataset(
             lookups.  When ``None``, default symmetric books are used.
         whale_cache: Pre-built whale trade cache for signal lookups.
             When ``None``, whale signal is omitted (zero).
+        tick_cache: Pre-built tick sample cache for Polymarket trade
+            flow features.  When ``None``, tick features are zero.
 
     Returns:
         A ``TrainingDataset`` with feature matrix and label vector.
@@ -251,12 +300,19 @@ def build_training_dataset(
                     if lookback_start <= c.timestamp <= meta.window_end_ts  # type: ignore[union-attr]
                 ]
 
+        # Tick data for Polymarket trade flow features
+        up_ticks: list[TickSample] | None = None
+        if tick_cache is not None:
+            tick_since_ms = entry_eval_ms - _TICK_LOOKBACK_MS
+            up_ticks = tick_cache.get_ticks(meta.up_token_id, tick_since_ms, entry_eval_ms)
+
         features = extract_features(
             lookback_candles,
             up_book,
             down_book,
             whale_direction=whale_direction,
             leader_candles=leader_candles_for_window,
+            up_ticks=up_ticks,
         )
 
         rows.append(_feature_vector_to_array(features))
@@ -383,6 +439,7 @@ def train_all_slugs(
     signal_lookback_seconds: int = 1200,
     snapshot_cache: BookSnapshotCache | None = None,
     whale_cache: WhaleTradeCache | None = None,
+    tick_cache: TickCache | None = None,
     learning_rate: float = 0.1,
     max_iterations: int = 10_000,
     l2_lambda: float = 0.0,
@@ -400,6 +457,7 @@ def train_all_slugs(
         signal_lookback_seconds: Candle lookback for features.
         snapshot_cache: Pre-built order book snapshot cache.
         whale_cache: Pre-built whale trade cache.
+        tick_cache: Pre-built tick sample cache.
         learning_rate: Gradient descent step size.
         max_iterations: Max gradient descent iterations.
         l2_lambda: L2 regularisation coefficient.
@@ -424,6 +482,7 @@ def train_all_slugs(
             entry_window_start=entry_window_start,
             signal_lookback_seconds=signal_lookback_seconds,
             snapshot_cache=snapshot_cache,
+            tick_cache=tick_cache,
             whale_cache=whale_cache,
         )
         n_samples = dataset.x.shape[0]

@@ -64,6 +64,9 @@ class ProbabilityEstimator:
             ("price_change_pct", config.w_price_change),
             ("whale_signal", config.w_whale),
             ("leader_momentum", config.w_leader_momentum),
+            ("tick_imbalance", config.w_tick_imbalance),
+            ("tick_price_velocity", config.w_tick_price_velocity),
+            ("tick_volume_accel", config.w_tick_volume_accel),
         )
         self._bias = config.bias
 

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from trading_tools.apps.backtester.indicators import atr, rsi, z_score
 from trading_tools.core.models import HUNDRED, ONE, TWO, ZERO
 
-from .models import FeatureVector
+from .models import FeatureVector, TickSample
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -290,6 +290,120 @@ def compute_whale_signal(whale_direction: str | None) -> Decimal:
     return ZERO
 
 
+def compute_tick_imbalance(
+    ticks: Sequence[TickSample] | None,
+    lookback_ms: int = 60_000,
+) -> Decimal:
+    """Compute buy/sell volume imbalance from recent Polymarket ticks.
+
+    Measure the net directional flow for the Up token:
+    ``(buy_volume - sell_volume) / total_volume``.  Positive values
+    indicate net buying (bullish), negative = net selling (bearish).
+
+    Args:
+        ticks: Recent Up-token tick samples, ordered by timestamp.
+            ``None`` or empty disables the feature.
+        lookback_ms: Milliseconds of history to consider (default 60s).
+
+    Returns:
+        Imbalance signal in ``[-1, 1]``.
+
+    """
+    if not ticks:
+        return ZERO
+
+    cutoff = ticks[-1].timestamp_ms - lookback_ms
+    recent = [t for t in ticks if t.timestamp_ms >= cutoff]
+    if not recent:
+        return ZERO
+
+    buy_vol = sum(t.size for t in recent if t.side == "BUY")
+    sell_vol = sum(t.size for t in recent if t.side == "SELL")
+    total = buy_vol + sell_vol
+    if total == 0.0:
+        return ZERO
+
+    return _clamp(Decimal(str((buy_vol - sell_vol) / total)))
+
+
+def compute_tick_price_velocity(
+    ticks: Sequence[TickSample] | None,
+    lookback_ms: int = 30_000,
+) -> Decimal:
+    """Compute the rate of price change from recent tick prices.
+
+    Fit a simple first-to-last price change over the lookback window,
+    normalised so that a 1% move maps to ~0.5 on the ``[-1, 1]`` scale
+    (same scaling as ``compute_price_change``).
+
+    Args:
+        ticks: Recent Up-token tick samples, ordered by timestamp.
+            ``None`` or empty disables the feature.
+        lookback_ms: Milliseconds of history to consider (default 30s).
+
+    Returns:
+        Price velocity signal in ``[-1, 1]``.
+
+    """
+    if not ticks:
+        return ZERO
+
+    cutoff = ticks[-1].timestamp_ms - lookback_ms
+    recent = [t for t in ticks if t.timestamp_ms >= cutoff]
+    if len(recent) < 2:  # noqa: PLR2004 — need at least 2 ticks
+        return ZERO
+
+    first_price = recent[0].price
+    last_price = recent[-1].price
+    if first_price == 0.0:
+        return ZERO
+
+    pct_change = (last_price - first_price) / first_price * 100
+    scaled = Decimal(str(pct_change)) * _FIFTY / HUNDRED
+    return _clamp(scaled)
+
+
+def compute_tick_volume_accel(
+    ticks: Sequence[TickSample] | None,
+    lookback_ms: int = 60_000,
+) -> Decimal:
+    """Compute volume acceleration from recent Polymarket ticks.
+
+    Split the lookback window into two equal halves.  Compare the total
+    volume in the recent half to the earlier half.  Accelerating volume
+    near the decision time suggests stronger conviction.
+
+    The ratio ``recent / earlier`` is mapped to ``[-1, 1]``:
+    ratio > 1 (accelerating) → positive, ratio < 1 (decelerating) →
+    negative.  Formula: ``clamp((ratio - 1) * 2)``.
+
+    Args:
+        ticks: Recent Up-token tick samples, ordered by timestamp.
+            ``None`` or empty disables the feature.
+        lookback_ms: Milliseconds of history to consider (default 60s).
+
+    Returns:
+        Volume acceleration signal in ``[-1, 1]``.
+
+    """
+    if not ticks:
+        return ZERO
+
+    latest_ms = ticks[-1].timestamp_ms
+    cutoff = latest_ms - lookback_ms
+    midpoint_ms = latest_ms - lookback_ms // 2
+
+    earlier_vol = sum(t.size for t in ticks if cutoff <= t.timestamp_ms < midpoint_ms)
+    recent_vol = sum(t.size for t in ticks if t.timestamp_ms >= midpoint_ms)
+
+    if earlier_vol == 0.0:
+        return ZERO if recent_vol == 0.0 else ONE
+
+    ratio = recent_vol / earlier_vol
+    signal = Decimal(str((ratio - 1.0) * 2.0))
+    return _clamp(signal)
+
+
 def extract_features(
     candles: Sequence[Candle],
     up_book: OrderBook,
@@ -300,6 +414,7 @@ def extract_features(
     volume_recent_bars: int = 5,
     whale_direction: str | None = None,
     leader_candles: Sequence[Candle] | None = None,
+    up_ticks: Sequence[TickSample] | None = None,
 ) -> FeatureVector:
     """Extract all features from market data and return a ``FeatureVector``.
 
@@ -318,9 +433,11 @@ def extract_features(
             or ``None``).
         leader_candles: Recent BTC 1-min candles for leader momentum.
             Pass ``None`` for BTC itself to avoid double-counting.
+        up_ticks: Recent Polymarket tick samples for the Up token.
+            Pass ``None`` when tick data is unavailable.
 
     Returns:
-        A ``FeatureVector`` with all eight features populated.
+        A ``FeatureVector`` with all eleven features populated.
 
     """
     return FeatureVector(
@@ -332,4 +449,7 @@ def extract_features(
         price_change_pct=compute_price_change(candles),
         whale_signal=compute_whale_signal(whale_direction),
         leader_momentum=compute_leader_momentum(leader_candles),
+        tick_imbalance=compute_tick_imbalance(up_ticks),
+        tick_price_velocity=compute_tick_price_velocity(up_ticks),
+        tick_volume_accel=compute_tick_volume_accel(up_ticks),
     )
