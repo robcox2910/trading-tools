@@ -8,7 +8,7 @@ from trading_tools.apps.polymarket.cli import app
 from trading_tools.apps.polymarket.cli._helpers import parse_series_slugs
 
 _CONDITION_ID = "cond_cli_test_tick"
-_CRYPTO_5M_SLUG_COUNT = 7
+_CRYPTO_5M_SLUG_COUNT = 5
 
 
 class TestTickCollectCommand:

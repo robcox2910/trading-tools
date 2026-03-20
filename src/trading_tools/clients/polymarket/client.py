@@ -1150,8 +1150,6 @@ _HOURLY_SLUG_TO_TITLE: dict[str, str] = {
     "sol-updown-1h": "Solana Up or Down",
     "xrp-updown-1h": "XRP Up or Down",
     "doge-updown-1h": "Dogecoin Up or Down",
-    "bnb-updown-1h": "BNB Up or Down",
-    "hype-updown-1h": "Hyperliquid Up or Down",
 }
 
 
