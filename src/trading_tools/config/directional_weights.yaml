@@ -1,0 +1,16 @@
+w_momentum: 0.939772
+w_volatility: -0.147349
+w_volume: 3.87048
+w_book_imbalance: 0.838739
+w_rsi: 5.104067
+w_price_change: -1.273665
+w_whale: 1.171564
+weights_by_slug:
+  btc-updown-5m:
+    w_momentum: 1.079913
+    w_volatility: -0.026283
+    w_volume: 3.586149
+    w_book_imbalance: 1.451288
+    w_rsi: 4.753084
+    w_price_change: -1.042439
+    w_whale: 1.066061
