@@ -75,7 +75,9 @@ def trades_to_df(trades: Sequence[WhaleTrade | EnrichedTrade]) -> pd.DataFrame:
     Returns:
         DataFrame with one row per trade and the following columns:
         ``condition_id``, ``title``, ``slug``, ``side``, ``outcome``,
-        ``size``, ``price``, ``notional``, ``timestamp``, ``hour``.
+        ``size``, ``price``, ``notional``, ``timestamp``, ``hour``,
+        ``close_ts`` (epoch seconds float when the market has resolved,
+        ``NaN`` otherwise).
 
     """
     if not trades:
@@ -90,12 +92,19 @@ def trades_to_df(trades: Sequence[WhaleTrade | EnrichedTrade]) -> pd.DataFrame:
                 "price",
                 "notional",
                 "timestamp",
+                "close_ts",
                 "hour",
             ]
         )
 
-    df = pd.DataFrame(
-        [
+    rows: list[dict[str, object]] = []
+    for t in trades:
+        w = _unwrap(t)
+        if isinstance(t, EnrichedTrade) and t.close_datetime is not None:
+            close_ts: float = t.close_datetime.timestamp()
+        else:
+            close_ts = float("nan")
+        rows.append(
             {
                 "condition_id": w.condition_id,
                 "title": w.title,
@@ -105,10 +114,10 @@ def trades_to_df(trades: Sequence[WhaleTrade | EnrichedTrade]) -> pd.DataFrame:
                 "size": float(w.size),
                 "price": float(w.price),
                 "timestamp": int(w.timestamp),
+                "close_ts": close_ts,
             }
-            for w in (_unwrap(t) for t in trades)
-        ]
-    )
+        )
+    df = pd.DataFrame(rows)
 
     df["notional"] = df["size"] * df["price"]
     df["hour"] = (df["timestamp"] % _SECONDS_PER_DAY) // _SECONDS_PER_HOUR
@@ -137,6 +146,15 @@ class TradeSummary:
         avg_buy_price: Mean execution price across BUY trades.
         avg_sell_price: Mean execution price across SELL trades.
         unique_markets: Number of distinct markets (condition IDs) traded.
+        avg_trade_duration_d: Mean days between trade placement and market
+            resolution, across trades with a known resolution time. ``None``
+            when no resolution times are available.
+        min_trade_duration_d: Shortest such duration in days. ``None`` when
+            unavailable.
+        max_trade_duration_d: Longest such duration in days. ``None`` when
+            unavailable.
+        single_side_market_pct: Percentage of markets (0-100) where the trader
+            only placed BUY trades or only SELL trades, with no mixing of sides.
         average_daily_trades_1w: Mean trades per day over the 7 days ending at
             ``as_of`` (as supplied to ``summarize_trades``).
         average_daily_trades_1m: Mean trades per day over the 30 days ending at
@@ -158,6 +176,10 @@ class TradeSummary:
     avg_buy_price: float = 0.0
     avg_sell_price: float = 0.0
     unique_markets: int = 0
+    avg_trade_duration_d: float | None = None
+    min_trade_duration_d: float | None = None
+    max_trade_duration_d: float | None = None
+    single_side_market_pct: float = 0.0
     average_daily_trades_1w: float = 0.0
     average_daily_trades_1m: float = 0.0
     sharpe_ratio: float | None = None
@@ -253,6 +275,28 @@ def summarize_trades(
     ]
     sharpe = _sharpe_from_pnls(resolved_pnls)
 
+    # Trade duration: only valid where close_ts is known (EnrichedTrade with resolved market)
+    seconds_per_day = 86400.0
+    durations = (df["close_ts"] - df["timestamp"]) / seconds_per_day
+    valid_durations = durations.dropna()
+    valid_durations = valid_durations[valid_durations >= 0]
+
+    avg_dur: float | None = (
+        round(float(valid_durations.mean()), 4) if not valid_durations.empty else None
+    )
+    min_dur: float | None = (
+        round(float(valid_durations.min()), 4) if not valid_durations.empty else None
+    )
+    max_dur: float | None = (
+        round(float(valid_durations.max()), 4) if not valid_durations.empty else None
+    )
+
+    # Single-side market %: markets where all trades are the same side
+    sides_per_market = df.groupby("condition_id")["side"].nunique()
+    n_markets = len(sides_per_market)
+    n_single_side = int((sides_per_market == 1).sum())
+    single_side_pct = round(n_single_side / n_markets * 100, 1) if n_markets > 0 else 0.0
+
     return TradeSummary(
         address=address,
         total_trades=len(df),
@@ -263,6 +307,10 @@ def summarize_trades(
         avg_buy_price=float(buys["price"].mean()) if not buys.empty else 0.0,
         avg_sell_price=float(sells["price"].mean()) if not sells.empty else 0.0,
         unique_markets=int(df["condition_id"].nunique()),
+        avg_trade_duration_d=avg_dur,
+        min_trade_duration_d=min_dur,
+        max_trade_duration_d=max_dur,
+        single_side_market_pct=single_side_pct,
         average_daily_trades_1w=round(avg_daily_1w, 2),
         average_daily_trades_1m=round(avg_daily_1m, 2),
         sharpe_ratio=sharpe,
@@ -569,6 +617,13 @@ class MarketBreakdownSchema(pa.DataFrameModel):
         first_trade_ts: Epoch seconds of the earliest trade in this market.
         last_trade_ts: Epoch seconds of the most recent trade, used as the
             default sort key (descending).
+        avg_duration_d: Mean days between trade placement and market
+            resolution for this market. NaN when no resolution times are
+            available.
+        min_duration_d: Minimum duration in days. NaN when unavailable.
+        max_duration_d: Maximum duration in days. NaN when unavailable.
+        side_bias: ``"BUY_ONLY"`` when all trades were BUYs, ``"SELL_ONLY"``
+            when all were SELLs, ``"MIXED"`` when both sides appear.
 
     """
 
@@ -584,6 +639,10 @@ class MarketBreakdownSchema(pa.DataFrameModel):
     favoured_side: Series[str] = pa.Field(isin=["Up", "Down"])
     first_trade_ts: Series[int] = pa.Field(ge=0)
     last_trade_ts: Series[int] = pa.Field(ge=0)
+    avg_duration_d: Series[float] = pa.Field(nullable=True)
+    min_duration_d: Series[float] = pa.Field(nullable=True)
+    max_duration_d: Series[float] = pa.Field(nullable=True)
+    side_bias: Series[str] = pa.Field(isin=["BUY_ONLY", "SELL_ONLY", "MIXED"])
 
     class Config:  # type: ignore[misc]
         """Pandera model configuration."""
@@ -647,6 +706,9 @@ def analyse_markets(
     combined = mkt.join(up_df, how="left").join(down_df, how="left").fillna(0.0)
     combined = combined.reset_index()
 
+    # Pre-compute per-market duration and side stats from the raw trades df
+    mkt_groups = df.groupby("condition_id")
+
     rows: list[dict[str, object]] = []
     for _, row in combined.iterrows():
         up_vol = float(row["up_notional"])
@@ -655,9 +717,34 @@ def analyse_markets(
         smaller = min(up_vol, down_vol)
         bias_ratio = larger / smaller if smaller > 0 else (larger if larger > 0 else 1.0)
 
+        cid = str(row["condition_id"])
+        mkt_df = mkt_groups.get_group(cid) if cid in mkt_groups.groups else pd.DataFrame()
+
+        # Duration stats (in days)
+        spd = 86400.0
+        raw_dur: pd.Series[float] = (  # type: ignore[type-arg]
+            ((mkt_df["close_ts"] - mkt_df["timestamp"]) / spd).dropna().astype(float)  # type: ignore[assignment]
+            if not mkt_df.empty
+            else pd.Series([], dtype=float)
+        )
+        dur_series: pd.Series[float] = raw_dur[raw_dur >= 0]  # type: ignore[type-arg,index]
+        avg_dur_mkt = float(dur_series.mean()) if not dur_series.empty else float("nan")  # type: ignore[arg-type]
+        min_dur_mkt = float(dur_series.min()) if not dur_series.empty else float("nan")  # type: ignore[arg-type]
+        max_dur_mkt = float(dur_series.max()) if not dur_series.empty else float("nan")  # type: ignore[arg-type]
+
+        # Side bias
+        n_sides = mkt_df["side"].nunique() if not mkt_df.empty else 0
+        if n_sides == 0:
+            side_bias = "MIXED"
+        elif n_sides == 1:
+            only_side = str(mkt_df["side"].iloc[0])
+            side_bias = "BUY_ONLY" if only_side == "BUY" else "SELL_ONLY"
+        else:
+            side_bias = "MIXED"
+
         rows.append(
             {
-                "condition_id": str(row["condition_id"]),
+                "condition_id": cid,
                 "title": str(row["title"]),
                 "slug": str(row["slug"]),
                 "up_volume": up_vol,
@@ -669,6 +756,10 @@ def analyse_markets(
                 "favoured_side": "Up" if up_vol >= down_vol else "Down",
                 "first_trade_ts": int(row["first_trade_ts"]),
                 "last_trade_ts": int(row["last_trade_ts"]),
+                "avg_duration_d": avg_dur_mkt,
+                "min_duration_d": min_dur_mkt,
+                "max_duration_d": max_dur_mkt,
+                "side_bias": side_bias,
             }
         )
 
