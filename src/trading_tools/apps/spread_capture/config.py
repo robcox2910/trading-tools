@@ -181,7 +181,7 @@ class SpreadCaptureConfig:
     maker_order_size: Decimal = Decimal(20)
     maker_hedge_age_pct: Decimal = Decimal("0.60")
     maker_max_hedge_combined: Decimal = Decimal("0.98")
-    maker_take_profit_pct: Decimal = Decimal("0.40")
+    maker_take_profit_pct: Decimal = Decimal("0.10")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "SpreadCaptureConfig":
