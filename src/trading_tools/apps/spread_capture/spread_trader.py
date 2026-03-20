@@ -30,6 +30,7 @@ from trading_tools.apps.polymarket.backtest_common import compute_order_book_sli
 from trading_tools.apps.spread_capture.fees import compute_poly_fee
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.clients.binance.exceptions import BinanceError
+from trading_tools.clients.polymarket.models import OrderBook
 from trading_tools.core.models import ONE, ZERO, Interval, Side
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
@@ -42,6 +43,7 @@ from .models import (
     SpreadResult,
     SpreadResultRecord,
 )
+from .order_book_feed import OrderBookFeed
 
 if TYPE_CHECKING:
     from trading_tools.clients.polymarket.client import PolymarketClient
@@ -102,6 +104,7 @@ class SpreadTrader:
     _circuit_breaker_until: int = field(default=0, init=False, repr=False)
     _session_start_capital: Decimal = field(default=ZERO, init=False, repr=False)
     _high_water_mark: Decimal = field(default=ZERO, init=False, repr=False)
+    _book_feed: OrderBookFeed | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize shared services when running in live mode."""
@@ -148,6 +151,11 @@ class SpreadTrader:
         self._binance = BinanceClient()
         self._shutdown.install()
 
+        # Start WebSocket order book feed for maker strategy
+        if self.config.strategy == "maker":
+            self._book_feed = OrderBookFeed()
+            await self._book_feed.start([])
+
         if self.live and self._balance_manager is not None:
             await self._balance_manager.refresh()
 
@@ -182,6 +190,8 @@ class SpreadTrader:
             pass
         finally:
             self._log_summary()
+            if self._book_feed is not None:
+                await self._book_feed.stop()
             if self._binance is not None:  # pyright: ignore[reportUnnecessaryComparison]
                 await self._binance.close()
 
@@ -274,8 +284,33 @@ class SpreadTrader:
 
         await self._settle_expired_positions()
 
+        # Update WebSocket subscriptions based on active positions
+        await self._sync_book_feed_subscriptions()
+
         if self._redeemer is not None:
             await self._redeemer.redeem_if_available()
+
+    async def _sync_book_feed_subscriptions(self) -> None:
+        """Update WebSocket book feed subscriptions to match active positions.
+
+        Collect all token IDs from open positions and update the book feed
+        subscription.  Only active for the maker strategy.
+        """
+        if self._book_feed is None:
+            return
+        token_ids: list[str] = []
+        for pos in self._positions.values():
+            token_ids.append(pos.opportunity.up_token_id)
+            token_ids.append(pos.opportunity.down_token_id)
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for tid in token_ids:
+            if tid not in seen:
+                seen.add(tid)
+                unique.append(tid)
+        if sorted(unique) != sorted(self._book_feed.subscribed_tokens):
+            await self._book_feed.update_subscription(unique)
 
     async def _validate_and_reprice(
         self, opp: SpreadOpportunity, qty: Decimal
@@ -719,15 +754,70 @@ class SpreadTrader:
 
         return result_up, result_down
 
+    def _get_order_books_from_feed(
+        self, up_token_id: str, down_token_id: str
+    ) -> tuple[OrderBook, OrderBook] | None:
+        """Read order books from the WebSocket feed cache.
+
+        Args:
+            up_token_id: CLOB token ID for the Up outcome.
+            down_token_id: CLOB token ID for the Down outcome.
+
+        Returns:
+            Tuple of ``(up_book, down_book)`` if both are cached, or
+            ``None`` if either is missing.
+
+        """
+        if self._book_feed is None:
+            return None
+        up_book = self._book_feed.get_book(up_token_id)
+        down_book = self._book_feed.get_book(down_token_id)
+        if up_book is None or down_book is None:
+            return None
+        return up_book, down_book
+
+    async def _fetch_books_for_position(
+        self, pos: PairedPosition
+    ) -> tuple[OrderBook, OrderBook] | None:
+        """Fetch order books for both sides of a position.
+
+        Prefer the WebSocket book feed cache, falling back to REST.
+
+        Args:
+            pos: The position with token IDs.
+
+        Returns:
+            Tuple of ``(up_book, down_book)`` or ``None`` if unavailable.
+
+        """
+        cached = self._get_order_books_from_feed(
+            pos.opportunity.up_token_id, pos.opportunity.down_token_id
+        )
+        if cached is not None:
+            return cached
+        if self.client is None:
+            return None
+        try:
+            up, down = await asyncio.gather(
+                self.client.get_order_book(pos.opportunity.up_token_id),
+                self.client.get_order_book(pos.opportunity.down_token_id),
+            )
+        except (httpx.HTTPError, Exception):
+            logger.debug("Failed to fetch order books via REST fallback")
+            return None
+        else:
+            return up, down
+
     async def _manage_paper_maker_orders(self) -> None:
         """Simulate fills for paper-mode maker positions using order book data.
 
-        For each PENDING paper position in maker strategy, fetch the order
-        book and check whether the best ask is at or below our bid price.
-        If both sides fill, transition to PAIRED.  If the market expires
-        with unfilled sides, remove the position.
+        For each PENDING paper position in maker strategy, check whether the
+        best ask is at or below our bid price.  Use the WebSocket book feed
+        when available, falling back to REST for order book data.  If both
+        sides fill, transition to PAIRED.  If the market expires with
+        unfilled sides, remove the position.
         """
-        if self.client is None:
+        if self.client is None and self._book_feed is None:
             return
 
         pending = [
@@ -751,15 +841,10 @@ class SpreadTrader:
             if up_filled and down_filled:
                 continue
 
-            try:
-                books = await asyncio.gather(
-                    self.client.get_order_book(pos.opportunity.up_token_id),
-                    self.client.get_order_book(pos.opportunity.down_token_id),
-                )
-                up_book, down_book = books
-            except (httpx.HTTPError, Exception):
-                logger.debug("Failed to fetch order books for paper maker fill check")
+            result = await self._fetch_books_for_position(pos)
+            if result is None:
                 continue
+            up_book, down_book = result
 
             if not up_filled and up_book.asks:
                 best_ask = min(level.price for level in up_book.asks)
@@ -1013,6 +1098,9 @@ class SpreadTrader:
     ) -> Decimal | None:
         """Fetch the best ask price for the unfilled side of a maker position.
 
+        Prefer the WebSocket book feed cache, falling back to REST if the
+        feed has no data for the token.
+
         Args:
             cid: Condition ID for logging.
             pos: The pending position.
@@ -1022,10 +1110,18 @@ class SpreadTrader:
             Best ask price, or ``None`` if order book is unavailable.
 
         """
-        if self.client is None:
-            return None
         opp = pos.opportunity
         token_id = opp.down_token_id if unfilled_side == "Down" else opp.up_token_id
+
+        # Prefer WebSocket book feed
+        if self._book_feed is not None:
+            book = self._book_feed.get_book(token_id)
+            if book is not None and book.asks:
+                return min(level.price for level in book.asks)
+
+        # Fall back to REST
+        if self.client is None:
+            return None
         try:
             book = await self.client.get_order_book(token_id)
         except (httpx.HTTPError, Exception):
