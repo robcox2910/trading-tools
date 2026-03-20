@@ -271,6 +271,7 @@ def _metadata_to_opportunity(meta: MarketMetadata) -> MarketOpportunity:
         window_end_ts=meta.window_end_ts,
         up_price=_HALF,
         down_price=_HALF,
+        series_slug=meta.series_slug,
     )
 
 
@@ -508,7 +509,7 @@ async def _replay_window(
         replay_md.set_whale_signal(meta.condition_id, signal)
 
     execution = BacktestExecution(capital=config.capital)
-    estimator = ProbabilityEstimator(config)
+    estimator = ProbabilityEstimator.for_slug(config, meta.series_slug)
 
     engine = DirectionalEngine(
         config=config,

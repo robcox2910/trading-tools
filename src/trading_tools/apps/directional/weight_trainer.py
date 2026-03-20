@@ -339,6 +339,81 @@ def train_weights(
     )
 
 
+_MIN_SLUG_SAMPLES = 50
+
+
+def train_all_slugs(
+    metadata_list: Sequence[MarketMetadata],
+    candles_by_asset: dict[str, list[Candle]],
+    *,
+    entry_window_start: int = 30,
+    signal_lookback_seconds: int = 1200,
+    snapshot_cache: BookSnapshotCache | None = None,
+    whale_cache: WhaleTradeCache | None = None,
+    learning_rate: float = 0.1,
+    max_iterations: int = 10_000,
+    l2_lambda: float = 0.0,
+) -> dict[str, TrainingResult]:
+    """Train separate weights for each series slug with sufficient data.
+
+    Group metadata by ``series_slug``, build a dataset per slug, and
+    train independent logistic regression weights.  Slugs with fewer
+    than ``_MIN_SLUG_SAMPLES`` samples are skipped.
+
+    Args:
+        metadata_list: All market metadata records.
+        candles_by_asset: Pre-loaded Binance candles keyed by asset.
+        entry_window_start: Seconds before window close for evaluation.
+        signal_lookback_seconds: Candle lookback for features.
+        snapshot_cache: Pre-built order book snapshot cache.
+        whale_cache: Pre-built whale trade cache.
+        learning_rate: Gradient descent step size.
+        max_iterations: Max gradient descent iterations.
+        l2_lambda: L2 regularisation coefficient.
+
+    Returns:
+        Mapping from series slug to ``TrainingResult``.  Only slugs
+        with enough samples are included.
+
+    """
+    by_slug: dict[str, list[MarketMetadata]] = {}
+    for meta in metadata_list:
+        slug = meta.series_slug
+        if slug is None:
+            continue
+        by_slug.setdefault(slug, []).append(meta)
+
+    results: dict[str, TrainingResult] = {}
+    for slug, slug_metadata in sorted(by_slug.items()):
+        dataset = build_training_dataset(
+            slug_metadata,
+            candles_by_asset,
+            entry_window_start=entry_window_start,
+            signal_lookback_seconds=signal_lookback_seconds,
+            snapshot_cache=snapshot_cache,
+            whale_cache=whale_cache,
+        )
+        n_samples = dataset.x.shape[0]
+        if n_samples < _MIN_SLUG_SAMPLES:
+            continue
+
+        n_skipped = len(slug_metadata) - n_samples
+        result = train_weights(
+            dataset,
+            learning_rate=learning_rate,
+            max_iterations=max_iterations,
+            l2_lambda=l2_lambda,
+        )
+        results[slug] = TrainingResult(
+            weights=result.weights,
+            accuracy=result.accuracy,
+            log_loss=result.log_loss,
+            n_samples=result.n_samples,
+            n_skipped=n_skipped,
+        )
+    return results
+
+
 def format_training_report(result: TrainingResult) -> str:
     """Format a human-readable training report.
 
@@ -366,5 +441,38 @@ def format_training_report(result: TrainingResult) -> str:
         default = _DEFAULT_WEIGHTS[i]
         delta = learned - default
         lines.append(f"{name:<18} {learned:>10.4f} {default:>10.4f} {delta:>+10.4f}")
+
+    return "\n".join(lines)
+
+
+def format_all_slugs_report(
+    global_result: TrainingResult,
+    slug_results: dict[str, TrainingResult],
+) -> str:
+    """Format a combined report with global and per-slug training results.
+
+    Display the global weights first, then each slug's weights with
+    its accuracy and sample count.
+
+    Args:
+        global_result: Training result from all data combined.
+        slug_results: Per-slug training results.
+
+    Returns:
+        Multi-line string report.
+
+    """
+    lines = [format_training_report(global_result)]
+
+    for slug, result in sorted(slug_results.items()):
+        lines.append("")
+        lines.append(f"--- {slug} (n={result.n_samples}, acc={result.accuracy:.4f}) ---")
+        lines.append(f"{'Weight':<18} {'Learned':>10} {'Global':>10} {'Delta':>10}")
+        lines.append("-" * 52)
+        for name in WEIGHT_NAMES:
+            learned = result.weights[name]
+            global_w = global_result.weights[name]
+            delta = learned - global_w
+            lines.append(f"{name:<18} {learned:>10.4f} {global_w:>10.4f} {delta:>+10.4f}")
 
     return "\n".join(lines)

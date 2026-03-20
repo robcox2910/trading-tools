@@ -10,9 +10,27 @@ import dataclasses
 import functools
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
+
+
+def _empty_slug_weights() -> dict[str, dict[str, Decimal]]:
+    """Return an empty dict for the ``weights_by_slug`` default factory."""
+    return {}
+
+
+_WEIGHT_FIELD_NAMES = frozenset(
+    {
+        "w_momentum",
+        "w_volatility",
+        "w_volume",
+        "w_book_imbalance",
+        "w_rsi",
+        "w_price_change",
+        "w_whale",
+    }
+)
 
 
 @functools.lru_cache(maxsize=1)
@@ -26,13 +44,47 @@ def _decimal_field_names() -> frozenset[str]:
     return frozenset(f.name for f in dataclasses.fields(DirectionalConfig) if f.type is Decimal)
 
 
+def _parse_slug_weights(raw: dict[str, dict[str, Any]]) -> dict[str, dict[str, Decimal]]:
+    """Parse the ``weights_by_slug`` nested YAML structure.
+
+    Convert each slug's weight values to ``Decimal``.  Only keys that
+    match known weight field names (``w_*``) are retained.
+
+    Args:
+        raw: Nested dict from YAML ``weights_by_slug`` section.
+
+    Returns:
+        Mapping from slug to weight-name → Decimal pairs.
+
+    Raises:
+        ValueError: If a weight value cannot be converted to Decimal.
+
+    """
+    decimal_names = _decimal_field_names()
+    result: dict[str, dict[str, Decimal]] = {}
+    for slug, weights in raw.items():
+        parsed: dict[str, Decimal] = {}
+        for key, value in weights.items():
+            if key not in decimal_names:
+                continue
+            try:
+                parsed[key] = Decimal(str(value))
+            except InvalidOperation as exc:
+                msg = f"Cannot convert {slug}.{key}={value!r} to Decimal"
+                raise ValueError(msg) from exc
+        if parsed:
+            result[slug] = parsed
+    return result
+
+
 def _parse_config_dict(data: dict[str, Any]) -> dict[str, Any]:
     """Convert raw YAML dict values to types expected by ``DirectionalConfig``.
 
     Numeric string values are converted to ``Decimal`` for fields that
     require it; bare numeric YAML values (``float``/``int``) are also
-    handled.  Unknown keys (not matching any dataclass field) are
-    silently dropped.
+    handled.  The ``weights_by_slug`` key receives special handling for
+    its nested dict-of-dicts structure.  Unknown keys (not matching any
+    dataclass field) are silently dropped.
 
     Args:
         data: Raw dictionary from ``yaml.safe_load``.
@@ -51,7 +103,9 @@ def _parse_config_dict(data: dict[str, Any]) -> dict[str, Any]:
     for key, value in data.items():
         if key not in valid_names:
             continue
-        if key in decimal_names:
+        if key == "weights_by_slug" and isinstance(value, dict):
+            result[key] = _parse_slug_weights(cast("dict[str, dict[str, Any]]", value))
+        elif key in decimal_names:
             try:
                 result[key] = Decimal(str(value))
             except InvalidOperation as exc:
@@ -106,6 +160,10 @@ class DirectionalConfig:
         min_token_price: Minimum token price to buy.  Skip tokens the
             market has already written off (e.g. $0.06 with 30s left
             means 94% decided against this side).
+        weights_by_slug: Per-series-slug weight overrides.  Keys are
+            series slugs (e.g. ``"btc-updown-5m"``), values are dicts
+            mapping weight field names to ``Decimal`` values.  Slugs
+            not present fall back to the global ``w_*`` fields.
 
     """
 
@@ -134,6 +192,30 @@ class DirectionalConfig:
     w_rsi: Decimal = Decimal("0.05")
     w_price_change: Decimal = Decimal("0.10")
     w_whale: Decimal = Decimal("0.50")
+    weights_by_slug: dict[str, dict[str, Decimal]] = dataclasses.field(
+        default_factory=_empty_slug_weights,
+    )
+
+    def weights_for_slug(self, slug: str | None) -> dict[str, Decimal]:
+        """Return weight overrides for a slug, falling back to global weights.
+
+        Build a weight dict from the global ``w_*`` fields, then merge
+        any slug-specific overrides on top.  If *slug* is ``None`` or
+        has no entry in ``weights_by_slug``, only the global weights
+        are returned.
+
+        Args:
+            slug: Series slug to look up, or ``None`` for global only.
+
+        Returns:
+            Dict mapping weight field names (``w_momentum`` etc.) to
+            ``Decimal`` values.
+
+        """
+        base = {name: getattr(self, name) for name in _WEIGHT_FIELD_NAMES}
+        if slug is not None and slug in self.weights_by_slug:
+            base.update(self.weights_by_slug[slug])
+        return base
 
     @classmethod
     def from_yaml(cls, path: Path) -> "DirectionalConfig":

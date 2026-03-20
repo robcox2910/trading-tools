@@ -145,12 +145,18 @@ class DirectionalTrader:
 
         estimator = ProbabilityEstimator(self.config)
 
+        estimator_by_slug = {
+            slug: ProbabilityEstimator.for_slug(self.config, slug)
+            for slug in self.config.weights_by_slug
+        }
+
         return DirectionalEngine(
             config=self.config,
             execution=execution,
             market_data=market_data,
             estimator=estimator,
             mode_label=mode_label,
+            estimator_by_slug=estimator_by_slug,
         )
 
     def set_repository(self, repo: DirectionalResultRepository) -> None:

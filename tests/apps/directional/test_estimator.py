@@ -117,3 +117,40 @@ class TestProbabilityEstimator:
         p_neg = estimator.estimate(features_neg)
         # p_pos + p_neg should be approximately 1.0 (sigmoid symmetry)
         assert abs(p_pos + p_neg - Decimal(1)) < _TOLERANCE
+
+
+class TestForSlug:
+    """Test slug-specific estimator construction."""
+
+    def test_for_slug_none_uses_global_weights(self) -> None:
+        """Passing None slug uses global weights (identical to default estimator)."""
+        config = DirectionalConfig()
+        est_global = ProbabilityEstimator(config)
+        est_slug = ProbabilityEstimator.for_slug(config, None)
+        features = _make_features(momentum=Decimal("0.5"))
+        assert est_global.estimate(features) == est_slug.estimate(features)
+
+    def test_for_slug_with_overrides(self) -> None:
+        """Slug-specific weights produce different estimates than global."""
+        config = DirectionalConfig(
+            weights_by_slug={
+                "btc-updown-5m": {"w_momentum": Decimal("2.0")},
+            },
+        )
+        est_global = ProbabilityEstimator.for_slug(config, None)
+        est_btc = ProbabilityEstimator.for_slug(config, "btc-updown-5m")
+        features = _make_features(momentum=Decimal("0.5"))
+        p_global = est_global.estimate(features)
+        p_btc = est_btc.estimate(features)
+        # BTC estimator has heavier momentum weight → higher P(Up)
+        assert p_btc > p_global
+
+    def test_for_slug_unknown_uses_global(self) -> None:
+        """Unknown slug falls back to global weights."""
+        config = DirectionalConfig(
+            weights_by_slug={"btc-updown-5m": {"w_momentum": Decimal("2.0")}},
+        )
+        est_global = ProbabilityEstimator.for_slug(config, None)
+        est_unknown = ProbabilityEstimator.for_slug(config, "sol-updown-5m")
+        features = _make_features(momentum=Decimal("0.5"))
+        assert est_global.estimate(features) == est_unknown.estimate(features)

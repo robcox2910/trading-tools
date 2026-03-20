@@ -147,3 +147,74 @@ class TestWithOverrides:
         config = DirectionalConfig()
         with pytest.raises(AttributeError):
             config.capital = Decimal(999)  # type: ignore[misc]
+
+
+class TestWeightsBySlug:
+    """Test per-slug weight configuration."""
+
+    def test_default_weights_by_slug_empty(self) -> None:
+        """Default config has no per-slug overrides."""
+        config = DirectionalConfig()
+        assert config.weights_by_slug == {}
+
+    def test_weights_for_slug_returns_global_when_no_slug(self) -> None:
+        """Return global weights when slug is None."""
+        config = DirectionalConfig()
+        weights = config.weights_for_slug(None)
+        assert weights["w_momentum"] == Decimal("0.15")
+        assert weights["w_whale"] == Decimal("0.50")
+
+    def test_weights_for_slug_returns_global_when_slug_unknown(self) -> None:
+        """Return global weights when slug has no override entry."""
+        config = DirectionalConfig()
+        weights = config.weights_for_slug("unknown-slug")
+        assert weights["w_momentum"] == Decimal("0.15")
+
+    def test_weights_for_slug_merges_overrides(self) -> None:
+        """Slug-specific weights override global, others fall through."""
+        config = DirectionalConfig(
+            weights_by_slug={
+                "btc-updown-5m": {
+                    "w_momentum": Decimal("0.88"),
+                    "w_rsi": Decimal("5.17"),
+                },
+            },
+        )
+        weights = config.weights_for_slug("btc-updown-5m")
+        assert weights["w_momentum"] == Decimal("0.88")
+        assert weights["w_rsi"] == Decimal("5.17")
+        # Non-overridden weights come from global
+        assert weights["w_whale"] == Decimal("0.50")
+
+    def test_weights_for_slug_all_seven_keys(self) -> None:
+        """Return dict always contains all 7 weight keys."""
+        config = DirectionalConfig(
+            weights_by_slug={"btc-updown-5m": {"w_momentum": Decimal("0.99")}},
+        )
+        weights = config.weights_for_slug("btc-updown-5m")
+        expected_keys = 7
+        assert len(weights) == expected_keys
+
+    def test_from_yaml_weights_by_slug(self, tmp_path: Path) -> None:
+        """Load per-slug weights from YAML."""
+        yaml_file = tmp_path / "config.yaml"
+        yaml_file.write_text(
+            "w_momentum: 0.15\n"
+            "weights_by_slug:\n"
+            "  btc-updown-5m:\n"
+            "    w_momentum: 0.88\n"
+            "    w_rsi: 5.17\n"
+            "  eth-updown-5m:\n"
+            "    w_momentum: 0.72\n"
+        )
+        config = DirectionalConfig.from_yaml(yaml_file)
+        assert "btc-updown-5m" in config.weights_by_slug
+        assert config.weights_by_slug["btc-updown-5m"]["w_momentum"] == Decimal("0.88")
+        assert config.weights_by_slug["eth-updown-5m"]["w_momentum"] == Decimal("0.72")
+
+    def test_from_yaml_invalid_slug_weight_raises(self, tmp_path: Path) -> None:
+        """Non-numeric slug weight value raises ValueError."""
+        yaml_file = tmp_path / "config.yaml"
+        yaml_file.write_text("weights_by_slug:\n  btc-updown-5m:\n    w_momentum: not_a_number\n")
+        with pytest.raises(ValueError, match="Cannot convert"):
+            DirectionalConfig.from_yaml(yaml_file)
