@@ -12,6 +12,7 @@ indicators library.
 
 from __future__ import annotations
 
+import math
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -290,6 +291,31 @@ def compute_whale_signal(whale_direction: str | None) -> Decimal:
     return ZERO
 
 
+_TWO_PI = 2.0 * math.pi
+_HOURS_PER_DAY = 24
+_SECONDS_PER_HOUR = 3600
+
+
+def compute_time_of_day(utc_epoch: int) -> tuple[Decimal, Decimal]:
+    """Compute cyclic time-of-day encoding from a UTC epoch timestamp.
+
+    Encode the hour of day as ``(sin(2π·h/24), cos(2π·h/24))`` where
+    ``h`` is the fractional UTC hour.  This avoids the midnight
+    discontinuity of a raw hour feature and lets the model learn
+    session-dependent patterns (US open, Asian close, etc.).
+
+    Args:
+        utc_epoch: UTC epoch seconds.
+
+    Returns:
+        Tuple of ``(tod_sin, tod_cos)`` each in ``[-1, 1]``.
+
+    """
+    fractional_hour = (utc_epoch % (_HOURS_PER_DAY * _SECONDS_PER_HOUR)) / _SECONDS_PER_HOUR
+    angle = _TWO_PI * fractional_hour / _HOURS_PER_DAY
+    return Decimal(str(round(math.sin(angle), 6))), Decimal(str(round(math.cos(angle), 6)))
+
+
 def compute_tick_imbalance(
     ticks: Sequence[TickSample] | None,
     lookback_ms: int = 60_000,
@@ -415,6 +441,7 @@ def extract_features(
     whale_direction: str | None = None,
     leader_candles: Sequence[Candle] | None = None,
     up_ticks: Sequence[TickSample] | None = None,
+    utc_epoch: int = 0,
 ) -> FeatureVector:
     """Extract all features from market data and return a ``FeatureVector``.
 
@@ -435,11 +462,14 @@ def extract_features(
             Pass ``None`` for BTC itself to avoid double-counting.
         up_ticks: Recent Polymarket tick samples for the Up token.
             Pass ``None`` when tick data is unavailable.
+        utc_epoch: Current UTC epoch seconds for time-of-day encoding.
+            Pass ``0`` to disable (both sin/cos will be zero).
 
     Returns:
-        A ``FeatureVector`` with all eleven features populated.
+        A ``FeatureVector`` with all thirteen features populated.
 
     """
+    tod_sin, tod_cos = compute_time_of_day(utc_epoch) if utc_epoch else (ZERO, ZERO)
     return FeatureVector(
         momentum=compute_momentum(candles),
         volatility_regime=compute_volatility_regime(candles, period=atr_period),
@@ -449,6 +479,8 @@ def extract_features(
         price_change_pct=compute_price_change(candles),
         whale_signal=compute_whale_signal(whale_direction),
         leader_momentum=compute_leader_momentum(leader_candles),
+        tod_sin=tod_sin,
+        tod_cos=tod_cos,
         tick_imbalance=compute_tick_imbalance(up_ticks),
         tick_price_velocity=compute_tick_price_velocity(up_ticks),
         tick_volume_accel=compute_tick_volume_accel(up_ticks),

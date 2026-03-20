@@ -217,6 +217,7 @@ class DirectionalEngine:
             whale_direction=whale_direction,
             leader_candles=leader_candles,
             up_ticks=up_ticks,
+            utc_epoch=now,
         )
         est = (
             self.estimator_by_slug.get(market.series_slug, self.estimator)

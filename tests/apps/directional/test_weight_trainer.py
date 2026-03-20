@@ -150,7 +150,7 @@ class TestFeatureVectorToArray:
     """Test FeatureVector to numpy array conversion."""
 
     def test_converts_all_features(self) -> None:
-        """Convert all 11 features to a float array."""
+        """Convert all 13 features to a float array."""
         fv = FeatureVector(
             momentum=Decimal("0.5"),
             volatility_regime=Decimal("-0.3"),
@@ -160,14 +160,16 @@ class TestFeatureVectorToArray:
             price_change_pct=Decimal("0.4"),
             whale_signal=Decimal("1.0"),
             leader_momentum=Decimal("0.3"),
+            tod_sin=Decimal("0.5"),
+            tod_cos=Decimal("-0.5"),
             tick_imbalance=Decimal("0.15"),
             tick_price_velocity=Decimal("-0.2"),
             tick_volume_accel=Decimal("0.4"),
         )
         arr = _feature_vector_to_array(fv)
-        assert arr.shape == (11,)
+        assert arr.shape == (13,)
         assert float(arr[0]) == 0.5
-        assert float(arr[10]) == 0.4
+        assert float(arr[12]) == 0.4
 
     def test_preserves_order(self) -> None:
         """Feature order matches FEATURE_NAMES."""
@@ -180,6 +182,8 @@ class TestFeatureVectorToArray:
             price_change_pct=Decimal("0.6"),
             whale_signal=Decimal("0.7"),
             leader_momentum=Decimal("0.8"),
+            tod_sin=Decimal("0.85"),
+            tod_cos=Decimal("0.9"),
             tick_imbalance=Decimal("0.15"),
             tick_price_velocity=Decimal("0.25"),
             tick_volume_accel=Decimal("0.35"),
@@ -208,7 +212,7 @@ class TestBuildTrainingDataset:
         )
 
         assert dataset.x.shape[0] == 2
-        assert dataset.x.shape[1] == 11
+        assert dataset.x.shape[1] == 13
         assert dataset.y[0] == 1.0  # Up
         assert dataset.y[1] == 0.0  # Down
 
@@ -244,7 +248,7 @@ class TestBuildTrainingDataset:
     def test_empty_metadata_returns_empty_dataset(self) -> None:
         """Return an empty dataset when no metadata is provided."""
         dataset = build_training_dataset([], {})
-        assert dataset.x.shape == (0, 11)
+        assert dataset.x.shape == (0, 13)
         assert dataset.y.shape == (0,)
 
     def test_uses_snapshot_cache(self) -> None:
@@ -300,7 +304,7 @@ class TestTrainWeights:
         """Learn a positive weight for a feature that predicts Up."""
         rng = np.random.default_rng(42)
         n = 500
-        x = np.zeros((n, 11), dtype=np.float64)
+        x = np.zeros((n, 13), dtype=np.float64)
         # Feature 0 (momentum) predicts the label
         signal = rng.standard_normal(n)
         x[:, 0] = signal
@@ -315,7 +319,7 @@ class TestTrainWeights:
     def test_converges_on_separable_data(self) -> None:
         """Achieve high accuracy on perfectly separable data."""
         n = 200
-        x = np.zeros((n, 11), dtype=np.float64)
+        x = np.zeros((n, 13), dtype=np.float64)
         # Feature 0 is +1 for Up, -1 for Down — perfectly separable
         x[:100, 0] = 1.0
         x[100:, 0] = -1.0
@@ -331,7 +335,7 @@ class TestTrainWeights:
         """L2 regularisation produces smaller weight magnitudes."""
         rng = np.random.default_rng(42)
         n = 300
-        x = rng.standard_normal((n, 11))
+        x = rng.standard_normal((n, 13))
         y = (x[:, 0] > 0).astype(np.float64)
 
         dataset = TrainingDataset(x=x, y=y, feature_names=FEATURE_NAMES)
@@ -356,12 +360,12 @@ class TestTrainWeights:
 
     def test_returns_all_seven_weights(self) -> None:
         """Result contains all 7 weight names and a bias."""
-        x = np.ones((10, 11), dtype=np.float64)
+        x = np.ones((10, 13), dtype=np.float64)
         y = np.array([1.0, 0.0] * 5)
         dataset = TrainingDataset(x=x, y=y, feature_names=FEATURE_NAMES)
         result = train_weights(dataset, max_iterations=10)
 
-        assert len(result.weights) == 11
+        assert len(result.weights) == 13
         for name in WEIGHT_NAMES:
             assert name in result.weights
         assert isinstance(result.bias, Decimal)
@@ -371,7 +375,7 @@ class TestTrainWeights:
         rng = np.random.default_rng(42)
         n = 400
         # 75% Up labels with zero features — bias must absorb the skew
-        x = rng.standard_normal((n, 11)) * 0.01  # near-zero features
+        x = rng.standard_normal((n, 13)) * 0.01  # near-zero features
         up_ratio = 0.75
         y = np.zeros(n, dtype=np.float64)
         y[: int(n * up_ratio)] = 1.0
@@ -386,7 +390,7 @@ class TestTrainWeights:
         rng = np.random.default_rng(42)
         n = 400
         # 75% Down labels with zero features
-        x = rng.standard_normal((n, 11)) * 0.01
+        x = rng.standard_normal((n, 13)) * 0.01
         down_ratio = 0.75
         y = np.ones(n, dtype=np.float64)
         y[: int(n * down_ratio)] = 0.0
