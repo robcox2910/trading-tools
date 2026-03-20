@@ -64,7 +64,7 @@ dpkg -i amazon-cloudwatch-agent.deb
 # Create log directory
 mkdir -p /var/log/trading-tools
 
-# CloudWatch agent config: ship log files for both bot services
+# CloudWatch agent config: ship all 6 service log files
 cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWEOF'
 {
   "logs": {
@@ -72,13 +72,13 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWEOF
       "files": {
         "collect_list": [
           {
-            "file_path": "/var/log/trading-tools/paper-bot.log",
+            "file_path": "/var/log/trading-tools/trading-bot-paper.log",
             "log_group_name": "/trading-tools/polymarket-bot-paper",
             "log_stream_name": "{instance_id}",
             "retention_in_days": 14
           },
           {
-            "file_path": "/var/log/trading-tools/live-bot.log",
+            "file_path": "/var/log/trading-tools/trading-bot-live.log",
             "log_group_name": "/trading-tools/polymarket-bot-live",
             "log_stream_name": "{instance_id}",
             "retention_in_days": 30
@@ -88,6 +88,24 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWEOF
             "log_group_name": "/trading-tools/tick-collector",
             "log_stream_name": "{instance_id}",
             "retention_in_days": 30
+          },
+          {
+            "file_path": "/var/log/trading-tools/whale-monitor.log",
+            "log_group_name": "/trading-tools/whale-monitor",
+            "log_stream_name": "{instance_id}",
+            "retention_in_days": 14
+          },
+          {
+            "file_path": "/var/log/trading-tools/spread-capture-live.log",
+            "log_group_name": "/trading-tools/spread-capture-live",
+            "log_stream_name": "{instance_id}",
+            "retention_in_days": 14
+          },
+          {
+            "file_path": "/var/log/trading-tools/spread-capture-paper.log",
+            "log_group_name": "/trading-tools/spread-capture-paper",
+            "log_stream_name": "{instance_id}",
+            "retention_in_days": 14
           }
         ]
       }
@@ -135,7 +153,20 @@ chmod 600 "$ENV_FILE"
 FSEOF
 chmod +x "$REPO_DIR/fetch-secrets.sh"
 
-# ── 8. Systemd service: paper trading bot ────────────────────
+# ── 8. Logrotate config ─────────────────────────────────────
+cat > /etc/logrotate.d/trading-tools <<'LREOF'
+/var/log/trading-tools/*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+LREOF
+
+# ── 9. Systemd service: paper trading bot ────────────────────
 cat > /etc/systemd/system/trading-bot-paper.service <<SVCEOF
 [Unit]
 Description=Polymarket Paper Trading Bot
@@ -158,19 +189,21 @@ ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket bot \
   --snipe-window 60 \
   --verbose
 
-StandardOutput=append:/var/log/trading-tools/paper-bot.log
-StandardError=append:/var/log/trading-tools/paper-bot.log
+StandardOutput=append:/var/log/trading-tools/trading-bot-paper.log
+StandardError=append:/var/log/trading-tools/trading-bot-paper.log
 
 Restart=on-failure
 RestartSec=30
 KillSignal=SIGINT
 TimeoutStopSec=90
+CPUQuota=20%
+MemoryMax=512M
 
 [Install]
 WantedBy=multi-user.target
 SVCEOF
 
-# ── 9. Systemd service: live trading bot ─────────────────────
+# ── 10. Systemd service: live trading bot ─────────────────────
 cat > /etc/systemd/system/trading-bot-live.service <<SVCEOF
 [Unit]
 Description=Polymarket Live Trading Bot
@@ -195,19 +228,21 @@ ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket bot-live \
   --confirm-live \
   --verbose
 
-StandardOutput=append:/var/log/trading-tools/live-bot.log
-StandardError=append:/var/log/trading-tools/live-bot.log
+StandardOutput=append:/var/log/trading-tools/trading-bot-live.log
+StandardError=append:/var/log/trading-tools/trading-bot-live.log
 
-Restart=always
-RestartSec=60
+Restart=on-failure
+RestartSec=30
 KillSignal=SIGINT
-TimeoutStopSec=120
+TimeoutStopSec=90
+CPUQuota=20%
+MemoryMax=512M
 
 [Install]
 WantedBy=multi-user.target
 SVCEOF
 
-# ── 10. Systemd service: tick collector ────────────────────────
+# ── 11. Systemd service: tick collector ────────────────────────
 cat > /etc/systemd/system/tick-collector.service <<SVCEOF
 [Unit]
 Description=Polymarket Tick Collector
@@ -229,19 +264,18 @@ ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket tick-collect \
 StandardOutput=append:/var/log/trading-tools/tick-collector.log
 StandardError=append:/var/log/trading-tools/tick-collector.log
 
-CPUQuota=20%
-MemoryMax=256M
-
 Restart=on-failure
 RestartSec=30
 KillSignal=SIGINT
 TimeoutStopSec=90
+CPUQuota=20%
+MemoryMax=512M
 
 [Install]
 WantedBy=multi-user.target
 SVCEOF
 
-# ── 11. Systemd service: whale monitor ──────────────────────────
+# ── 12. Systemd service: whale monitor ──────────────────────────
 cat > /etc/systemd/system/whale-monitor.service <<SVCEOF
 [Unit]
 Description=Polymarket Whale Trade Monitor
@@ -266,22 +300,99 @@ Restart=on-failure
 RestartSec=30
 KillSignal=SIGINT
 TimeoutStopSec=90
+CPUQuota=20%
+MemoryMax=512M
 
 [Install]
 WantedBy=multi-user.target
 SVCEOF
 
-# ── 12. Enable and start paper bot + tick collector + whale monitor ──
+# ── 13. Systemd service: spread capture bot (paper) ──────────────
+cat > /etc/systemd/system/spread-capture-paper.service <<SVCEOF
+[Unit]
+Description=Polymarket Spread Capture Bot (Paper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$REPO_DIR
+
+ExecStartPre=/bin/bash $REPO_DIR/fetch-secrets.sh /run/spread-capture-paper.env
+EnvironmentFile=-/run/spread-capture-paper.env
+
+ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket spread-capture \
+  --series-slugs crypto-5m \
+  --verbose
+
+StandardOutput=append:/var/log/trading-tools/spread-capture-paper.log
+StandardError=append:/var/log/trading-tools/spread-capture-paper.log
+
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGINT
+TimeoutStopSec=90
+CPUQuota=20%
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+# ── 14. Systemd service: spread capture bot (live) ──────────────
+cat > /etc/systemd/system/spread-capture-live.service <<SVCEOF
+[Unit]
+Description=Polymarket Spread Capture Bot (Live)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$REPO_DIR
+
+ExecStartPre=/bin/bash $REPO_DIR/fetch-secrets.sh /run/spread-capture-live.env
+EnvironmentFile=-/run/spread-capture-live.env
+
+ExecStart=$REPO_DIR/.venv/bin/trading-tools-polymarket spread-capture \
+  --series-slugs crypto-5m \
+  --confirm-live \
+  --verbose
+
+StandardOutput=append:/var/log/trading-tools/spread-capture-live.log
+StandardError=append:/var/log/trading-tools/spread-capture-live.log
+
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGINT
+TimeoutStopSec=90
+CPUQuota=20%
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+# ── 15. Enable and start services ──────────────────────────────
 systemctl daemon-reload
+
+# Enable all services except live bot (safety: require manual start)
 systemctl enable trading-bot-paper.service
-systemctl start trading-bot-paper.service
 systemctl enable tick-collector.service
-systemctl start tick-collector.service
 systemctl enable whale-monitor.service
+systemctl enable spread-capture-paper.service
+systemctl enable spread-capture-live.service
+
+# Start all enabled services
+systemctl start trading-bot-paper.service
+systemctl start tick-collector.service
 systemctl start whale-monitor.service
+systemctl start spread-capture-paper.service
+systemctl start spread-capture-live.service
 
 # Live bot is installed but NOT enabled/started
-echo "Paper bot, tick collector, and whale monitor started. Live bot installed but disabled."
+echo "All services started. Live trading bot installed but disabled."
 echo "To start live bot: sudo systemctl start trading-bot-live"
 
 echo "=== Bootstrap completed at $(date -u) ==="

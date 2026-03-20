@@ -349,7 +349,7 @@ def backtest_snipe(
     max_position_pct: Annotated[
         float, typer.Option(help="Max fraction of capital per market")
     ] = 0.1,
-    verbose: Annotated[  # noqa: FBT002
+    verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable per-trade logging")
     ] = False,
 ) -> None:

@@ -1,7 +1,8 @@
 """Tests for per-market whale trade analysis."""
 
+import pandas as pd
+
 from trading_tools.apps.whale_monitor.analyser import (
-    MarketBreakdown,
     analyse_markets,
     format_market_analysis,
 )
@@ -59,13 +60,14 @@ def _make_trade(
 
 
 class TestAnalyseMarkets:
-    """Tests for the analyse_markets function."""
+    """Tests for the analyse_markets function, which returns a DataFrame."""
 
     def test_empty_trades(self) -> None:
-        """Return empty list for no trades."""
+        """Return an empty DataFrame for no trades."""
         result = analyse_markets([], min_trades=1)
 
-        assert result == []
+        assert isinstance(result, pd.DataFrame)
+        assert result.empty
 
     def test_single_market_up_only(self) -> None:
         """Compute breakdown for a market with only Up trades."""
@@ -76,15 +78,15 @@ class TestAnalyseMarkets:
         result = analyse_markets(trades, min_trades=_MIN_TRADES_2)
 
         assert len(result) == 1
-        m = result[0]
-        assert m.condition_id == "cond_a"
+        row = result.iloc[0]
+        assert row["condition_id"] == "cond_a"
         expected_up_volume = 100.0 * 0.60 + 50.0 * 0.70
-        assert m.up_volume == expected_up_volume
-        assert m.down_volume == 0.0
-        assert m.up_size == 150.0  # noqa: PLR2004
-        assert m.down_size == 0.0
-        assert m.trade_count == _MIN_TRADES_2
-        assert m.favoured_side == "Up"
+        assert row["up_volume"] == expected_up_volume
+        assert row["down_volume"] == 0.0
+        assert row["up_size"] == 150.0
+        assert row["down_size"] == 0.0
+        assert row["trade_count"] == _MIN_TRADES_2
+        assert row["favoured_side"] == "Up"
 
     def test_bias_ratio_calculation(self) -> None:
         """Calculate bias ratio as larger / smaller volume."""
@@ -94,10 +96,10 @@ class TestAnalyseMarkets:
         ]
         result = analyse_markets(trades, min_trades=_MIN_TRADES_2)
 
-        m = result[0]
+        row = result.iloc[0]
         expected_ratio = 2.0
-        assert m.bias_ratio == expected_ratio
-        assert m.favoured_side == "Up"
+        assert row["bias_ratio"] == expected_ratio
+        assert row["favoured_side"] == "Up"
 
     def test_bias_ratio_down_favoured(self) -> None:
         """Favour Down when Down volume exceeds Up volume."""
@@ -107,10 +109,10 @@ class TestAnalyseMarkets:
         ]
         result = analyse_markets(trades, min_trades=_MIN_TRADES_2)
 
-        m = result[0]
+        row = result.iloc[0]
         expected_ratio = 3.0
-        assert m.bias_ratio == expected_ratio
-        assert m.favoured_side == "Down"
+        assert row["bias_ratio"] == expected_ratio
+        assert row["favoured_side"] == "Down"
 
     def test_bias_ratio_one_side_zero(self) -> None:
         """Use raw volume as bias when one side has zero volume."""
@@ -120,9 +122,9 @@ class TestAnalyseMarkets:
         ]
         result = analyse_markets(trades, min_trades=_MIN_TRADES_2)
 
-        m = result[0]
+        row = result.iloc[0]
         expected_volume = 100.0
-        assert m.bias_ratio == expected_volume
+        assert row["bias_ratio"] == expected_volume
 
     def test_min_trades_filter(self) -> None:
         """Filter out markets below the min_trades threshold."""
@@ -135,7 +137,7 @@ class TestAnalyseMarkets:
         result = analyse_markets(trades, min_trades=min_trades_2)
 
         assert len(result) == 1
-        assert result[0].condition_id == "cond_b"
+        assert result.iloc[0]["condition_id"] == "cond_b"
 
     def test_sorted_by_last_trade_desc(self) -> None:
         """Sort markets by last_trade_ts descending."""
@@ -150,8 +152,8 @@ class TestAnalyseMarkets:
         result = analyse_markets(trades, min_trades=_MIN_TRADES_2)
 
         assert len(result) == _MIN_TRADES_2
-        assert result[0].condition_id == "cond_b"
-        assert result[1].condition_id == "cond_a"
+        assert result.iloc[0]["condition_id"] == "cond_b"
+        assert result.iloc[1]["condition_id"] == "cond_a"
 
     def test_first_and_last_trade_timestamps(self) -> None:
         """Track earliest and latest trade timestamps per market."""
@@ -163,9 +165,9 @@ class TestAnalyseMarkets:
         ]
         result = analyse_markets(trades, min_trades=_MIN_TRADES_2)
 
-        m = result[0]
-        assert m.first_trade_ts == ts_first
-        assert m.last_trade_ts == ts_last
+        row = result.iloc[0]
+        assert row["first_trade_ts"] == ts_first
+        assert row["last_trade_ts"] == ts_last
 
     def test_multiple_markets(self) -> None:
         """Analyse multiple markets independently."""
@@ -192,35 +194,60 @@ class TestAnalyseMarkets:
         result = analyse_markets(trades, min_trades=_MIN_TRADES_2)
 
         assert len(result) == _MIN_TRADES_2
-        titles = {m.title for m in result}
+        titles = set(result["title"].tolist())
         assert titles == {"BTC Up/Down", "ETH Up/Down"}
+
+
+def _make_markets_df(rows: list[dict[str, object]]) -> pd.DataFrame:
+    """Build a minimal market breakdown DataFrame for formatting tests.
+
+    Args:
+        rows: Dicts with market breakdown fields.
+
+    Returns:
+        DataFrame suitable for passing to ``format_market_analysis``.
+
+    """
+    defaults = {
+        "up_volume": 0.0,
+        "down_volume": 0.0,
+        "up_size": 0.0,
+        "down_size": 0.0,
+        "trade_count": 10,
+        "bias_ratio": 1.5,
+        "favoured_side": "Up",
+        "first_trade_ts": _BASE_TS,
+        "last_trade_ts": _BASE_TS,
+    }
+    merged = [{**defaults, **r} for r in rows]
+    return pd.DataFrame(merged)
 
 
 class TestFormatMarketAnalysis:
     """Tests for the format_market_analysis function."""
 
     def test_empty_markets(self) -> None:
-        """Return informative message for empty market list."""
-        result = format_market_analysis([])
+        """Return informative message for empty market DataFrame."""
+        result = format_market_analysis(pd.DataFrame())
 
         assert "No markets found" in result
 
     def test_header_present(self) -> None:
         """Include header and column labels."""
-        markets = [
-            MarketBreakdown(
-                condition_id="cond_a",
-                title="BTC Up/Down",
-                slug="btc",
-                up_volume=52.30,
-                down_volume=24.10,
-                trade_count=10,
-                bias_ratio=2.2,
-                favoured_side="Up",
-                first_trade_ts=_BASE_TS,
-                last_trade_ts=_BASE_TS,
-            ),
-        ]
+        markets = _make_markets_df(
+            [
+                {
+                    "condition_id": "cond_a",
+                    "title": "BTC Up/Down",
+                    "slug": "btc",
+                    "up_volume": 52.30,
+                    "down_volume": 24.10,
+                    "trade_count": 10,
+                    "bias_ratio": 2.2,
+                    "favoured_side": "Up",
+                }
+            ]
+        )
         result = format_market_analysis(markets)
 
         assert "Per-Market Whale Analysis" in result
@@ -233,20 +260,20 @@ class TestFormatMarketAnalysis:
         """Display volume, bias, and trade count for each market."""
         up_vol = 52.30
         down_vol = 24.10
-        markets = [
-            MarketBreakdown(
-                condition_id="cond_a",
-                title="BTC Up/Down",
-                slug="btc",
-                up_volume=up_vol,
-                down_volume=down_vol,
-                trade_count=10,
-                bias_ratio=2.2,
-                favoured_side="Up",
-                first_trade_ts=_BASE_TS,
-                last_trade_ts=_BASE_TS,
-            ),
-        ]
+        markets = _make_markets_df(
+            [
+                {
+                    "condition_id": "cond_a",
+                    "title": "BTC Up/Down",
+                    "slug": "btc",
+                    "up_volume": up_vol,
+                    "down_volume": down_vol,
+                    "trade_count": 10,
+                    "bias_ratio": 2.2,
+                    "favoured_side": "Up",
+                }
+            ]
+        )
         result = format_market_analysis(markets)
 
         assert "52.30" in result
@@ -257,32 +284,30 @@ class TestFormatMarketAnalysis:
 
     def test_summary_section(self) -> None:
         """Include summary with total markets, avg bias, and side preference."""
-        markets = [
-            MarketBreakdown(
-                condition_id="cond_a",
-                title="Market A",
-                slug="a",
-                up_volume=100.0,
-                down_volume=50.0,
-                trade_count=20,
-                bias_ratio=2.0,
-                favoured_side="Up",
-                first_trade_ts=_BASE_TS,
-                last_trade_ts=_BASE_TS,
-            ),
-            MarketBreakdown(
-                condition_id="cond_b",
-                title="Market B",
-                slug="b",
-                up_volume=30.0,
-                down_volume=90.0,
-                trade_count=15,
-                bias_ratio=3.0,
-                favoured_side="Down",
-                first_trade_ts=_BASE_TS,
-                last_trade_ts=_BASE_TS,
-            ),
-        ]
+        markets = _make_markets_df(
+            [
+                {
+                    "condition_id": "cond_a",
+                    "title": "Market A",
+                    "slug": "a",
+                    "up_volume": 100.0,
+                    "down_volume": 50.0,
+                    "trade_count": 20,
+                    "bias_ratio": 2.0,
+                    "favoured_side": "Up",
+                },
+                {
+                    "condition_id": "cond_b",
+                    "title": "Market B",
+                    "slug": "b",
+                    "up_volume": 30.0,
+                    "down_volume": 90.0,
+                    "trade_count": 15,
+                    "bias_ratio": 3.0,
+                    "favoured_side": "Down",
+                },
+            ]
+        )
         result = format_market_analysis(markets)
 
         assert "Total markets: 2" in result
@@ -294,18 +319,18 @@ class TestFormatMarketAnalysis:
     def test_long_title_truncated(self) -> None:
         """Truncate long market titles with ellipsis."""
         long_title = "A" * 60
-        markets = [
-            MarketBreakdown(
-                condition_id="cond_a",
-                title=long_title,
-                slug="a",
-                trade_count=10,
-                bias_ratio=1.5,
-                favoured_side="Up",
-                first_trade_ts=_BASE_TS,
-                last_trade_ts=_BASE_TS,
-            ),
-        ]
+        markets = _make_markets_df(
+            [
+                {
+                    "condition_id": "cond_a",
+                    "title": long_title,
+                    "slug": "a",
+                    "trade_count": 10,
+                    "bias_ratio": 1.5,
+                    "favoured_side": "Up",
+                }
+            ]
+        )
         result = format_market_analysis(markets)
 
         assert "..." in result

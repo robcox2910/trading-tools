@@ -88,7 +88,7 @@ def run_monte_carlo(
         msg = f"Monte Carlo requires at least {_MIN_TRADES} trades, got {len(result.trades)}"
         raise ValueError(msg)
 
-    rng = random.Random(seed)  # noqa: S311
+    rng = random.Random(seed)
     trades = list(result.trades)
     initial = result.initial_capital
 

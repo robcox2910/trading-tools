@@ -23,7 +23,7 @@ from trading_tools.apps.polymarket_bot.portfolio import PaperPortfolio
 from trading_tools.apps.polymarket_bot.protocols import PredictionMarketStrategy
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
-from trading_tools.core.models import ZERO, Side, Signal
+from trading_tools.core.models import TWO, ZERO, Side, Signal
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,9 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
                 if not provided.
 
         """
-        portfolio = PaperPortfolio(config.initial_capital, config.max_position_pct)
+        portfolio = PaperPortfolio(
+            config.initial_capital, config.max_position_pct, config.fee_rate, config.fee_exponent
+        )
         super().__init__(client, strategy, config, portfolio, feed)
 
     async def run(self, *, max_ticks: int | None = None) -> PaperTradingResult:
@@ -94,6 +96,12 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
             async for event in self._feed.stream(self._asset_ids):
                 await self._on_price_update(event)
                 tick_count += 1
+                if self._check_loss_limit():
+                    logger.warning(
+                        "Loss limit reached (%.1f%%), stopping bot",
+                        self._config.max_loss_pct,
+                    )
+                    break
                 if max_ticks is not None and tick_count >= max_ticks:
                     break
         finally:
@@ -181,6 +189,34 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
 
             self._open_position(condition_id, outcome, buy_price, snapshot, signal)
 
+    def _estimate_slippage(self, snapshot: MarketSnapshot) -> Decimal:
+        """Estimate execution slippage as half the order book spread.
+
+        Args:
+            snapshot: Current market snapshot containing the order book.
+
+        Returns:
+            Estimated slippage in price units.
+
+        """
+        spread = snapshot.order_book.spread
+        return spread / TWO if spread > ZERO else ZERO
+
+    def _check_loss_limit(self) -> bool:
+        """Return True if drawdown exceeds the configured loss limit.
+
+        Align with live engine pattern: ``equity / initial < (1 - loss_frac)``
+        where ``loss_frac`` is derived from ``max_loss_pct`` (a negative
+        percentage, e.g. -20 for 20% loss).
+        """
+        if self._config.initial_capital <= ZERO:
+            return False
+        equity = self._portfolio.total_equity
+        # Convert negative-percentage convention to positive fraction
+        # e.g. max_loss_pct=-20 → loss_frac=0.20 → threshold=0.80
+        loss_frac = abs(self._config.max_loss_pct) / Decimal(100)
+        return equity / self._config.initial_capital < (Decimal(1) - loss_frac)
+
     def _open_position(
         self,
         condition_id: str,
@@ -223,6 +259,7 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
             return
 
         edge = estimated_prob - buy_price
+        slippage = self._estimate_slippage(snapshot)
         trade = self._portfolio.open_position(
             condition_id=condition_id,
             outcome=outcome,
@@ -232,6 +269,7 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
             timestamp=snapshot.timestamp,
             reason=signal.reason,
             edge=edge,
+            slippage=slippage,
         )
         if trade is not None:
             logger.info(
@@ -268,13 +306,14 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
             else ZERO
         )
         logger.info(
-            "[PERF tick=%d] equity=$%.2f cash=$%.2f positions=%d trades=%d return=%+.2f%%",
+            "[PERF tick=%d] equity=$%.2f cash=$%.2f positions=%d trades=%d return=%+.2f%% fees=$%.2f",
             self._snapshots_processed,
             equity,
             cash,
             positions,
             trades,
             ret,
+            self._portfolio.total_fees,
         )
 
     def _build_result(self) -> PaperTradingResult:
@@ -299,6 +338,8 @@ class PaperTradingEngine(BaseTradingEngine[PaperPortfolio]):
                 if self._config.initial_capital > ZERO
                 else ZERO
             )
+            metrics["total_fees"] = self._portfolio.total_fees
+            metrics["total_slippage"] = sum((t.slippage for t in trades), start=ZERO)
 
         return PaperTradingResult(
             strategy_name=self._strategy.name,

@@ -6,13 +6,13 @@ market's favoured side with actual BTC/ETH price direction from Binance
 """
 
 import asyncio
-import os
 import time
 from typing import Annotated
 
 import typer
 
-from trading_tools.apps.whale_monitor.analyser import analyse_markets
+from trading_tools.apps.polymarket.cli._helpers import require_whale_db_url
+from trading_tools.apps.whale_monitor.analyser import MarketBreakdown, analyse_markets
 from trading_tools.apps.whale_monitor.correlator import (
     correlate_markets,
     format_correlated_analysis,
@@ -21,7 +21,6 @@ from trading_tools.apps.whale_monitor.repository import WhaleRepository
 from trading_tools.clients.binance.client import BinanceClient
 from trading_tools.data.providers.binance import BinanceCandleProvider
 
-_DEFAULT_DB_URL = os.environ.get("WHALE_DB_URL", "sqlite+aiosqlite:///whale_data.db")
 _DEFAULT_DAYS = 1
 _DEFAULT_MIN_TRADES = 10
 _SECONDS_PER_DAY = 86400
@@ -33,7 +32,7 @@ def whale_correlate(
     min_trades: Annotated[
         int, typer.Option(help="Minimum trades per market to include")
     ] = _DEFAULT_MIN_TRADES,
-    db_url: Annotated[str, typer.Option(help="SQLAlchemy async DB URL")] = _DEFAULT_DB_URL,
+    db_url: Annotated[str, typer.Option(help="SQLAlchemy async DB URL")] = "",
 ) -> None:
     """Correlate whale directional bets with actual spot price movement.
 
@@ -41,9 +40,10 @@ def whale_correlate(
     then fetch Binance candles to determine whether the whale's favoured
     side matched the actual price direction during each market's window.
     """
+    resolved_db_url = db_url or require_whale_db_url()
 
     async def _correlate() -> None:
-        repo = WhaleRepository(db_url)
+        repo = WhaleRepository(resolved_db_url)
         await repo.init_db()
 
         now = int(time.time())
@@ -57,13 +57,31 @@ def whale_correlate(
             return
 
         markets = analyse_markets(trades, min_trades=min_trades)
-        if not markets:
+        if markets.empty:
             typer.echo("No markets found matching the criteria.")
             return
 
+        market_list = [
+            MarketBreakdown(
+                condition_id=str(row.condition_id),
+                title=str(row.title),
+                slug=str(row.slug),
+                up_volume=float(str(row.up_volume)),
+                down_volume=float(str(row.down_volume)),
+                up_size=float(str(row.up_size)),
+                down_size=float(str(row.down_size)),
+                trade_count=int(str(row.trade_count)),
+                bias_ratio=float(str(row.bias_ratio)),
+                favoured_side=str(row.favoured_side),
+                first_trade_ts=int(str(row.first_trade_ts)),
+                last_trade_ts=int(str(row.last_trade_ts)),
+            )
+            for row in markets.itertuples(index=False)
+        ]
+
         async with BinanceClient() as client:
             provider = BinanceCandleProvider(client)
-            correlated = await correlate_markets(markets, provider)
+            correlated = await correlate_markets(market_list, provider)
 
         typer.echo(format_correlated_analysis(correlated))
 

@@ -67,9 +67,10 @@ Set database URLs to use PostgreSQL instead of the default SQLite:
 ```env
 TICK_DB_URL=postgresql+asyncpg://user:pass@host:5432/trading_tools
 WHALE_DB_URL=postgresql+asyncpg://user:pass@host:5432/trading_tools
+SPREAD_DB_URL=postgresql+asyncpg://user:pass@host:5432/trading_tools
 ```
 
-If these are not set, commands default to local SQLite files (`tick_data.db`, `whale_data.db`). You can also pass `--db-url` on any command to override.
+If these are not set, commands default to local SQLite files (`tick_data.db`, `whale_data.db`). `SPREAD_DB_URL` falls back to `WHALE_DB_URL` if unset. You can also pass `--db-url` on any command to override.
 
 ### General Settings
 

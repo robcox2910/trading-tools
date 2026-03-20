@@ -8,6 +8,12 @@ from urllib.parse import quote, urlparse
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from trading_tools.clients._http_status import (
+    HTTP_BAD_REQUEST,
+    HTTP_NOT_FOUND,
+    HTTP_TOO_MANY_REQUESTS,
+    HTTP_UNAUTHORIZED,
+)
 from trading_tools.clients.revolut_x.auth.signer import Ed25519Signer
 from trading_tools.clients.revolut_x.exceptions import (
     RevolutXAPIError,
@@ -17,11 +23,6 @@ from trading_tools.clients.revolut_x.exceptions import (
     RevolutXValidationError,
 )
 from trading_tools.core.config import get_config
-
-_HTTP_BAD_REQUEST = 400
-_HTTP_UNAUTHORIZED = 401
-_HTTP_NOT_FOUND = 404
-_HTTP_TOO_MANY_REQUESTS = 429
 
 
 class RevolutXClient:
@@ -52,7 +53,10 @@ class RevolutXClient:
         self._base_path = urlparse(self.base_url).path
         self.timeout = timeout
         self.signer = Ed25519Signer(private_key)
-        self._http_client = httpx.AsyncClient(timeout=timeout)
+        self._http_client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        )
 
     @classmethod
     def from_config(cls) -> "RevolutXClient":
@@ -72,9 +76,11 @@ class RevolutXClient:
         base_url = get_config().get("revolut_x.base_url", "https://revx.revolut.com/api/1.0")
 
         # Load private key
-        private_key = Ed25519Signer.load_private_key_from_file(
-            get_config().get("revolut_x.private_key_path")
-        )
+        private_key_path = get_config().get("revolut_x.private_key_path")
+        if not private_key_path:
+            msg = "revolut_x.private_key_path is not configured"
+            raise ValueError(msg)
+        private_key = Ed25519Signer.load_private_key_from_file(private_key_path)
 
         return cls(
             api_key=api_key,
@@ -199,7 +205,7 @@ class RevolutXClient:
         )
 
         # Handle errors
-        if response.status_code >= _HTTP_BAD_REQUEST:
+        if response.status_code >= HTTP_BAD_REQUEST:
             self._handle_error(response)
 
         return response
@@ -221,16 +227,16 @@ class RevolutXClient:
         try:
             error_data = response.json()
             message = error_data.get("error", "Unknown error")
-        except Exception:
+        except (KeyError, ValueError, TypeError):
             message = f"HTTP {response.status_code}"
 
-        if response.status_code == _HTTP_UNAUTHORIZED:
+        if response.status_code == HTTP_UNAUTHORIZED:
             raise RevolutXAuthenticationError(message, response.status_code)
-        if response.status_code == _HTTP_BAD_REQUEST:
+        if response.status_code == HTTP_BAD_REQUEST:
             raise RevolutXValidationError(message, response.status_code)
-        if response.status_code == _HTTP_NOT_FOUND:
+        if response.status_code == HTTP_NOT_FOUND:
             raise RevolutXNotFoundError(message, response.status_code)
-        if response.status_code == _HTTP_TOO_MANY_REQUESTS:
+        if response.status_code == HTTP_TOO_MANY_REQUESTS:
             raise RevolutXRateLimitError(message, response.status_code)
 
         raise RevolutXAPIError(message, response.status_code)

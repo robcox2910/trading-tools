@@ -9,11 +9,11 @@ rather than raising, so the engine can continue operating.
 import logging
 from decimal import Decimal
 
+from trading_tools.apps.bot_framework.balance_manager import BalanceManager
+from trading_tools.apps.bot_framework.order_executor import OrderExecutor
 from trading_tools.apps.polymarket_bot.base_portfolio import BasePortfolio
 from trading_tools.apps.polymarket_bot.models import LiveTrade
 from trading_tools.clients.polymarket.client import PolymarketClient
-from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
-from trading_tools.clients.polymarket.models import OrderRequest
 from trading_tools.core.models import ZERO, Position, Side
 
 logger = logging.getLogger(__name__)
@@ -51,50 +51,32 @@ class LivePortfolio(BasePortfolio):
         """
         super().__init__(max_position_pct)
         self._client = client
-        self._use_market_orders = use_market_orders
-        self._balance = ZERO
-        self._portfolio_value = ZERO
+        self._executor = OrderExecutor(
+            client=client,
+            use_market_orders=use_market_orders,
+        )
+        self._balance_manager = BalanceManager(client=client)
         self._trades: list[LiveTrade] = []
         self._token_ids: dict[str, str] = {}
 
     def _get_cash_balance(self) -> Decimal:
         """Return the last-fetched USDC balance."""
-        return self._balance
+        return self._balance_manager.balance
 
     async def refresh_balance(self) -> Decimal:
         """Fetch the live USDC balance and full portfolio value.
 
-        Refresh the CLOB USDC balance ("available to trade") and the total
-        portfolio value (USDC + all position market values).  On transient
-        API failures, log a warning and return the last known balance so the
-        engine can continue operating.
+        Delegate to the shared ``BalanceManager`` to refresh both the
+        USDC balance and the total portfolio value. On transient API
+        failures, the manager logs a warning and returns the last known
+        balance so the engine can continue operating.
 
         Returns:
             Current USDC balance as a ``Decimal``, or the last known balance
             if the API call fails.
 
         """
-        try:
-            await self._client.sync_balance("COLLATERAL")
-            bal = await self._client.get_balance("COLLATERAL")
-            self._balance = bal.balance
-        except Exception:
-            logger.warning(
-                "Balance refresh failed, using last known balance: $%.4f",
-                self._balance,
-                exc_info=True,
-            )
-
-        try:
-            self._portfolio_value = await self._client.get_portfolio_value()
-        except Exception:
-            logger.warning(
-                "Portfolio value refresh failed, using last known: $%.4f",
-                self._portfolio_value,
-                exc_info=True,
-            )
-
-        return self._balance
+        return await self._balance_manager.refresh(include_portfolio=True)
 
     async def open_position(
         self,
@@ -137,37 +119,20 @@ class LivePortfolio(BasePortfolio):
             return None
 
         cost = price * quantity
-        max_allocation = self._balance * self._max_position_pct
-        if cost > max_allocation or cost > self._balance:
+        balance = self._balance_manager.balance
+        max_allocation = balance * self._max_position_pct
+        if cost > max_allocation or cost > balance:
             logger.warning(
                 "Rejected %s: cost=$%.4f exceeds max_alloc=$%.4f or balance=$%.4f",
                 condition_id[:20],
                 cost,
                 max_allocation,
-                self._balance,
+                balance,
             )
             return None
 
-        order_type = "market" if self._use_market_orders else "limit"
-        request = OrderRequest(
-            token_id=token_id,
-            side=side.value,
-            price=price,
-            size=quantity,
-            order_type=order_type,
-        )
-
-        try:
-            response = await self._client.place_order(request)
-        except PolymarketAPIError as exc:
-            logger.exception(
-                "API error placing %s %s order for %s: %s (status=%s)",
-                order_type,
-                side.value,
-                condition_id[:20],
-                exc.msg,
-                exc.status_code,
-            )
+        response = await self._executor.place_order(token_id, side.value, price, quantity)
+        if response is None:
             return None
 
         # FOK market orders on Polymarket return filled=0 even on success
@@ -232,24 +197,8 @@ class LivePortfolio(BasePortfolio):
             return None
 
         exit_side = Side.SELL if pos.side == Side.BUY else Side.BUY
-        order_type = "market" if self._use_market_orders else "limit"
-        request = OrderRequest(
-            token_id=token_id,
-            side=exit_side.value,
-            price=price,
-            size=quantity,
-            order_type=order_type,
-        )
-
-        try:
-            response = await self._client.place_order(request)
-        except PolymarketAPIError as exc:
-            logger.exception(
-                "API error closing position for %s: %s (status=%s)",
-                condition_id[:20],
-                exc.msg,
-                exc.status_code,
-            )
+        response = await self._executor.place_order(token_id, exit_side.value, price, quantity)
+        if response is None:
             return None
 
         outcome = self._outcomes.pop(condition_id, "Yes")
@@ -288,12 +237,12 @@ class LivePortfolio(BasePortfolio):
     @property
     def balance(self) -> Decimal:
         """Return the last-fetched USDC balance."""
-        return self._balance
+        return self._balance_manager.balance
 
     @property
     def portfolio_value(self) -> Decimal:
         """Return the last-fetched total portfolio value (USDC + positions)."""
-        return self._portfolio_value
+        return self._balance_manager.portfolio_value
 
     @property
     def trades(self) -> list[LiveTrade]:

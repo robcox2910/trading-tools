@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import bisect
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -242,8 +243,17 @@ class SnapshotBuilder:
                 # NO asset: derive YES price as complement
                 price = Decimal(1) - Decimal(str(tick.price))
 
-            bucket_idx = (tick.timestamp - window.start_ms) // bucket_ms
-            bucket_idx = max(0, min(bucket_idx, num_buckets - 1))
+            raw_idx = (tick.timestamp - window.start_ms) // bucket_ms
+            bucket_idx = max(0, min(raw_idx, num_buckets - 1))
+            if raw_idx != bucket_idx:
+                logging.getLogger(__name__).debug(
+                    "Tick at %d clamped from bucket %d to %d (window %d-%d)",
+                    tick.timestamp,
+                    raw_idx,
+                    bucket_idx,
+                    window.start_ms,
+                    window.end_ms,
+                )
             bucket_prices[bucket_idx] = price
 
         # Pre-sort book snapshot timestamps for binary search

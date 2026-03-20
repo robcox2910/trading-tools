@@ -11,9 +11,12 @@ strategy per fold is the one with the highest value of a chosen metric
 (e.g. total return) on the training window.
 """
 
+import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any, cast
 
+from trading_tools.apps.backtester._providers import CachedProvider
 from trading_tools.apps.backtester.engine import BacktestEngine
 from trading_tools.apps.backtester.metrics import calculate_metrics
 from trading_tools.apps.backtester.strategy_factory import STRATEGY_NAMES, build_strategy
@@ -53,28 +56,6 @@ class WalkForwardResult:
     aggregate_metrics: dict[str, Decimal]
     symbol: str
     interval: Interval
-
-
-class _SliceProvider:
-    """Candle provider that returns a pre-sliced list of candles.
-
-    Used internally by walk-forward to feed a subset of candles to
-    the backtest engine without re-fetching from the original source.
-    """
-
-    def __init__(self, candles: list[Candle]) -> None:
-        """Initialize with a fixed list of candles."""
-        self._candles = candles
-
-    async def get_candles(
-        self,
-        symbol: str,  # noqa: ARG002
-        interval: Interval,  # noqa: ARG002
-        start_ts: int,  # noqa: ARG002
-        end_ts: int,  # noqa: ARG002
-    ) -> list[Candle]:
-        """Return the pre-sliced candles ignoring filter parameters."""
-        return self._candles
 
 
 async def run_walk_forward(
@@ -145,8 +126,8 @@ async def run_walk_forward(
             strategy_params=strategy_params,
         )
 
-        best_strategy = build_strategy(best_name, **strategy_params)  # type: ignore[arg-type]
-        test_provider = _SliceProvider(test_candles)
+        best_strategy = build_strategy(best_name, **cast("dict[str, Any]", strategy_params))
+        test_provider = CachedProvider(test_candles)
         test_engine = BacktestEngine(
             provider=test_provider,
             strategy=best_strategy,
@@ -207,14 +188,10 @@ async def _find_best_strategy(
         Tuple of (best strategy name from STRATEGY_NAMES, its BacktestResult).
 
     """
-    best_name = STRATEGY_NAMES[0]
-    best_result: BacktestResult | None = None
-    best_value = Decimal("-Infinity")
+    provider = CachedProvider(candles)
 
-    provider = _SliceProvider(candles)
-
-    for name in STRATEGY_NAMES:
-        strategy = build_strategy(name, **strategy_params)  # type: ignore[arg-type]
+    async def _eval(name: str) -> tuple[str, BacktestResult]:
+        strategy = build_strategy(name, **cast("dict[str, Any]", strategy_params))
         engine = BacktestEngine(
             provider=provider,
             strategy=strategy,
@@ -222,14 +199,11 @@ async def _find_best_strategy(
             execution_config=execution_config,
             risk_config=risk_config,
         )
-        result = await engine.run(symbol, interval, 0, 2**53)
-        value = result.metrics.get(sort_metric, Decimal(0))
-        if best_result is None or value > best_value:
-            best_value = value
-            best_name = name
-            best_result = result
+        return name, await engine.run(symbol, interval, 0, 2**53)
 
-    if best_result is None:  # pragma: no cover — STRATEGY_NAMES is never empty
-        msg = "No strategies registered"
-        raise RuntimeError(msg)
-    return best_name, best_result
+    all_results = await asyncio.gather(*[_eval(n) for n in STRATEGY_NAMES])
+
+    return max(
+        all_results,
+        key=lambda pair: pair[1].metrics.get(sort_metric, Decimal(0)),
+    )

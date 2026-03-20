@@ -8,15 +8,27 @@ from the CLI ``whale-analyse`` command.
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Union
+
+import pandas as pd
+import pandera.pandas as pa
+from pandera.typing import Series
+
+from trading_tools.apps.whale_monitor.enricher import EnrichedTrade
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from trading_tools.apps.whale_monitor.models import WhaleTrade
+
+# Union type accepted by public analysis functions.
+TradeInput = Union["WhaleTrade", EnrichedTrade]
 
 _PERCENTAGE_MULTIPLIER = 100
 _MAX_TITLE_LENGTH = 50
+_SECONDS_PER_HOUR = 3600
 
 
 def _empty_str_int_dict() -> dict[str, int]:
@@ -34,6 +46,430 @@ def _empty_str_int_list() -> list[tuple[str, int]]:
     return []
 
 
+def _unwrap(trade: WhaleTrade | EnrichedTrade) -> WhaleTrade:
+    """Return the underlying ``WhaleTrade`` from either a plain or enriched trade.
+
+    Args:
+        trade: A ``WhaleTrade`` instance or an ``EnrichedTrade`` wrapper.
+
+    Returns:
+        The ``WhaleTrade`` instance.
+
+    """
+    if isinstance(trade, EnrichedTrade):
+        return trade.trade  # type: ignore[return-value]
+    return trade  # type: ignore[return-value]
+
+
+def trades_to_df(trades: Sequence[WhaleTrade | EnrichedTrade]) -> pd.DataFrame:
+    """Convert a list of trade records to a DataFrame.
+
+    Accept both plain ``WhaleTrade`` instances and ``EnrichedTrade`` wrappers —
+    the latter are unwrapped transparently.  A ``notional`` column (``size *
+    price``) and an ``hour`` column (UTC hour of day, 0-23) are derived
+    and appended for convenience.
+
+    Args:
+        trades: ``WhaleTrade`` or ``EnrichedTrade`` instances to convert.
+
+    Returns:
+        DataFrame with one row per trade and the following columns:
+        ``condition_id``, ``title``, ``slug``, ``side``, ``outcome``,
+        ``size``, ``price``, ``notional``, ``timestamp``, ``hour``.
+
+    """
+    if not trades:
+        return pd.DataFrame(
+            columns=[
+                "condition_id",
+                "title",
+                "slug",
+                "side",
+                "outcome",
+                "size",
+                "price",
+                "notional",
+                "timestamp",
+                "hour",
+            ]
+        )
+
+    df = pd.DataFrame(
+        [
+            {
+                "condition_id": w.condition_id,
+                "title": w.title,
+                "slug": w.slug,
+                "side": w.side,
+                "outcome": w.outcome,
+                "size": float(w.size),
+                "price": float(w.price),
+                "timestamp": int(w.timestamp),
+            }
+            for w in (_unwrap(t) for t in trades)
+        ]
+    )
+
+    df["notional"] = df["size"] * df["price"]
+    df["hour"] = (df["timestamp"] % _SECONDS_PER_DAY) // _SECONDS_PER_HOUR
+    return df
+
+
+# ── TradeSummary ──────────────────────────────────────────────────────────────
+
+
+@dataclass
+class TradeSummary:
+    """Scalar summary statistics for a whale's trading activity.
+
+    A lightweight complement to ``WhaleAnalysis`` containing only per-wallet
+    aggregate metrics, without breakdown dicts or top-market lists.  Use
+    ``to_series()`` to convert a record into a ``pandas.Series`` for easy
+    DataFrame assembly across multiple wallets.
+
+    Attributes:
+        address: Whale proxy wallet address.
+        total_trades: Total number of trades in the analysis window.
+        total_volume: Sum of ``size * price`` across all trades.
+        buy_count: Number of BUY trades.
+        sell_count: Number of SELL trades.
+        avg_size: Mean token quantity per trade.
+        avg_buy_price: Mean execution price across BUY trades.
+        avg_sell_price: Mean execution price across SELL trades.
+        unique_markets: Number of distinct markets (condition IDs) traded.
+        average_daily_trades_1w: Mean trades per day over the 7 days ending at
+            ``as_of`` (as supplied to ``summarize_trades``).
+        average_daily_trades_1m: Mean trades per day over the 30 days ending at
+            ``as_of``.
+        sharpe_ratio: Per-trade Sharpe ratio (mean P&L / std P&L, risk-free
+            rate of zero) computed from resolved ``EnrichedTrade`` instances
+            whose markets have a known winner.  ``None`` when fewer than two
+            resolved trades are available or when no enriched trades are
+            supplied.
+
+    """
+
+    address: str
+    total_trades: int = 0
+    total_volume: float = 0.0
+    buy_count: int = 0
+    sell_count: int = 0
+    avg_size: float = 0.0
+    avg_buy_price: float = 0.0
+    avg_sell_price: float = 0.0
+    unique_markets: int = 0
+    average_daily_trades_1w: float = 0.0
+    average_daily_trades_1m: float = 0.0
+    sharpe_ratio: float | None = None
+
+    def to_series(self) -> pd.Series:  # type: ignore[type-arg]
+        """Convert this summary to a ``pandas.Series``.
+
+        The series index matches the field names, making it straightforward to
+        build a multi-wallet summary DataFrame::
+
+            pd.DataFrame([s.to_series() for s in summaries])
+
+        Returns:
+            A ``pandas.Series`` with one entry per field.
+
+        """
+        return pd.Series(asdict(self))
+
+
+_DAYS_1W = 7
+_DAYS_1M = 30
+_SECONDS_PER_DAY = 86400
+_MIN_SHARPE_OBSERVATIONS = 2
+
+
+def _sharpe_from_pnls(pnls: list[float]) -> float | None:
+    """Compute the per-trade Sharpe ratio from a list of resolved P&L values.
+
+    Use a risk-free rate of zero (standard for alternative assets).  Return
+    ``None`` when fewer than ``_MIN_SHARPE_OBSERVATIONS`` values are
+    available, since standard deviation is undefined on a single observation.
+
+    Args:
+        pnls: List of per-trade P&L values from resolved, completed trades.
+
+    Returns:
+        Sharpe ratio (mean / std, ddof=1), or ``None`` when insufficient data.
+
+    """
+    if len(pnls) < _MIN_SHARPE_OBSERVATIONS:
+        return None
+    series = pd.Series(pnls, dtype=float)
+    std = float(series.std(ddof=1))
+    if std == 0.0:
+        return None
+    return round(float(series.mean()) / std, 4)
+
+
+def summarize_trades(
+    address: str,
+    trades: Sequence[WhaleTrade | EnrichedTrade],
+    *,
+    as_of: datetime | None = None,
+) -> TradeSummary:
+    """Compute scalar summary statistics from a list of whale trades.
+
+    Accept both plain ``WhaleTrade`` and ``EnrichedTrade`` wrappers.
+
+    Args:
+        address: Whale proxy wallet address.
+        trades: List of ``WhaleTrade`` or ``EnrichedTrade`` records to summarise.
+        as_of: Reference datetime for rolling-window calculations.  Defaults to
+            ``datetime.now(UTC)`` when ``None``.  Must be timezone-aware.
+
+    Returns:
+        A ``TradeSummary`` dataclass with aggregated scalar statistics,
+        including ``average_daily_trades_1w`` and ``average_daily_trades_1m``
+        computed over the 7- and 30-day windows ending at ``as_of``.
+
+    """
+    df = trades_to_df(trades)
+
+    if df.empty:
+        return TradeSummary(address=address)
+
+    reference = as_of if as_of is not None else datetime.now(UTC)
+    ref_ts = int(reference.timestamp())
+
+    cutoff_1w = ref_ts - _DAYS_1W * _SECONDS_PER_DAY
+    cutoff_1m = ref_ts - _DAYS_1M * _SECONDS_PER_DAY
+
+    avg_daily_1w = df[df["timestamp"] >= cutoff_1w].shape[0] / _DAYS_1W
+    avg_daily_1m = df[df["timestamp"] >= cutoff_1m].shape[0] / _DAYS_1M
+
+    buys = df[df["side"] == "BUY"]
+    sells = df[df["side"] == "SELL"]
+    side_counts = df["side"].value_counts().to_dict()
+
+    resolved_pnls = [
+        t.trade_pnl
+        for t in trades
+        if isinstance(t, EnrichedTrade) and t.trade_pnl is not None and not t.is_active
+    ]
+    sharpe = _sharpe_from_pnls(resolved_pnls)
+
+    return TradeSummary(
+        address=address,
+        total_trades=len(df),
+        total_volume=float(df["notional"].sum()),
+        buy_count=int(side_counts.get("BUY", 0)),
+        sell_count=int(side_counts.get("SELL", 0)),
+        avg_size=float(df["size"].mean()),
+        avg_buy_price=float(buys["price"].mean()) if not buys.empty else 0.0,
+        avg_sell_price=float(sells["price"].mean()) if not sells.empty else 0.0,
+        unique_markets=int(df["condition_id"].nunique()),
+        average_daily_trades_1w=round(avg_daily_1w, 2),
+        average_daily_trades_1m=round(avg_daily_1m, 2),
+        sharpe_ratio=sharpe,
+    )
+
+
+# ── Breakdown functions ───────────────────────────────────────────────────────
+
+
+def market_breakdown(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute per-market trade counts from a trades DataFrame.
+
+    Args:
+        df: Trades DataFrame as returned by ``trades_to_df()``.
+
+    Returns:
+        DataFrame with columns ``title`` and ``count``, sorted by ``count``
+        descending.
+
+    """
+    counts = df["title"].value_counts().reset_index()
+    counts.columns = pd.Index(["title", "count"])
+    return counts
+
+
+def outcome_breakdown(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute per-outcome trade counts from a trades DataFrame.
+
+    Args:
+        df: Trades DataFrame as returned by ``trades_to_df()``.
+
+    Returns:
+        DataFrame with columns ``outcome`` and ``count``, sorted by ``count``
+        descending.
+
+    """
+    counts = df["outcome"].value_counts().reset_index()
+    counts.columns = pd.Index(["outcome", "count"])
+    return counts
+
+
+def side_breakdown(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute per-side (BUY/SELL) trade counts from a trades DataFrame.
+
+    Args:
+        df: Trades DataFrame as returned by ``trades_to_df()``.
+
+    Returns:
+        DataFrame with columns ``side`` and ``count``, sorted by ``count``
+        descending.
+
+    """
+    counts = df["side"].value_counts().reset_index()
+    counts.columns = pd.Index(["side", "count"])
+    return counts
+
+
+def hourly_distribution(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute trade counts by hour of day from a trades DataFrame.
+
+    Args:
+        df: Trades DataFrame as returned by ``trades_to_df()``.
+
+    Returns:
+        DataFrame with columns ``hour`` (0-23 UTC) and ``count``, sorted by
+        ``hour`` ascending.
+
+    """
+    counts = df["hour"].value_counts().reset_index()
+    counts.columns = pd.Index(["hour", "count"])
+    return counts.sort_values("hour").reset_index(drop=True)
+
+
+# ── Market position summary ───────────────────────────────────────────────────
+
+
+@dataclass
+class MarketPositionSummary:
+    """Aggregated position metrics for one trader in one market.
+
+    Summarise all trades for a single whale in a single named market,
+    capturing net position, realised cash flows, and (where available) P&L
+    from market resolution.
+
+    Attributes:
+        username: Display name or address of the trader.
+        market_name: The market title used to filter trades.
+        total_trades: Total number of trades in this market.
+        buy_count: Number of BUY trades.
+        sell_count: Number of SELL trades.
+        total_bought: Total tokens purchased (sum of ``size`` for BUYs).
+        total_sold: Total tokens sold (sum of ``size`` for SELLs).
+        net_position: Remaining open token position (``total_bought -
+            total_sold``).  Positive means a net long position.
+        total_cost: Total USDC spent on BUYs (sum of ``size * price`` for
+            BUYs).
+        total_realized: Total USDC received from SELLs (sum of ``size *
+            price`` for SELLs).
+        avg_buy_price: Volume-weighted average price across BUY trades.
+        avg_sell_price: Volume-weighted average price across SELL trades.
+        total_pnl: Sum of per-trade P&L values from resolved
+            ``EnrichedTrade`` instances, or ``None`` when the market has
+            not yet resolved or plain ``WhaleTrade`` records are supplied.
+        is_resolved: ``True`` when the market is known to have a winner
+            (requires enriched trades).  ``None`` when resolution status
+            is unavailable.
+
+    """
+
+    username: str
+    market_name: str
+    total_trades: int = 0
+    buy_count: int = 0
+    sell_count: int = 0
+    total_bought: float = 0.0
+    total_sold: float = 0.0
+    net_position: float = 0.0
+    total_cost: float = 0.0
+    total_realized: float = 0.0
+    avg_buy_price: float = 0.0
+    avg_sell_price: float = 0.0
+    total_pnl: float | None = None
+    is_resolved: bool | None = None
+
+
+def market_position_summary(
+    username: str,
+    trades: Sequence[WhaleTrade | EnrichedTrade],
+    market_name: str,
+) -> tuple[pd.DataFrame, MarketPositionSummary]:
+    """Return all trades for a named market and an aggregated position summary.
+
+    Filter ``trades`` to those whose ``title`` contains ``market_name``
+    (case-insensitive), sort them by timestamp ascending, and compute
+    position-level metrics.
+
+    P&L is populated only when ``EnrichedTrade`` instances with a resolved
+    ``winning_outcome`` are present in the filtered set.
+
+    Args:
+        username: Display name or address of the trader, used to label the
+            summary.
+        trades: Full trade list for the trader — plain ``WhaleTrade`` or
+            ``EnrichedTrade`` wrappers accepted.
+        market_name: Substring to match against trade titles (case-insensitive).
+            Use the full market title for an exact match, or a shorter prefix
+            for a fuzzy filter.
+
+    Returns:
+        A 2-tuple ``(df, summary)`` where ``df`` is a ``pandas.DataFrame``
+        of matching trades sorted by ``timestamp`` ascending, and ``summary``
+        is a ``MarketPositionSummary`` with aggregated position metrics.
+
+    """
+    needle = market_name.lower()
+    filtered: list[WhaleTrade | EnrichedTrade] = [
+        t for t in trades if needle in _unwrap(t).title.lower()
+    ]
+
+    if not filtered:
+        return pd.DataFrame(), MarketPositionSummary(username=username, market_name=market_name)
+
+    df = trades_to_df(filtered).sort_values("timestamp").reset_index(drop=True)
+
+    buys = df[df["side"] == "BUY"]
+    sells = df[df["side"] == "SELL"]
+
+    total_bought = float(buys["size"].sum()) if not buys.empty else 0.0
+    total_sold = float(sells["size"].sum()) if not sells.empty else 0.0
+    total_cost = float(buys["notional"].sum()) if not buys.empty else 0.0
+    total_realized = float(sells["notional"].sum()) if not sells.empty else 0.0
+
+    avg_buy_price = float(buys["price"].mean()) if not buys.empty else 0.0
+    avg_sell_price = float(sells["price"].mean()) if not sells.empty else 0.0
+
+    # P&L and resolution status from enriched trades
+    enriched_filtered = [t for t in filtered if isinstance(t, EnrichedTrade)]
+    is_resolved: bool | None = None
+    total_pnl: float | None = None
+
+    if enriched_filtered:
+        is_resolved = not enriched_filtered[0].is_active
+        pnls = [t.trade_pnl for t in enriched_filtered if t.trade_pnl is not None]
+        if pnls:
+            total_pnl = round(sum(pnls), 4)
+
+    return df, MarketPositionSummary(
+        username=username,
+        market_name=market_name,
+        total_trades=len(df),
+        buy_count=len(buys),
+        sell_count=len(sells),
+        total_bought=round(total_bought, 4),
+        total_sold=round(total_sold, 4),
+        net_position=round(total_bought - total_sold, 4),
+        total_cost=round(total_cost, 4),
+        total_realized=round(total_realized, 4),
+        avg_buy_price=round(avg_buy_price, 4),
+        avg_sell_price=round(avg_sell_price, 4),
+        total_pnl=total_pnl,
+        is_resolved=is_resolved,
+    )
+
+
+# ── WhaleAnalysis (full legacy analysis) ─────────────────────────────────────
+
+
 @dataclass
 class WhaleAnalysis:
     """Aggregated strategy analysis for a whale's trading activity.
@@ -45,7 +481,8 @@ class WhaleAnalysis:
         buy_count: Number of BUY trades.
         sell_count: Number of SELL trades.
         avg_size: Mean token quantity per trade.
-        avg_price: Mean execution price.
+        avg_buy_price: Mean execution price across BUY trades.
+        avg_sell_price: Mean execution price across SELL trades.
         unique_markets: Number of distinct markets (condition IDs) traded.
         market_breakdown: Trade counts per market title.
         outcome_breakdown: Trade counts per outcome label.
@@ -61,7 +498,8 @@ class WhaleAnalysis:
     buy_count: int = 0
     sell_count: int = 0
     avg_size: float = 0.0
-    avg_price: float = 0.0
+    avg_buy_price: float = 0.0
+    avg_sell_price: float = 0.0
     unique_markets: int = 0
     market_breakdown: dict[str, int] = field(default_factory=_empty_str_int_dict)
     outcome_breakdown: dict[str, int] = field(default_factory=_empty_str_int_dict)
@@ -111,66 +549,134 @@ class MarketBreakdown:
 _DEFAULT_MIN_TRADES = 10
 
 
+class MarketBreakdownSchema(pa.DataFrameModel):
+    """Pandera schema for the DataFrame returned by ``analyse_markets()``.
+
+    Each row represents one market the whale traded in.  Columns mirror the
+    fields of the former ``MarketBreakdown`` dataclass.
+
+    Columns:
+        condition_id: Market condition identifier (hex string).
+        title: Human-readable market title.
+        slug: Market URL slug.
+        up_volume: Total dollar volume spent on Up outcomes (size * price).
+        down_volume: Total dollar volume spent on Down outcomes.
+        up_size: Total tokens bought on Up.
+        down_size: Total tokens bought on Down.
+        trade_count: Total number of trades in this market.
+        bias_ratio: Ratio of larger side volume to smaller (>= 1.0).
+        favoured_side: The side with more volume -- ``"Up"`` or ``"Down"``.
+        first_trade_ts: Epoch seconds of the earliest trade in this market.
+        last_trade_ts: Epoch seconds of the most recent trade, used as the
+            default sort key (descending).
+
+    """
+
+    condition_id: Series[str]
+    title: Series[str]
+    slug: Series[str]
+    up_volume: Series[float] = pa.Field(ge=0.0)
+    down_volume: Series[float] = pa.Field(ge=0.0)
+    up_size: Series[float] = pa.Field(ge=0.0)
+    down_size: Series[float] = pa.Field(ge=0.0)
+    trade_count: Series[int] = pa.Field(ge=0)
+    bias_ratio: Series[float] = pa.Field(ge=1.0)
+    favoured_side: Series[str] = pa.Field(isin=["Up", "Down"])
+    first_trade_ts: Series[int] = pa.Field(ge=0)
+    last_trade_ts: Series[int] = pa.Field(ge=0)
+
+    class Config:  # type: ignore[misc]
+        """Pandera model configuration."""
+
+        coerce = True
+
+
 def analyse_markets(
-    trades: list[WhaleTrade],
+    trades: Sequence[WhaleTrade | EnrichedTrade],
     *,
     min_trades: int = _DEFAULT_MIN_TRADES,
-) -> list[MarketBreakdown]:
+) -> pd.DataFrame:
     """Compute per-market directional breakdowns from whale trades.
 
     Group trades by ``condition_id``, separate Up vs Down by the ``outcome``
     field, and calculate volume, token size, trade count, bias ratio, and
-    favoured side for each market.
+    favoured side for each market.  Accept both plain ``WhaleTrade`` and
+    ``EnrichedTrade`` wrappers.
+
+    The returned DataFrame conforms to ``MarketBreakdownSchema`` — call
+    ``MarketBreakdownSchema.validate(df)`` to re-verify after any manual
+    mutation.
 
     Args:
-        trades: List of ``WhaleTrade`` records to analyse.
+        trades: List of ``WhaleTrade`` or ``EnrichedTrade`` records to analyse.
         min_trades: Minimum trades per market to include in results.
 
     Returns:
-        List of ``MarketBreakdown`` sorted by ``last_trade_ts`` descending.
+        ``MarketBreakdownSchema``-validated DataFrame with one row per market,
+        sorted by ``last_trade_ts`` descending.
 
     """
-    groups: dict[str, list[WhaleTrade]] = defaultdict(list)
-    for trade in trades:
-        groups[trade.condition_id].append(trade)
+    df = trades_to_df(trades)
+    if df.empty:
+        return pd.DataFrame(columns=list(MarketBreakdownSchema.to_schema().columns))
 
-    results: list[MarketBreakdown] = []
-    for condition_id, market_trades in groups.items():
-        if len(market_trades) < min_trades:
-            continue
+    # Per-market summary aggregates
+    mkt = df.groupby("condition_id").agg(
+        title=("title", "first"),
+        slug=("slug", "first"),
+        trade_count=("notional", "count"),
+        first_trade_ts=("timestamp", "min"),
+        last_trade_ts=("timestamp", "max"),
+    )
+    mkt = mkt[mkt["trade_count"] >= min_trades]  # type: ignore[operator]
 
-        first = market_trades[0]
-        breakdown = MarketBreakdown(
-            condition_id=condition_id,
-            title=first.title,
-            slug=first.slug,
+    # Directional volume and size — pivot Up / Down separately to avoid unstack
+    up_df = (
+        df[df["outcome"] == "Up"]
+        .groupby("condition_id")[["notional", "size"]]
+        .sum()
+        .rename(columns={"notional": "up_notional", "size": "up_size"})
+    )
+    down_df = (
+        df[df["outcome"] == "Down"]
+        .groupby("condition_id")[["notional", "size"]]
+        .sum()
+        .rename(columns={"notional": "down_notional", "size": "down_size"})
+    )
+
+    combined = mkt.join(up_df, how="left").join(down_df, how="left").fillna(0.0)
+    combined = combined.reset_index()
+
+    rows: list[dict[str, object]] = []
+    for _, row in combined.iterrows():
+        up_vol = float(row["up_notional"])
+        down_vol = float(row["down_notional"])
+        larger = max(up_vol, down_vol)
+        smaller = min(up_vol, down_vol)
+        bias_ratio = larger / smaller if smaller > 0 else (larger if larger > 0 else 1.0)
+
+        rows.append(
+            {
+                "condition_id": str(row["condition_id"]),
+                "title": str(row["title"]),
+                "slug": str(row["slug"]),
+                "up_volume": up_vol,
+                "down_volume": down_vol,
+                "up_size": float(row["up_size"]),
+                "down_size": float(row["down_size"]),
+                "trade_count": int(row["trade_count"]),
+                "bias_ratio": bias_ratio,
+                "favoured_side": "Up" if up_vol >= down_vol else "Down",
+                "first_trade_ts": int(row["first_trade_ts"]),
+                "last_trade_ts": int(row["last_trade_ts"]),
+            }
         )
 
-        for trade in market_trades:
-            volume = trade.size * trade.price
-            if trade.outcome == "Up":
-                breakdown.up_volume += volume
-                breakdown.up_size += trade.size
-            else:
-                breakdown.down_volume += volume
-                breakdown.down_size += trade.size
+    if not rows:
+        return pd.DataFrame(columns=list(MarketBreakdownSchema.to_schema().columns))
 
-            breakdown.trade_count += 1
-
-            ts = trade.timestamp
-            if breakdown.first_trade_ts == 0 or ts < breakdown.first_trade_ts:
-                breakdown.first_trade_ts = ts
-            breakdown.last_trade_ts = max(breakdown.last_trade_ts, ts)
-
-        larger = max(breakdown.up_volume, breakdown.down_volume)
-        smaller = min(breakdown.up_volume, breakdown.down_volume)
-        breakdown.bias_ratio = larger / smaller if smaller > 0 else larger if larger > 0 else 1.0
-        breakdown.favoured_side = "Up" if breakdown.up_volume >= breakdown.down_volume else "Down"
-
-        results.append(breakdown)
-
-    results.sort(key=lambda m: m.last_trade_ts, reverse=True)
-    return results
+    result = pd.DataFrame(rows).sort_values("last_trade_ts", ascending=False).reset_index(drop=True)
+    return MarketBreakdownSchema.validate(result)  # type: ignore[return-value]
 
 
 _MARKET_TABLE_HEADER = (
@@ -178,21 +684,22 @@ _MARKET_TABLE_HEADER = (
 )
 
 
-def format_market_analysis(markets: list[MarketBreakdown]) -> str:
-    """Format a list of market breakdowns as a human-readable report.
+def format_market_analysis(markets: pd.DataFrame) -> str:
+    """Format a market breakdown DataFrame as a human-readable report.
 
     Produce a table showing per-market directional bets followed by a
     summary of total markets, average bias, strongest bias, and overall
     side preference.
 
     Args:
-        markets: List of ``MarketBreakdown`` to format.
+        markets: ``MarketBreakdownSchema``-validated DataFrame as returned by
+            ``analyse_markets()``.
 
     Returns:
         Multi-line formatted report string.
 
     """
-    if not markets:
+    if markets.empty:
         return "No markets found matching the criteria."
 
     lines: list[str] = []
@@ -202,13 +709,14 @@ def format_market_analysis(markets: list[MarketBreakdown]) -> str:
     lines.append(_MARKET_TABLE_HEADER)
     lines.append("-" * len(_MARKET_TABLE_HEADER))
 
-    for m in markets:
+    for _, row in markets.iterrows():
+        title = str(row["title"])
         display_title = (
-            m.title[:_MAX_TITLE_LENGTH] + "..." if len(m.title) > _MAX_TITLE_LENGTH else m.title
+            title[:_MAX_TITLE_LENGTH] + "..." if len(title) > _MAX_TITLE_LENGTH else title
         )
         lines.append(
-            f"{display_title:<50}  ${m.up_volume:>8.2f}  ${m.down_volume:>8.2f}"
-            f"  {m.bias_ratio:>5.1f}:1  {m.favoured_side:>4}  {m.trade_count:>6}"
+            f"{display_title:<50}  ${row['up_volume']:>8.2f}  ${row['down_volume']:>8.2f}"
+            f"  {row['bias_ratio']:>5.1f}:1  {row['favoured_side']:>4}  {row['trade_count']:>6}"
         )
 
     lines.append("")
@@ -216,18 +724,20 @@ def format_market_analysis(markets: list[MarketBreakdown]) -> str:
     lines.append("Summary")
     lines.append(f"  Total markets: {len(markets)}")
 
-    avg_bias = sum(m.bias_ratio for m in markets) / len(markets)
+    avg_bias = float(markets["bias_ratio"].mean())
     lines.append(f"  Average bias ratio: {avg_bias:.1f}:1")
 
-    strongest = max(markets, key=lambda m: m.bias_ratio)
+    strongest = markets.loc[markets["bias_ratio"].idxmax()]
+    strongest_title = str(strongest["title"])
     strongest_title = (
-        strongest.title[:_MAX_TITLE_LENGTH] + "..."
-        if len(strongest.title) > _MAX_TITLE_LENGTH
-        else strongest.title
+        strongest_title[:_MAX_TITLE_LENGTH] + "..."
+        if len(strongest_title) > _MAX_TITLE_LENGTH
+        else strongest_title
     )
-    lines.append(f"  Strongest bias: {strongest.bias_ratio:.1f}:1 ({strongest_title})")
+    strongest_bias = float(strongest["bias_ratio"])  # type: ignore[arg-type]
+    lines.append(f"  Strongest bias: {strongest_bias:.1f}:1 ({strongest_title})")
 
-    up_favoured = sum(1 for m in markets if m.favoured_side == "Up")
+    up_favoured = int((markets["favoured_side"] == "Up").sum())
     down_favoured = len(markets) - up_favoured
     lines.append(f"  Side preference: Up in {up_favoured}, Down in {down_favoured} markets")
 
@@ -236,65 +746,50 @@ def format_market_analysis(markets: list[MarketBreakdown]) -> str:
 
 def analyse_trades(
     address: str,
-    trades: list[WhaleTrade],
+    trades: Sequence[WhaleTrade | EnrichedTrade],
     *,
     top_n: int = 10,
 ) -> WhaleAnalysis:
     """Compute strategy analysis from a list of whale trades.
 
+    Accept both plain ``WhaleTrade`` and ``EnrichedTrade`` wrappers.
+
     Args:
         address: Whale proxy wallet address.
-        trades: List of ``WhaleTrade`` records to analyse.
+        trades: List of ``WhaleTrade`` or ``EnrichedTrade`` records to analyse.
         top_n: Number of top markets to include in the summary.
 
     Returns:
         A ``WhaleAnalysis`` dataclass with aggregated statistics.
 
     """
-    analysis = WhaleAnalysis(address=address)
+    df = trades_to_df(trades)
 
-    if not trades:
-        return analysis
+    if df.empty:
+        return WhaleAnalysis(address=address)
 
-    analysis.total_trades = len(trades)
+    buys = df[df["side"] == "BUY"]
+    sells = df[df["side"] == "SELL"]
 
-    total_size = 0.0
-    total_price = 0.0
-    market_counter: Counter[str] = Counter()
-    outcome_counter: Counter[str] = Counter()
-    side_counter: Counter[str] = Counter()
-    hour_counter: Counter[int] = Counter()
-    condition_ids: set[str] = set()
+    side_counts = df["side"].value_counts().to_dict()
+    top_markets_series = df["title"].value_counts().head(top_n)
 
-    for trade in trades:
-        volume = trade.size * trade.price
-        analysis.total_volume += volume
-        total_size += trade.size
-        total_price += trade.price
-
-        if trade.side == "BUY":
-            analysis.buy_count += 1
-        else:
-            analysis.sell_count += 1
-
-        market_counter[trade.title] += 1
-        outcome_counter[trade.outcome] += 1
-        side_counter[trade.side] += 1
-        condition_ids.add(trade.condition_id)
-
-        hour = _epoch_seconds_to_hour(trade.timestamp)
-        hour_counter[hour] += 1
-
-    analysis.avg_size = total_size / len(trades)
-    analysis.avg_price = total_price / len(trades)
-    analysis.unique_markets = len(condition_ids)
-    analysis.market_breakdown = dict(market_counter)
-    analysis.outcome_breakdown = dict(outcome_counter)
-    analysis.side_breakdown = dict(side_counter)
-    analysis.hourly_distribution = dict(hour_counter)
-    analysis.top_markets = market_counter.most_common(top_n)
-
-    return analysis
+    return WhaleAnalysis(
+        address=address,
+        total_trades=len(df),
+        total_volume=float(df["notional"].sum()),
+        buy_count=int(side_counts.get("BUY", 0)),
+        sell_count=int(side_counts.get("SELL", 0)),
+        avg_size=float(df["size"].mean()),
+        avg_buy_price=float(buys["price"].mean()) if not buys.empty else 0.0,
+        avg_sell_price=float(sells["price"].mean()) if not sells.empty else 0.0,
+        unique_markets=int(df["condition_id"].nunique()),
+        market_breakdown={str(k): int(v) for k, v in df["title"].value_counts().items()},
+        outcome_breakdown={str(k): int(v) for k, v in df["outcome"].value_counts().items()},
+        side_breakdown={str(k): int(v) for k, v in side_counts.items()},
+        hourly_distribution={int(h): int(c) for h, c in df["hour"].value_counts().items()},  # type: ignore[arg-type]
+        top_markets=[(str(k), int(v)) for k, v in top_markets_series.items()],
+    )
 
 
 def format_analysis(analysis: WhaleAnalysis) -> str:
@@ -331,7 +826,8 @@ def format_analysis(analysis: WhaleAnalysis) -> str:
     lines.append("")
 
     lines.append(f"Avg size: {analysis.avg_size:.2f} tokens")
-    lines.append(f"Avg price: {analysis.avg_price:.4f}")
+    lines.append(f"Avg buy price:  {analysis.avg_buy_price:.4f}")
+    lines.append(f"Avg sell price: {analysis.avg_sell_price:.4f}")
     lines.append("")
 
     if analysis.outcome_breakdown:
@@ -361,18 +857,3 @@ def format_analysis(analysis: WhaleAnalysis) -> str:
                 lines.append(f"  {hour:02d}:00  {bar} ({count})")
 
     return "\n".join(lines)
-
-
-def _epoch_seconds_to_hour(epoch_seconds: int) -> int:
-    """Convert epoch seconds to UTC hour of day (0-23).
-
-    Args:
-        epoch_seconds: Unix epoch timestamp in seconds.
-
-    Returns:
-        Hour of day in UTC (0-23).
-
-    """
-    _SECONDS_PER_DAY = 86400  # noqa: N806
-    _SECONDS_PER_HOUR = 3600  # noqa: N806
-    return (epoch_seconds % _SECONDS_PER_DAY) // _SECONDS_PER_HOUR

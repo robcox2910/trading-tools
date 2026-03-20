@@ -34,6 +34,7 @@ Params:
 from collections import deque
 from decimal import Decimal
 
+from trading_tools.apps.backtester.indicators import detect_crossover
 from trading_tools.core.models import ONE, Candle, Side, Signal
 
 
@@ -45,9 +46,11 @@ class VwapStrategy:
     above, it's considered expensive (sell opportunity).
     """
 
+    _MIN_PERIOD = 2
+
     def __init__(self, period: int = 20) -> None:
         """Initialize the VWAP strategy."""
-        if period < 2:  # noqa: PLR2004
+        if period < self._MIN_PERIOD:
             msg = f"period must be >= 2, got {period}"
             raise ValueError(msg)
         self._period = period
@@ -87,14 +90,15 @@ class VwapStrategy:
         self._prev_close = candle.close
         self._prev_vwap = curr_vwap
 
-        if prev_close >= prev_vwap and candle.close < curr_vwap:
+        cross = detect_crossover(prev_close, candle.close, prev_vwap, curr_vwap)
+        if cross == -1:
             return Signal(
                 side=Side.BUY,
                 symbol=candle.symbol,
                 strength=ONE,
                 reason=f"Price crossed below VWAP({self._period})",
             )
-        if prev_close <= prev_vwap and candle.close > curr_vwap:
+        if cross == 1:
             return Signal(
                 side=Side.SELL,
                 symbol=candle.symbol,

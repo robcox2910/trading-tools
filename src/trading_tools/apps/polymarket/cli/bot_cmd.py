@@ -12,22 +12,19 @@ from typing import Annotated
 import typer
 
 from trading_tools.apps.polymarket.cli._helpers import (
+    StrategyParams,
     configure_logging,
-    discover_markets,
-    parse_series_slugs,
+    resolve_market_ids,
 )
 from trading_tools.apps.polymarket_bot.engine import PaperTradingEngine
 from trading_tools.apps.polymarket_bot.models import BotConfig
-from trading_tools.apps.polymarket_bot.strategy_factory import (
-    PM_STRATEGY_NAMES,
-    build_pm_strategy,
-)
+from trading_tools.apps.polymarket_bot.strategy_factory import PM_STRATEGY_NAMES
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
 from trading_tools.clients.polymarket.client import PolymarketClient
 from trading_tools.clients.polymarket.exceptions import PolymarketAPIError
 
 
-def bot(  # noqa: PLR0913
+def bot(
     strategy: Annotated[
         str, typer.Option(help=f"Strategy name: {', '.join(PM_STRATEGY_NAMES)}")
     ] = "pm_mean_reversion",
@@ -58,7 +55,14 @@ def bot(  # noqa: PLR0913
     snipe_window: Annotated[
         int, typer.Option(help="Seconds before market end to start sniping")
     ] = 60,
-    verbose: Annotated[  # noqa: FBT002
+    fee_rate: Annotated[
+        float, typer.Option(help="Fee rate parameter (0.25=crypto, 0.0175=sports, 0=disabled)")
+    ] = 0.25,
+    fee_exponent: Annotated[int, typer.Option(help="Fee exponent (2=crypto, 1=sports)")] = 2,
+    max_loss_pct: Annotated[
+        float, typer.Option(help="Stop bot at this drawdown %% (e.g. -20)")
+    ] = -100.0,
+    verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable tick-by-tick logging")
     ] = False,
 ) -> None:
@@ -73,6 +77,16 @@ def bot(  # noqa: PLR0913
     """
     configure_logging(verbose=verbose)
 
+    strategy_params = StrategyParams(
+        period=period,
+        z_threshold=z_threshold,
+        spread_pct=spread_pct,
+        imbalance_threshold=imbalance_threshold,
+        min_edge=min_edge,
+        snipe_threshold=snipe_threshold,
+        snipe_window=snipe_window,
+    )
+
     asyncio.run(
         _bot(
             strategy=strategy,
@@ -83,18 +97,15 @@ def bot(  # noqa: PLR0913
             max_ticks=max_ticks,
             max_position_pct=max_position_pct,
             kelly_frac=kelly_frac,
-            period=period,
-            z_threshold=z_threshold,
-            spread_pct=spread_pct,
-            imbalance_threshold=imbalance_threshold,
-            min_edge=min_edge,
-            snipe_threshold=snipe_threshold,
-            snipe_window=snipe_window,
+            strategy_params=strategy_params,
+            fee_rate=fee_rate,
+            fee_exponent=fee_exponent,
+            max_loss_pct=max_loss_pct,
         )
     )
 
 
-async def _bot(  # noqa: PLR0913
+async def _bot(
     *,
     strategy: str,
     markets: str,
@@ -104,13 +115,10 @@ async def _bot(  # noqa: PLR0913
     max_ticks: int | None,
     max_position_pct: float,
     kelly_frac: float,
-    period: int,
-    z_threshold: float,
-    spread_pct: float,
-    imbalance_threshold: float,
-    min_edge: float,
-    snipe_threshold: float,
-    snipe_window: int,
+    strategy_params: StrategyParams,
+    fee_rate: float,
+    fee_exponent: int,
+    max_loss_pct: float,
 ) -> None:
     """Run the paper trading bot asynchronously.
 
@@ -123,61 +131,28 @@ async def _bot(  # noqa: PLR0913
         max_ticks: Maximum number of ticks.
         max_position_pct: Maximum position size as fraction of capital.
         kelly_frac: Fractional Kelly multiplier.
-        period: Rolling window period for mean reversion.
-        z_threshold: Z-score threshold for mean reversion.
-        spread_pct: Half-spread for market making.
-        imbalance_threshold: Threshold for liquidity imbalance.
-        min_edge: Minimum edge for cross-market arb.
-        snipe_threshold: Price threshold for late snipe strategy.
-        snipe_window: Window in seconds before market end for sniping.
+        strategy_params: Shared strategy configuration parameters.
+        fee_rate: Fee rate parameter in the polynomial formula.
+        fee_exponent: Exponent in the polynomial fee formula.
+        max_loss_pct: Stop bot at this drawdown percentage (e.g. -20).
 
     """
-    market_ids = tuple(m.strip() for m in markets.split(",") if m.strip())
-    market_end_times: tuple[tuple[str, str], ...] = ()
-    series_slugs = parse_series_slugs(series)
-
-    # Discover markets from series slugs
-    if series_slugs:
-        try:
-            async with PolymarketClient() as client:
-                discovered = await discover_markets(client, series_slugs)
-        except PolymarketAPIError as exc:
-            typer.echo(f"Warning: Series discovery failed: {exc}", err=True)
-            discovered = []
-
-        if discovered:
-            discovered_ids = tuple(cid for cid, _ in discovered)
-            market_end_times = tuple(discovered)
-            market_ids = (*market_ids, *discovered_ids)
-
-    if not market_ids:
-        typer.echo(
-            "Error: specify --markets or --series (e.g. --series crypto-5m)",
-            err=True,
+    async with PolymarketClient() as client:
+        market_ids, market_end_times, series_slugs = await resolve_market_ids(
+            client, markets, series
         )
-        raise typer.Exit(code=1)
 
-    try:
-        pm_strategy = build_pm_strategy(
-            strategy,
-            period=period,
-            z_threshold=z_threshold,
-            spread_pct=spread_pct,
-            imbalance_threshold=imbalance_threshold,
-            min_edge=min_edge,
-            snipe_threshold=snipe_threshold,
-            snipe_window=snipe_window,
-        )
-    except typer.BadParameter as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+    pm_strategy = strategy_params.build_strategy(strategy)
 
     config = BotConfig(
         order_book_refresh_seconds=ob_refresh,
-        snipe_window_seconds=snipe_window,
+        snipe_window_seconds=strategy_params.snipe_window,
         initial_capital=Decimal(str(capital)),
         max_position_pct=Decimal(str(max_position_pct)),
         kelly_fraction=Decimal(str(kelly_frac)),
+        fee_rate=Decimal(str(fee_rate)),
+        fee_exponent=fee_exponent,
+        max_loss_pct=Decimal(str(max_loss_pct)),
         markets=market_ids,
         market_end_times=market_end_times,
         series_slugs=series_slugs,

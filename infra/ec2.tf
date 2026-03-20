@@ -26,6 +26,10 @@ resource "aws_instance" "trading_bot" {
     bot_series   = var.bot_series
   })
 
+  lifecycle {
+    ignore_changes = [ami, user_data]
+  }
+
   tags = {
     Name    = "trading-bot"
     Project = "trading-tools"

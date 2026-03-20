@@ -1,0 +1,41 @@
+[Unit]
+Description=Polymarket Directional Trading Bot (Paper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/trading-tools
+
+ExecStartPre=/bin/bash /opt/trading-tools/fetch-secrets.sh /run/directional-paper.env
+EnvironmentFile=-/run/directional-paper.env
+
+ExecStart=/opt/trading-tools/.venv/bin/trading-tools-polymarket directional \
+  --series-slugs btc-updown-5m,eth-updown-5m,xrp-updown-5m,sol-updown-5m,btc-updown-15m,eth-updown-15m,xrp-updown-15m,sol-updown-15m \
+  --poll-interval 3 \
+  --capital 100 \
+  --min-edge 0.05 \
+  --kelly-fraction 0.5 \
+  --max-position-pct 0.15 \
+  --entry-start 30 \
+  --entry-end 10 \
+  --signal-lookback 1200 \
+  --max-open-positions 10 \
+  --circuit-breaker-losses 5 \
+  --circuit-breaker-cooldown 300 \
+  --max-drawdown-pct 0.20 \
+  -v
+
+StandardOutput=append:/var/log/trading-tools/directional-paper.log
+StandardError=append:/var/log/trading-tools/directional-paper.log
+
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGINT
+TimeoutStopSec=90
+CPUQuota=20%
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

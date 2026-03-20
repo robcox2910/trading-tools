@@ -102,7 +102,7 @@ def grid_backtest(
         float | None,
         typer.Option(help="Max slippage tolerance (0-1 scale, e.g. 0.05). None disables."),
     ] = 0.05,
-    verbose: Annotated[  # noqa: FBT002
+    verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable per-trade logging")
     ] = False,
 ) -> None:

@@ -7,9 +7,8 @@ runs all of them and returns a dictionary suitable for display.
 
 from decimal import Decimal
 
-from trading_tools.core.models import Trade
+from trading_tools.core.models import ZERO, Trade
 
-ZERO = Decimal(0)
 _MIN_TRADES_FOR_SHARPE = 2
 
 
@@ -67,6 +66,12 @@ def sharpe_ratio(trades: list[Trade]) -> Decimal:
 
     Use a risk-free rate of zero for simplicity. Return zero when there
     are fewer than 2 trades or the standard deviation is zero.
+
+    Note: use *sample* variance (Bessel's correction, N-1) because we are
+    estimating the volatility of a population of future returns from a
+    finite sample of historical trades. This differs from the population
+    variance (N) used in ``indicators.rolling_std`` which computes a
+    point-in-time statistic over a known window.
     """
     if len(trades) < _MIN_TRADES_FOR_SHARPE:
         return ZERO

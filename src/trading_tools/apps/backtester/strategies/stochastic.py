@@ -42,6 +42,7 @@ Params:
 from collections import deque
 from decimal import Decimal
 
+from trading_tools.apps.backtester.indicators import detect_crossover
 from trading_tools.core.models import HUNDRED, ONE, Candle, Side, Signal
 
 
@@ -53,6 +54,8 @@ class StochasticStrategy:
     up (oversold + %K crossing above %D), and sells when it's very high
     and starts ticking down (overbought + %K crossing below %D).
     """
+
+    _PERCENT_MAX = 100
 
     def __init__(
         self,
@@ -68,7 +71,7 @@ class StochasticStrategy:
         if d_period < 1:
             msg = f"d_period must be >= 1, got {d_period}"
             raise ValueError(msg)
-        if not (0 < oversold < overbought < 100):  # noqa: PLR2004
+        if not (0 < oversold < overbought < self._PERCENT_MAX):
             msg = f"Need 0 < oversold ({oversold}) < overbought ({overbought}) < 100"
             raise ValueError(msg)
         self._k_period = k_period
@@ -112,14 +115,15 @@ class StochasticStrategy:
         self._prev_k = curr_k
         self._prev_d = curr_d
 
-        if prev_k <= prev_d and curr_k > curr_d and curr_k < self._oversold:
+        cross = detect_crossover(prev_k, curr_k, prev_d, curr_d)
+        if cross == 1 and curr_k < self._oversold:
             return Signal(
                 side=Side.BUY,
                 symbol=candle.symbol,
                 strength=ONE,
                 reason=f"%K crossed above %D in oversold zone ({curr_k:.1f})",
             )
-        if prev_k >= prev_d and curr_k < curr_d and curr_k > self._overbought:
+        if cross == -1 and curr_k > self._overbought:
             return Signal(
                 side=Side.SELL,
                 symbol=candle.symbol,

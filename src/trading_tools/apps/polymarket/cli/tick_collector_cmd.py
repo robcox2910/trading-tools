@@ -6,13 +6,12 @@ IDs and auto-discovery via Gamma API series slugs.
 """
 
 import asyncio
-import logging
 import os
 from typing import Annotated
 
 import typer
 
-from trading_tools.apps.polymarket.cli._helpers import parse_series_slugs
+from trading_tools.apps.polymarket.cli._helpers import configure_logging, parse_series_slugs
 from trading_tools.apps.tick_collector.collector import TickCollector
 from trading_tools.apps.tick_collector.config import CollectorConfig
 
@@ -51,9 +50,7 @@ def tick_collect(
         int,
         typer.Option(help="Milliseconds between polling each token"),
     ] = 100,
-    verbose: Annotated[  # noqa: FBT002
-        bool, typer.Option("--verbose", "-v", help="Enable debug logging")
-    ] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Enable debug logging")] = False,
 ) -> None:
     """Run the Polymarket tick collector service.
 
@@ -62,12 +59,7 @@ def tick_collect(
     auto-discover all four crypto 5-minute series, or ``--markets`` to
     specify condition IDs directly. Both can be combined.
     """
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    configure_logging(verbose=verbose)
 
     market_ids = tuple(m.strip() for m in markets.split(",") if m.strip())
     series_slugs = parse_series_slugs(series)

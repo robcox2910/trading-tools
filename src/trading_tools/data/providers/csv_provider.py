@@ -30,6 +30,7 @@ class CsvCandleProvider:
 
         """
         self._file_path = file_path
+        self._cache: list[Candle] | None = None
 
     async def get_candles(
         self,
@@ -53,6 +54,27 @@ class CsvCandleProvider:
             List of ``Candle`` objects matching the filter criteria.
 
         """
+        if self._cache is None:
+            self._cache = self._parse_file()
+
+        return [
+            c
+            for c in self._cache
+            if c.symbol == symbol and c.interval == interval and start_ts <= c.timestamp <= end_ts
+        ]
+
+    def _parse_file(self) -> list[Candle]:
+        """Parse the CSV file into a list of Candle objects.
+
+        Parse once and cache; subsequent ``get_candles`` calls filter in memory.
+
+        Returns:
+            All candles in the CSV file.
+
+        Raises:
+            ValueError: If required columns are missing or values are invalid.
+
+        """
         candles: list[Candle] = []
         required = {"symbol", "timestamp", "open", "high", "low", "close", "volume", "interval"}
         with self._file_path.open() as f:
@@ -68,12 +90,6 @@ class CsvCandleProvider:
                 except (ValueError, TypeError) as exc:
                     msg = f"CSV row {line_num}: invalid timestamp {row.get('timestamp')!r}"
                     raise ValueError(msg) from exc
-                if row["symbol"] != symbol:
-                    continue
-                if row["interval"] != interval.value:
-                    continue
-                if ts < start_ts or ts > end_ts:
-                    continue
                 try:
                     candles.append(
                         Candle(

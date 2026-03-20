@@ -11,24 +11,27 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import signal
 import time
 from typing import TYPE_CHECKING, Any
 
-from trading_tools.apps.tick_collector.models import OrderBookSnapshot, Tick
+from trading_tools.apps.bot_framework.heartbeat import HeartbeatLogger
+from trading_tools.apps.bot_framework.shutdown import GracefulShutdown
+from trading_tools.apps.tick_collector.models import MarketMetadata, OrderBookSnapshot, Tick
 from trading_tools.apps.tick_collector.repository import TickRepository
 from trading_tools.apps.tick_collector.ws_client import MarketFeed
+from trading_tools.apps.whale_monitor.correlator import parse_asset, parse_time_window
 from trading_tools.clients.polymarket.client import PolymarketClient
+from trading_tools.clients.polymarket.exceptions import PolymarketError
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from trading_tools.apps.tick_collector.config import CollectorConfig
-    from trading_tools.clients.polymarket.models import OrderBook
+    from trading_tools.clients.polymarket.models import MarketToken, OrderBook
+
+from trading_tools.core.timestamps import FIVE_MINUTES, MS_PER_SECOND, now_ms
 
 logger = logging.getLogger(__name__)
-
-_HEARTBEAT_INTERVAL_SECONDS = 60
-_MS_PER_SECOND = 1000
-_FIVE_MINUTES = 300
 
 
 def _seconds_until_next_discovery(now: int, lead_seconds: int) -> int:
@@ -47,12 +50,12 @@ def _seconds_until_next_discovery(now: int, lead_seconds: int) -> int:
         Non-negative seconds to sleep.
 
     """
-    elapsed = now % _FIVE_MINUTES
-    fire_at = _FIVE_MINUTES - lead_seconds
+    elapsed = now % FIVE_MINUTES
+    fire_at = FIVE_MINUTES - lead_seconds
     remaining = fire_at - elapsed
     if remaining <= 0:
         # Past fire time — sleep until next window's fire time
-        return remaining + _FIVE_MINUTES
+        return remaining + FIVE_MINUTES
     return remaining
 
 
@@ -82,7 +85,8 @@ class TickCollector:
         self._feed = MarketFeed(reconnect_base_delay=config.reconnect_base_delay)
         self._buffer: list[Tick] = []
         self._book_buffer: list[OrderBookSnapshot] = []
-        self._shutdown = False
+        self._shutdown = GracefulShutdown()
+        self._heartbeat = HeartbeatLogger()
         self._ticks_since_heartbeat = 0
         self._total_ticks = 0
         self._asset_ids: list[str] = []
@@ -102,9 +106,7 @@ class TickCollector:
             7. On SIGINT/SIGTERM, flush remaining buffer and shut down.
 
         """
-        loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGINT, self._handle_shutdown)
-        loop.add_signal_handler(signal.SIGTERM, self._handle_shutdown)
+        self._shutdown.install()
 
         await self._repo.init_db()
 
@@ -124,7 +126,7 @@ class TickCollector:
 
         try:
             async for event in self._feed.stream(self._asset_ids):
-                if self._shutdown:
+                if self._shutdown.should_stop:
                     break
                 self._handle_event(event)
                 if len(self._buffer) >= self._config.flush_batch_size:
@@ -147,11 +149,6 @@ class TickCollector:
             await self._repo.close()
             logger.info("Tick collector shut down — %d total ticks", self._total_ticks)
 
-    def _handle_shutdown(self) -> None:
-        """Set the shutdown flag for graceful exit on SIGINT/SIGTERM."""
-        logger.info("Shutdown signal received")
-        self._shutdown = True
-
     def _handle_event(self, event: dict[str, Any]) -> None:
         """Parse a trade event and append a Tick to the buffer.
 
@@ -169,7 +166,7 @@ class TickCollector:
                 side=str(event.get("side", "")),
                 fee_rate_bps=int(event.get("fee_rate_bps", 0)),
                 timestamp=int(event.get("timestamp", 0)),
-                received_at=_now_ms(),
+                received_at=now_ms(),
             )
             self._buffer.append(tick)
             self._ticks_since_heartbeat += 1
@@ -213,21 +210,26 @@ class TickCollector:
                         "Discovered %d markets from series slugs",
                         len(discovered),
                     )
-                except Exception:
+                except (PolymarketError, KeyError, ValueError):
                     logger.exception("Series discovery failed")
+
+            metadata_batch: list[MarketMetadata] = []
 
             async def _resolve_one(cid: str) -> list[tuple[str, str]]:
                 """Resolve a single condition ID to (token_id, cid) pairs."""
                 try:
                     market = await client.get_market_tokens(cid)
-                    return [
+                except (PolymarketError, KeyError, ValueError):
+                    logger.exception("Failed to resolve market %s", cid)
+                    return []
+                else:
+                    pairs = [
                         (token.token_id, cid)
                         for token in market.tokens
                         if token.token_id not in self._condition_map
                     ]
-                except Exception:
-                    logger.exception("Failed to resolve market %s", cid)
-                    return []
+                    self._maybe_build_metadata(cid, market.question, market.tokens, metadata_batch)
+                    return pairs
 
             results = await asyncio.gather(*(_resolve_one(cid) for cid in condition_ids))
 
@@ -246,6 +248,13 @@ class TickCollector:
                 len(self._asset_ids),
             )
 
+        if metadata_batch:
+            try:
+                await self._repo.save_market_metadata_batch(metadata_batch)
+                logger.info("Persisted %d market metadata records", len(metadata_batch))
+            except (OSError, ValueError):
+                logger.exception("Failed to persist market metadata")
+
     async def _periodic_discovery(self) -> None:
         """Re-discover markets aligned to 5-minute window boundaries.
 
@@ -261,12 +270,12 @@ class TickCollector:
 
     async def _periodic_discovery_inner(self) -> None:
         """Execute the discovery loop body (separated for CancelledError handling)."""
-        while not self._shutdown:
+        while not self._shutdown.should_stop:
             sleep_seconds = _seconds_until_next_discovery(
                 int(time.time()), self._config.discovery_lead_seconds
             )
             await asyncio.sleep(sleep_seconds)
-            if self._shutdown:
+            if self._shutdown.should_stop:
                 break
             old_count = len(self._asset_ids)
             await self._discover_and_resolve()
@@ -281,24 +290,19 @@ class TickCollector:
         count.
         """
         try:
-            await self._periodic_heartbeat_inner()
+            while not self._shutdown.should_stop:
+                await asyncio.sleep(60)
+                if self._shutdown.should_stop:
+                    break
+                total = await self._repo.get_tick_count()
+                self._heartbeat.maybe_log(
+                    ticks_last_min=self._ticks_since_heartbeat,
+                    total_stored=total,
+                    assets=len(self._asset_ids),
+                )
+                self._ticks_since_heartbeat = 0
         except asyncio.CancelledError:
             return
-
-    async def _periodic_heartbeat_inner(self) -> None:
-        """Execute the heartbeat loop body (separated for CancelledError handling)."""
-        while not self._shutdown:
-            await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
-            if self._shutdown:
-                break
-            total = await self._repo.get_tick_count()
-            logger.info(
-                "[TICK-COLLECTOR] ticks_last_min=%d total_stored=%d assets=%d",
-                self._ticks_since_heartbeat,
-                total,
-                len(self._asset_ids),
-            )
-            self._ticks_since_heartbeat = 0
 
     async def _periodic_flush(self) -> None:
         """Flush the buffer on a timer to bound write latency.
@@ -313,13 +317,64 @@ class TickCollector:
 
     async def _periodic_flush_inner(self) -> None:
         """Execute the flush loop body (separated for CancelledError handling)."""
-        while not self._shutdown:
+        while not self._shutdown.should_stop:
             await asyncio.sleep(self._config.flush_interval_seconds)
-            if self._shutdown:
+            if self._shutdown.should_stop:
                 break
             elapsed = time.monotonic() - self._last_flush_time
             if elapsed >= self._config.flush_interval_seconds and self._buffer:
                 await self._flush_buffer()
+
+    def _maybe_build_metadata(
+        self,
+        condition_id: str,
+        title: str,
+        tokens: Sequence[MarketToken],
+        batch: list[MarketMetadata],
+    ) -> None:
+        """Parse market title and build a ``MarketMetadata`` record if parseable.
+
+        Extract asset name and time window from the market title.  If
+        both are parseable, create a metadata record and append it to
+        the batch for later persistence.
+
+        Args:
+            condition_id: Polymarket market condition identifier.
+            title: Full market question text.
+            tokens: Sequence of ``MarketToken`` objects from the market.
+            batch: Mutable list to append the metadata record to.
+
+        """
+        asset = parse_asset(title)
+        if asset is None:
+            return
+
+        now_epoch = int(time.time())
+        window = parse_time_window(title, now_epoch)
+        if window is None:
+            return
+
+        tokens_by_outcome = {t.outcome: t for t in tokens}
+        up_token = tokens_by_outcome.get("Up")
+        down_token = tokens_by_outcome.get("Down")
+        if up_token is None or down_token is None:
+            return
+
+        # Determine series slug from the config that discovered this market
+        series_slug = self._config.series_slugs[0] if self._config.series_slugs else None
+
+        batch.append(
+            MarketMetadata(
+                condition_id=condition_id,
+                asset=asset,
+                title=title,
+                up_token_id=up_token.token_id,
+                down_token_id=down_token.token_id,
+                window_start_ts=window[0],
+                window_end_ts=window[1],
+                series_slug=series_slug,
+            )
+        )
 
     def _serialize_order_book(
         self,
@@ -378,31 +433,21 @@ class TickCollector:
         """Execute the book polling loop body."""
         if self._config.book_poll_interval_seconds <= 0:
             return
-        stagger_s = self._config.book_poll_stagger_ms / _MS_PER_SECOND
-        while not self._shutdown:
+        stagger_s = self._config.book_poll_stagger_ms / MS_PER_SECOND
+        while not self._shutdown.should_stop:
             await asyncio.sleep(self._config.book_poll_interval_seconds)
-            if self._shutdown:
+            if self._shutdown.should_stop:
                 break
             async with PolymarketClient() as client:
                 for token_id in list(self._asset_ids):
-                    if self._shutdown:
+                    if self._shutdown.should_stop:
                         break
                     try:
                         book = await client.get_order_book(token_id)
-                        snapshot = self._serialize_order_book(token_id, _now_ms(), book)
+                        snapshot = self._serialize_order_book(token_id, now_ms(), book)
                         self._book_buffer.append(snapshot)
-                    except Exception:
+                    except (PolymarketError, KeyError, ValueError):
                         logger.debug("Failed to poll order book for %s", token_id)
                     if stagger_s > 0:
                         await asyncio.sleep(stagger_s)
             await self._flush_book_buffer()
-
-
-def _now_ms() -> int:
-    """Return the current time as epoch milliseconds.
-
-    Returns:
-        Integer epoch milliseconds.
-
-    """
-    return int(time.time() * _MS_PER_SECOND)

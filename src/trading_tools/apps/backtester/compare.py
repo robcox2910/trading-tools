@@ -5,8 +5,10 @@ ranked summary table. This keeps comparison logic separate from the
 single-strategy ``run`` module.
 """
 
+import asyncio
 from decimal import Decimal
 
+from trading_tools.apps.backtester._providers import CachedProvider
 from trading_tools.apps.backtester.engine import BacktestEngine
 from trading_tools.apps.backtester.strategy_factory import STRATEGY_NAMES, build_strategy
 from trading_tools.core.models import BacktestResult, ExecutionConfig, Interval, RiskConfig
@@ -26,7 +28,7 @@ _SORT_METRICS = (
 _ASCENDING_METRICS = frozenset({"max_drawdown", "total_fees"})
 
 
-async def run_comparison(  # noqa: PLR0913
+async def run_comparison(
     *,
     provider: CandleProvider,
     symbol: str,
@@ -82,9 +84,10 @@ async def run_comparison(  # noqa: PLR0913
         A list of ``BacktestResult`` objects, one per strategy.
 
     """
-    results: list[BacktestResult] = []
+    candles = await provider.get_candles(symbol, interval, start, end)
+    cached = CachedProvider(candles)
 
-    for name in STRATEGY_NAMES:
+    async def _run_one(name: str) -> BacktestResult:
         strategy = build_strategy(
             name,
             short_period=short_period,
@@ -101,16 +104,15 @@ async def run_comparison(  # noqa: PLR0913
             z_threshold=z_threshold,
         )
         engine = BacktestEngine(
-            provider=provider,
+            provider=cached,
             strategy=strategy,
             initial_capital=capital,
             execution_config=execution_config,
             risk_config=risk_config,
         )
-        result = await engine.run(symbol, interval, start, end)
-        results.append(result)
+        return await engine.run(symbol, interval, start, end)
 
-    return results
+    return list(await asyncio.gather(*[_run_one(n) for n in STRATEGY_NAMES]))
 
 
 def format_comparison_table(

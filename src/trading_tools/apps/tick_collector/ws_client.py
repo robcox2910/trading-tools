@@ -13,8 +13,8 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from websockets import ConnectionClosed
 from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -100,7 +100,7 @@ class MarketFeed:
                     exc,
                     consecutive_failures,
                 )
-            except Exception:
+            except Exception:  # Last-resort catch-all to keep the reconnect loop alive
                 if self._closed:
                     return
                 consecutive_failures += 1

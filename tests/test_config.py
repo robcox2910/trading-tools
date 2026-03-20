@@ -201,19 +201,19 @@ class TestGetConfig:
 
     def test_returns_config_loader_instance(self) -> None:
         """Return a ConfigLoader instance on first call."""
-        config_module._config = None
+        config_module._config.clear()
         try:
             result = get_config()
             assert isinstance(result, ConfigLoader)
         finally:
-            config_module._config = None
+            config_module._config.clear()
 
     def test_returns_same_instance(self) -> None:
         """Return the same ConfigLoader on subsequent calls."""
-        config_module._config = None
+        config_module._config.clear()
         try:
             first = get_config()
             second = get_config()
             assert first is second
         finally:
-            config_module._config = None
+            config_module._config.clear()

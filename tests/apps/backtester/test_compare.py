@@ -50,10 +50,10 @@ class StubProvider:
 
     async def get_candles(
         self,
-        symbol: str,  # noqa: ARG002
-        interval: Interval,  # noqa: ARG002
-        start_ts: int,  # noqa: ARG002
-        end_ts: int,  # noqa: ARG002
+        symbol: str,
+        interval: Interval,
+        start_ts: int,
+        end_ts: int,
     ) -> list[Candle]:
         """Return pre-configured candles ignoring filter parameters."""
         return self._candles
