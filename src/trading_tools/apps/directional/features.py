@@ -270,25 +270,24 @@ def compute_leader_momentum(
     return _clamp(scaled)
 
 
-def compute_whale_signal(whale_direction: str | None) -> Decimal:
-    """Convert a whale directional signal to a normalised feature value.
+def compute_whale_signal(whale_signal: float | None) -> Decimal:
+    """Convert a continuous whale signal to a ``Decimal`` feature value.
 
-    Map the whale's net positioning (from the whale_trades DB) to a
-    ``[-1, 1]`` signal.  ``"Up"`` maps to ``1``, ``"Down"`` maps to
-    ``-1``, and ``None`` (no whale activity) maps to ``0``.
+    Pass through the pre-computed ``(up_vol - down_vol) / total_vol``
+    ratio from the whale repository.  ``None`` (no whale activity) maps
+    to ``0``.  The value is already in ``[-1, 1]`` but clamped for safety.
 
     Args:
-        whale_direction: ``"Up"``, ``"Down"``, or ``None``.
+        whale_signal: Continuous signal in ``[-1, 1]`` from whale
+            dollar volume ratio, or ``None`` if no whale data.
 
     Returns:
         Whale signal in ``[-1, 1]``.
 
     """
-    if whale_direction == "Up":
-        return ONE
-    if whale_direction == "Down":
-        return -ONE
-    return ZERO
+    if whale_signal is None:
+        return ZERO
+    return _clamp(Decimal(str(whale_signal)))
 
 
 _TWO_PI = 2.0 * math.pi
@@ -438,7 +437,7 @@ def extract_features(
     atr_period: int = 14,
     rsi_period: int = 14,
     volume_recent_bars: int = 5,
-    whale_direction: str | None = None,
+    whale_signal: float | None = None,
     leader_candles: Sequence[Candle] | None = None,
     up_ticks: Sequence[TickSample] | None = None,
     utc_epoch: int = 0,
@@ -456,8 +455,8 @@ def extract_features(
         atr_period: Period for ATR in volatility regime computation.
         rsi_period: Period for RSI computation.
         volume_recent_bars: Recent bars for volume profile.
-        whale_direction: Whale net positioning (``"Up"``, ``"Down"``,
-            or ``None``).
+        whale_signal: Continuous whale signal in ``[-1, 1]`` from dollar
+            volume ratio, or ``None`` if no whale data.
         leader_candles: Recent BTC 1-min candles for leader momentum.
             Pass ``None`` for BTC itself to avoid double-counting.
         up_ticks: Recent Polymarket tick samples for the Up token.
@@ -477,7 +476,7 @@ def extract_features(
         book_imbalance=compute_book_imbalance(up_book, down_book),
         rsi_signal=compute_rsi_signal(candles, period=rsi_period),
         price_change_pct=compute_price_change(candles),
-        whale_signal=compute_whale_signal(whale_direction),
+        whale_signal=compute_whale_signal(whale_signal),
         leader_momentum=compute_leader_momentum(leader_candles),
         tod_sin=tod_sin,
         tod_cos=tod_cos,

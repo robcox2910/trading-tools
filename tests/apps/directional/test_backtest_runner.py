@@ -229,7 +229,7 @@ class TestRunDirectionalBacktest:
         repo.get_nearest_book_snapshot = AsyncMock(return_value=None)
 
         whale_repo = AsyncMock()
-        whale_repo.get_whale_signal = AsyncMock(return_value="Up")
+        whale_repo.get_whale_signal = AsyncMock(return_value=0.8)
 
         # Provide candles so the window doesn't skip due to no outcome
         candles = [_make_candle(_BASE_TS, Decimal(100), Decimal(101))]
@@ -479,14 +479,18 @@ class TestBookSnapshotCache:
 class TestWhaleTradeCache:
     """Test the in-memory whale trade cache."""
 
-    def test_get_signal_returns_favoured_side(self) -> None:
-        """Return the outcome with larger dollar volume."""
+    def test_get_signal_returns_continuous_ratio(self) -> None:
+        """Return continuous (up_vol - down_vol) / total_vol ratio."""
         trades = [
             _make_whale_trade(outcome="Up", size=100, price=0.60, tx_hash="tx_1"),
             _make_whale_trade(outcome="Down", size=30, price=0.40, tx_hash="tx_2"),
         ]
         cache = WhaleTradeCache(trades)
-        assert cache.get_signal("cond_1") == "Up"
+        signal = cache.get_signal("cond_1")
+        assert signal is not None
+        # Up vol = 60, Down vol = 12, ratio = (60-12)/72 ≈ 0.667
+        assert signal > 0
+        assert signal < 1.0
 
     def test_get_signal_none_when_no_trades(self) -> None:
         """Return None when no trades exist for the condition."""
@@ -504,15 +508,20 @@ class TestWhaleTradeCache:
             ),
         ]
         cache = WhaleTradeCache(trades)
-        # With cutoff before the Down trade, only Up is counted
-        assert cache.get_signal("cond_1", before_ts=_BASE_TS + 50) == "Up"
-        # Without cutoff, Down wins
-        assert cache.get_signal("cond_1") == "Down"
+        # With cutoff before the Down trade, only Up is counted → ratio = 1.0
+        signal_before = cache.get_signal("cond_1", before_ts=_BASE_TS + 50)
+        assert signal_before is not None
+        assert signal_before > 0
+        # Without cutoff, Down wins → ratio < 0
+        signal_all = cache.get_signal("cond_1")
+        assert signal_all is not None
+        assert signal_all < 0
 
     def test_get_signal_ignores_non_directional_outcomes(self) -> None:
-        """Return None when the top outcome is not Up or Down."""
+        """Return None when the only outcome is not Up or Down."""
         trade = _make_whale_trade(outcome="Yes", tx_hash="tx_1")
         cache = WhaleTradeCache([trade])
+        # "Yes" volume but no Up/Down → total of Up+Down = 0 → None
         assert cache.get_signal("cond_1") is None
 
     def test_multiple_conditions_isolated(self) -> None:
@@ -520,5 +529,9 @@ class TestWhaleTradeCache:
         t1 = _make_whale_trade(condition_id="c1", outcome="Up", tx_hash="tx_1")
         t2 = _make_whale_trade(condition_id="c2", outcome="Down", tx_hash="tx_2")
         cache = WhaleTradeCache([t1, t2])
-        assert cache.get_signal("c1") == "Up"
-        assert cache.get_signal("c2") == "Down"
+        c1_signal = cache.get_signal("c1")
+        c2_signal = cache.get_signal("c2")
+        assert c1_signal is not None
+        assert c1_signal > 0  # Up dominant → positive
+        assert c2_signal is not None
+        assert c2_signal < 0  # Down dominant → negative

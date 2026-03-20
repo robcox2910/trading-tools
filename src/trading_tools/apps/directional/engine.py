@@ -195,7 +195,7 @@ class DirectionalEngine:
             market.up_token_id, market.down_token_id
         )
 
-        whale_direction = await self.market_data.get_whale_signal(market.condition_id)
+        whale_signal_val = await self.market_data.get_whale_signal(market.condition_id)
 
         # Fetch BTC candles for non-BTC assets (leader momentum feature)
         leader_candles = None
@@ -214,7 +214,7 @@ class DirectionalEngine:
             candles,
             up_book,
             down_book,
-            whale_direction=whale_direction,
+            whale_signal=whale_signal_val,
             leader_candles=leader_candles,
             up_ticks=up_ticks,
             utc_epoch=now,

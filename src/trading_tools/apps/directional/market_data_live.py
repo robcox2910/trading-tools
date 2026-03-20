@@ -226,15 +226,15 @@ class LiveMarketData:
     async def get_whale_signal(
         self,
         condition_id: str,
-    ) -> str | None:
-        """Query whale net positioning from the whale trades database.
+    ) -> float | None:
+        """Query continuous whale signal from the whale trades database.
 
         Args:
             condition_id: Polymarket market condition identifier.
 
         Returns:
-            ``"Up"`` or ``"Down"`` if whales have a directional bet,
-            ``None`` if no whale repo or no activity.
+            Continuous signal in ``[-1, 1]``, or ``None`` if no whale
+            repo or no activity.
 
         """
         if self._whale_repo is None:
