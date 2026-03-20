@@ -18,8 +18,9 @@ from typing import TYPE_CHECKING
 
 from trading_tools.core.models import ZERO
 
+from .config import DirectionalConfig
+
 if TYPE_CHECKING:
-    from .config import DirectionalConfig
     from .models import FeatureVector
 
 
@@ -65,6 +66,27 @@ class ProbabilityEstimator:
             ("price_change_pct", config.w_price_change),
             ("whale_signal", config.w_whale),
         )
+
+    @classmethod
+    def for_slug(cls, config: DirectionalConfig, slug: str | None) -> ProbabilityEstimator:
+        """Create an estimator with slug-specific weights.
+
+        Look up per-slug weight overrides from *config* and build a new
+        ``DirectionalConfig`` with those weights applied, then return an
+        estimator initialised from it.  When *slug* is ``None`` or has
+        no overrides, the returned estimator uses global weights.
+
+        Args:
+            config: Base configuration with global weights and
+                ``weights_by_slug`` overrides.
+            slug: Series slug to resolve weights for, or ``None``.
+
+        Returns:
+            A ``ProbabilityEstimator`` with the appropriate weights.
+
+        """
+        slug_weights = config.weights_for_slug(slug)
+        return cls(DirectionalConfig.with_overrides(config, **slug_weights))
 
     def estimate(self, features: FeatureVector) -> Decimal:
         """Estimate P(Up) from a feature vector.

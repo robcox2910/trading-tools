@@ -49,6 +49,11 @@ def _empty_results() -> list[DirectionalResult]:
     return []
 
 
+def _empty_estimator_by_slug() -> dict[str, ProbabilityEstimator]:
+    """Create an empty estimator-by-slug dictionary."""
+    return {}
+
+
 @dataclass
 class DirectionalEngine:
     """Pure decision engine for directional binary market trading.
@@ -66,8 +71,11 @@ class DirectionalEngine:
         config: Algorithm configuration.
         execution: Fill execution adapter.
         market_data: Market data source adapter.
-        estimator: Probability estimator (features → P(Up)).
+        estimator: Probability estimator (features → P(Up)).  Used as
+            fallback when no slug-specific estimator exists.
         mode_label: ``"paper"`` or ``"live"`` for logging.
+        estimator_by_slug: Per-series-slug estimators with slug-specific
+            weights.  Falls back to ``estimator`` for unknown slugs.
 
     """
 
@@ -76,6 +84,9 @@ class DirectionalEngine:
     market_data: MarketDataPort
     estimator: ProbabilityEstimator
     mode_label: str = "paper"
+    estimator_by_slug: dict[str, ProbabilityEstimator] = field(
+        default_factory=_empty_estimator_by_slug,
+    )
     _positions: dict[str, DirectionalPosition] = field(default_factory=_empty_positions)
     _results: list[DirectionalResult] = field(default_factory=_empty_results)
     _poll_count: int = 0
@@ -185,7 +196,12 @@ class DirectionalEngine:
         whale_direction = await self.market_data.get_whale_signal(market.condition_id)
 
         features = extract_features(candles, up_book, down_book, whale_direction=whale_direction)
-        p_up = self.estimator.estimate(features)
+        est = (
+            self.estimator_by_slug.get(market.series_slug, self.estimator)
+            if market.series_slug
+            else self.estimator
+        )
+        p_up = est.estimate(features)
 
         # Determine predicted side and the relevant token/price
         if p_up >= _HALF:

@@ -280,6 +280,69 @@ class TestSettlement:
         assert execution.total_capital() > initial_capital - Decimal(1)
 
 
+class TestPerSlugEstimator:
+    """Test per-slug estimator resolution in the engine."""
+
+    @pytest.mark.asyncio
+    async def test_slug_estimator_used_when_slug_set(self) -> None:
+        """Engine uses slug-specific estimator when market has series_slug."""
+        # Create a market with series_slug
+        market = MarketOpportunity(
+            condition_id="cond_btc",
+            title="BTC Up or Down?",
+            asset="BTC-USD",
+            up_token_id="up_cond_btc",
+            down_token_id="down_cond_btc",
+            window_start_ts=_WINDOW_START,
+            window_end_ts=_WINDOW_END,
+            up_price=Decimal("0.50"),
+            down_price=Decimal("0.50"),
+            series_slug="btc-updown-5m",
+        )
+        config = DirectionalConfig(
+            min_edge=Decimal("0.01"),
+            kelly_fraction=Decimal("0.5"),
+            max_position_pct=Decimal("0.50"),
+            weights_by_slug={
+                "btc-updown-5m": {"w_momentum": Decimal("5.0")},
+            },
+        )
+        execution = BacktestExecution(capital=_CAPITAL)
+        market_data = ReplayMarketData()
+        market_data.set_markets([market])
+        candles = _make_candles(20, "up")
+        market_data.set_candles("BTC-USD", candles)
+        up_book = _make_order_book("up_cond_btc", Decimal(200))
+        down_book = _make_order_book("down_cond_btc", Decimal(100))
+        market_data.set_order_books("cond_btc", up_book, down_book)
+        market_data.set_outcome("cond_btc", "Up")
+
+        # Build per-slug estimator
+        btc_estimator = ProbabilityEstimator.for_slug(config, "btc-updown-5m")
+        global_estimator = ProbabilityEstimator(config)
+
+        engine = DirectionalEngine(
+            config=config,
+            execution=execution,
+            market_data=market_data,
+            estimator=global_estimator,
+            estimator_by_slug={"btc-updown-5m": btc_estimator},
+            mode_label="paper",
+        )
+
+        await engine.poll_cycle(_ENTRY_TIME)
+        # Should enter — the slug-specific estimator has heavy momentum
+        assert len(engine.positions) == 1
+
+    @pytest.mark.asyncio
+    async def test_global_estimator_used_when_no_slug(self) -> None:
+        """Engine falls back to global estimator when market has no series_slug."""
+        engine, _, _ = _build_engine()
+        # Default _make_opportunity has no series_slug
+        await engine.poll_cycle(_ENTRY_TIME)
+        assert len(engine.positions) == 1
+
+
 class TestRiskManagement:
     """Test drawdown halt and circuit breaker."""
 

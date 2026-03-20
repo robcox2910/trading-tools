@@ -105,6 +105,7 @@ class LiveMarketData:
                 down_price=opp.down_price,
                 up_ask_depth=opp.up_ask_depth,
                 down_ask_depth=opp.down_ask_depth,
+                series_slug=opp.series_slug,
             )
             for opp in opportunities
         ]

@@ -18,7 +18,9 @@ from trading_tools.apps.directional.weight_trainer import (
     _feature_vector_to_array,
     _stable_sigmoid,
     build_training_dataset,
+    format_all_slugs_report,
     format_training_report,
+    train_all_slugs,
     train_weights,
 )
 from trading_tools.apps.whale_monitor.models import WhaleTrade
@@ -47,6 +49,7 @@ def _make_metadata(
     condition_id: str = "cond_1",
     asset: str = "BTC-USD",
     window_start: int = _BASE_TS,
+    series_slug: str | None = None,
 ) -> MagicMock:
     """Create a mock MarketMetadata record."""
     meta = MagicMock()
@@ -57,6 +60,7 @@ def _make_metadata(
     meta.down_token_id = f"{condition_id}_down"
     meta.window_start_ts = window_start
     meta.window_end_ts = window_start + _WINDOW_DURATION
+    meta.series_slug = series_slug
     return meta
 
 
@@ -397,3 +401,89 @@ class TestFormatTrainingReport:
         report = format_training_report(result)
         # w_whale default is 0.50, learned is 0.10, delta is -0.40
         assert "-0.4000" in report
+
+
+class TestTrainAllSlugs:
+    """Test per-slug weight training."""
+
+    def test_groups_by_slug_and_trains(self) -> None:
+        """Train separate weights for each slug with enough samples."""
+        n_per_slug = 60
+        metadata: list[MagicMock] = []
+        candles: dict[str, list[Candle]] = {}
+        for i in range(n_per_slug):
+            ts = _BASE_TS + i * _WINDOW_DURATION * 2
+            meta_btc = _make_metadata(f"btc_{i}", "BTC-USD", ts, series_slug="btc-updown-5m")
+            meta_eth = _make_metadata(f"eth_{i}", "ETH-USD", ts, series_slug="eth-updown-5m")
+            metadata.extend([meta_btc, meta_eth])
+
+        candles["BTC-USD"] = _make_candles_for_window(_BASE_TS, direction="Up")
+        candles["ETH-USD"] = _make_candles_for_window(_BASE_TS, direction="Down")
+
+        # Extend candles to cover all windows
+        for i in range(1, n_per_slug):
+            ts = _BASE_TS + i * _WINDOW_DURATION * 2
+            candles["BTC-USD"].extend(_make_candles_for_window(ts, direction="Up"))
+            candles["ETH-USD"].extend(_make_candles_for_window(ts, direction="Down"))
+
+        results = train_all_slugs(
+            metadata,
+            candles,
+            learning_rate=0.5,
+            max_iterations=1000,
+        )
+
+        assert "btc-updown-5m" in results
+        assert "eth-updown-5m" in results
+        assert results["btc-updown-5m"].n_samples >= _MIN_SLUG_SAMPLES
+        assert results["eth-updown-5m"].n_samples >= _MIN_SLUG_SAMPLES
+
+    def test_skips_slug_with_few_samples(self) -> None:
+        """Skip slugs with fewer than 50 samples."""
+        # Only 2 metadata records for one slug
+        metadata = [
+            _make_metadata("c1", "BTC-USD", _BASE_TS, series_slug="btc-updown-5m"),
+            _make_metadata("c2", "BTC-USD", _BASE_TS + 600, series_slug="btc-updown-5m"),
+        ]
+        candles = {"BTC-USD": _make_candles_for_window(_BASE_TS, direction="Up")}
+
+        results = train_all_slugs(metadata, candles)
+        assert "btc-updown-5m" not in results
+
+    def test_skips_none_slug(self) -> None:
+        """Skip metadata records with no series_slug."""
+        metadata = [_make_metadata("c1", "BTC-USD", _BASE_TS, series_slug=None)]
+        candles = {"BTC-USD": _make_candles_for_window(_BASE_TS, direction="Up")}
+
+        results = train_all_slugs(metadata, candles)
+        assert results == {}
+
+
+_MIN_SLUG_SAMPLES = 50
+
+
+class TestFormatAllSlugsReport:
+    """Test the combined report formatter."""
+
+    def test_contains_slug_headers(self) -> None:
+        """Report includes per-slug section headers."""
+        global_result = TrainingResult(
+            weights={name: Decimal("0.1") for name in WEIGHT_NAMES},
+            accuracy=0.75,
+            log_loss=0.5,
+            n_samples=1000,
+            n_skipped=0,
+        )
+        slug_results = {
+            "btc-updown-5m": TrainingResult(
+                weights={name: Decimal("0.2") for name in WEIGHT_NAMES},
+                accuracy=0.80,
+                log_loss=0.4,
+                n_samples=500,
+                n_skipped=10,
+            ),
+        }
+        report = format_all_slugs_report(global_result, slug_results)
+        assert "btc-updown-5m" in report
+        assert "n=500" in report
+        assert "acc=0.8000" in report

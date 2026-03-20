@@ -21,7 +21,9 @@ from trading_tools.apps.directional.backtest_runner import (
 from trading_tools.apps.directional.weight_trainer import (
     TrainingResult,
     build_training_dataset,
+    format_all_slugs_report,
     format_training_report,
+    train_all_slugs,
     train_weights,
 )
 from trading_tools.apps.polymarket.backtest_common import (
@@ -82,6 +84,7 @@ async def _load_and_train(
     max_iterations: int,
     l2_lambda: float,
     output_yaml: str | None,
+    all_slugs: bool = False,
 ) -> None:
     """Load historical data, build training dataset, and fit weights.
 
@@ -97,13 +100,14 @@ async def _load_and_train(
         max_iterations: Max iterations for gradient descent.
         l2_lambda: L2 regularisation coefficient.
         output_yaml: Optional output YAML path.
+        all_slugs: Train per-slug weights alongside global weights.
 
     """
     repo = TickRepository(db_url)
     w_repo = WhaleRepository(whale_url)
     try:
         metadata_list = await repo.get_market_metadata_in_range(
-            start_ts, end_ts, series_slug=series_slug
+            start_ts, end_ts, series_slug=series_slug if not all_slugs else None
         )
         assets = sorted({m.asset for m in metadata_list})
         typer.echo(
@@ -154,12 +158,31 @@ async def _load_and_train(
             n_skipped=n_skipped,
         )
 
-        typer.echo("")
-        typer.echo(format_training_report(result))
+        if all_slugs:
+            slug_results = train_all_slugs(
+                metadata_list,
+                candles_by_asset,
+                entry_window_start=entry_start,
+                signal_lookback_seconds=signal_lookback,
+                snapshot_cache=snapshot_cache,
+                whale_cache=whale_cache,
+                learning_rate=learning_rate,
+                max_iterations=max_iterations,
+                l2_lambda=l2_lambda,
+            )
+            typer.echo("")
+            typer.echo(format_all_slugs_report(result, slug_results))
 
-        if output_yaml:
-            _write_yaml(result, output_yaml)
-            typer.echo(f"\nWeights written to {output_yaml}")
+            if output_yaml:
+                _write_combined_yaml(result, slug_results, output_yaml)
+                typer.echo(f"\nWeights written to {output_yaml}")
+        else:
+            typer.echo("")
+            typer.echo(format_training_report(result))
+
+            if output_yaml:
+                _write_yaml(result, output_yaml)
+                typer.echo(f"\nWeights written to {output_yaml}")
 
     finally:
         await repo.close()
@@ -190,6 +213,9 @@ def train_weights_cmd(
     output_yaml: Annotated[
         str | None, typer.Option("--output-yaml", help="Write learned weights to YAML file")
     ] = None,
+    all_slugs: Annotated[
+        bool, typer.Option("--all-slugs", help="Train per-slug weights alongside global")
+    ] = False,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
     ] = False,
@@ -200,6 +226,11 @@ def train_weights_cmd(
     outcome data using gradient descent.  The learned weights are
     mathematically optimal for the existing estimator model form
     and can be loaded directly into DirectionalConfig.
+
+    Use ``--all-slugs`` to train separate weights for each series
+    slug (e.g. btc-updown-5m, eth-updown-5m) alongside the global
+    weights.  The output YAML includes a ``weights_by_slug`` section
+    that ``DirectionalConfig.from_yaml()`` reads automatically.
     """
     if not start or not end:
         typer.echo("Error: --start and --end dates are required", err=True)
@@ -233,6 +264,7 @@ def train_weights_cmd(
             max_iterations=max_iterations,
             l2_lambda=l2_lambda,
             output_yaml=output_yaml,
+            all_slugs=all_slugs,
         )
     )
 
@@ -250,6 +282,35 @@ def _write_yaml(result: TrainingResult, path: str) -> None:
 
     """
     data = {name: float(value) for name, value in result.weights.items()}
+
+    output_path = Path(path)
+    with output_path.open("w") as fh:
+        yaml.dump(data, fh, default_flow_style=False, sort_keys=False)
+
+
+def _write_combined_yaml(
+    global_result: TrainingResult,
+    slug_results: dict[str, TrainingResult],
+    path: str,
+) -> None:
+    """Write global and per-slug weights to a YAML config file.
+
+    Output a YAML file with top-level global weights and a nested
+    ``weights_by_slug`` section, compatible with
+    ``DirectionalConfig.from_yaml()``.
+
+    Args:
+        global_result: Global training result.
+        slug_results: Per-slug training results.
+        path: Output file path.
+
+    """
+    data: dict[str, object] = {name: float(value) for name, value in global_result.weights.items()}
+    if slug_results:
+        weights_by_slug: dict[str, dict[str, float]] = {}
+        for slug, result in sorted(slug_results.items()):
+            weights_by_slug[slug] = {name: float(value) for name, value in result.weights.items()}
+        data["weights_by_slug"] = weights_by_slug
 
     output_path = Path(path)
     with output_path.open("w") as fh:

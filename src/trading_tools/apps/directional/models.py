@@ -38,6 +38,8 @@ class MarketOpportunity:
         down_price: Current best ask price for the Down side.
         up_ask_depth: Total visible ask liquidity for the Up outcome.
         down_ask_depth: Total visible ask liquidity for the Down outcome.
+        series_slug: Event series slug that discovered this market
+            (e.g. ``"btc-updown-5m"``).  ``None`` when unknown.
 
     """
 
@@ -52,6 +54,7 @@ class MarketOpportunity:
     down_price: Decimal
     up_ask_depth: Decimal = Decimal(0)
     down_ask_depth: Decimal = Decimal(0)
+    series_slug: str | None = None
 
 
 @dataclass(frozen=True)

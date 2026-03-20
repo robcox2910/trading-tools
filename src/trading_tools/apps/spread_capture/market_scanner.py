@@ -63,11 +63,13 @@ class _KnownMarket:
     Attributes:
         condition_id: Polymarket market condition identifier.
         end_date: ISO-8601 end date string from Gamma API.
+        series_slug: Event series slug that discovered this market.
 
     """
 
     condition_id: str
     end_date: str
+    series_slug: str | None = None
 
 
 @dataclass
@@ -235,7 +237,21 @@ class MarketScanner:
             window_end_ts=window_end,
             up_ask_depth=up_depth,
             down_ask_depth=down_depth,
+            series_slug=self._slug_for_cid(cid),
         )
+
+    def _slug_for_cid(self, cid: str) -> str | None:
+        """Return the series slug that discovered a given market.
+
+        Args:
+            cid: Market condition identifier.
+
+        Returns:
+            The series slug, or ``None`` if unknown.
+
+        """
+        km = self._known_markets.get(cid)
+        return km.series_slug if km else None
 
     async def _fetch_market_data(
         self, cid: str, now: int
@@ -412,6 +428,7 @@ class MarketScanner:
             window_end_ts=window_end_ts,
             up_ask_depth=up_ask_depth,
             down_ask_depth=down_ask_depth,
+            series_slug=self._slug_for_cid(cid),
         )
 
     async def _fetch_order_books(
@@ -439,21 +456,26 @@ class MarketScanner:
         if now - self._last_discovery < self.rediscovery_interval:
             return
 
-        try:
-            discovered = await self.client.discover_series_markets(
-                list(self.series_slugs), include_next=True
-            )
-        except (PolymarketError, httpx.HTTPError, KeyError, ValueError):
-            logger.warning("Market rediscovery failed")
-            return
+        # Discover per-slug so each market can be tagged with its source.
+        discovered: list[tuple[str, str, str]] = []
+        for slug in self.series_slugs:
+            try:
+                pairs = await self.client.discover_series_markets([slug], include_next=True)
+                discovered.extend((cid, end_date, slug) for cid, end_date in pairs)
+            except (PolymarketError, httpx.HTTPError, KeyError, ValueError):
+                logger.warning("Market rediscovery failed for slug %s", slug)
 
         # Bug fix #1: compute new count BEFORE insertion (otherwise they
         # are already in _known_markets and the count is always 0).
-        new_count = sum(1 for c, _ in discovered if c not in self._known_markets)
+        new_count = sum(1 for c, _, _ in discovered if c not in self._known_markets)
 
-        for cid, end_date in discovered:
+        for cid, end_date, slug in discovered:
             if cid not in self._known_markets:
-                self._known_markets[cid] = _KnownMarket(condition_id=cid, end_date=end_date)
+                self._known_markets[cid] = _KnownMarket(
+                    condition_id=cid,
+                    end_date=end_date,
+                    series_slug=slug,
+                )
 
         # Bug fix #6: purge markets past their end_date to prevent unbounded
         # growth of _known_markets.

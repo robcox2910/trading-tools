@@ -58,6 +58,8 @@ class SpreadOpportunity:
         window_end_ts: UTC epoch seconds when the market window closes.
         up_ask_depth: Total visible ask liquidity for Up outcome.
         down_ask_depth: Total visible ask liquidity for Down outcome.
+        series_slug: Event series slug that discovered this market
+            (e.g. ``"btc-updown-5m"``).  ``None`` when unknown.
 
     """
 
@@ -74,6 +76,7 @@ class SpreadOpportunity:
     window_end_ts: int
     up_ask_depth: Decimal = Decimal(0)
     down_ask_depth: Decimal = Decimal(0)
+    series_slug: str | None = None
 
 
 class SideLeg:

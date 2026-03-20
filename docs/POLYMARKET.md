@@ -580,11 +580,37 @@ trading-tools-polymarket train-weights \
 | `--l2-lambda` | `0.0` | L2 regularisation coefficient (0 = none) |
 | `--output-yaml` | — | Write learned weights to a YAML config file |
 | `--series-slug` | — | Filter to a specific series slug |
+| `--all-slugs` | `False` | Train per-slug weights alongside global |
 | `--db-url` | `$TICK_DB_URL` | Database URL for tick data |
 | `--whale-db-url` | `$WHALE_DB_URL` | DB URL for whale trades (defaults to `--db-url`) |
 | `-v` / `--verbose` | `False` | Enable verbose logging |
 
 Output includes learned vs. default weight comparison, accuracy, and log-loss. Use `--output-yaml` to save weights for loading via `DirectionalConfig.from_yaml()`.
+
+#### Per-slug weight training
+
+Use `--all-slugs` to train separate weights for each series slug (e.g. `btc-updown-5m`, `eth-updown-5m`) alongside the global weights. Slugs with fewer than 50 samples are skipped.
+
+```bash
+trading-tools-polymarket train-weights \
+  --start 2026-03-01 --end 2026-03-19 \
+  --all-slugs --output-yaml weights.yaml
+```
+
+The output YAML includes a `weights_by_slug` section:
+
+```yaml
+w_momentum: 0.15       # global fallback
+w_whale: 0.50
+weights_by_slug:
+  btc-updown-5m:
+    w_momentum: 0.88
+    w_rsi: 5.17
+  eth-updown-5m:
+    w_momentum: 0.72
+```
+
+When the directional engine evaluates a market, it looks up the market's series slug in `weights_by_slug` and uses those weights. Markets without a slug-specific entry fall back to the global weights.
 
 ## Whale Copy Bot
 

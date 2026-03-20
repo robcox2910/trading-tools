@@ -80,7 +80,7 @@ trading-tools/
 │   │       ├── models.py            # MarketOpportunity, FeatureVector, DirectionalPosition, DirectionalResult (ORM)
 │   │       ├── features.py          # Pure feature extraction: momentum, volatility, volume, book imbalance, RSI
 │   │       ├── estimator.py         # ProbabilityEstimator: weighted ensemble → logistic sigmoid → P(Up)
-│   │       ├── weight_trainer.py    # Logistic regression trainer: fit all 7 weights via gradient descent
+│   │       ├── weight_trainer.py    # Logistic regression trainer: fit global + per-slug weights via gradient descent
 │   │       ├── kelly.py             # Kelly criterion sizing for binary outcome tokens
 │   │       ├── ports.py             # ExecutionPort and MarketDataPort protocols + FillResult
 │   │       ├── adapters.py          # Paper, Backtest execution + Replay market data adapters
@@ -168,7 +168,7 @@ Runnable applications and long-lived services. Each application has:
 | `tick_collector` | WebSocket tick streaming to SQLite or PostgreSQL |
 | `whale_monitor` | Polling service that tracks whale trades, with analysis, per-market breakdown, trade enrichment, and Binance spot correlation |
 | `spread_capture` | Spread capture bot (paper, live, and backtest) with port-based adapters, pure decision engine, hedge urgency, circuit breaker, historical replay, limit order fill backtester, and maker strategy (resting GTC limit bids on both sides) |
-| `directional` | Directional trading algorithm — buy predicted winning side of binary crypto markets using features (momentum, volatility, volume, book imbalance, RSI), weighted ensemble estimator, and Kelly criterion sizing |
+| `directional` | Directional trading algorithm — buy predicted winning side of binary crypto markets using features (momentum, volatility, volume, book imbalance, RSI), weighted ensemble estimator with per-series-slug weights, and Kelly criterion sizing |
 
 ### `/clients` — API Clients
 
