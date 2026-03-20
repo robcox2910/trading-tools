@@ -109,7 +109,9 @@ class SpreadTrader:
     def __post_init__(self) -> None:
         """Initialize shared services when running in live mode."""
         if self.live and self.client is not None:
-            self._redeemer = PositionRedeemer(client=self.client)
+            # Maker strategy gets partial fills — lower redeem minimum
+            redeem_min = Decimal(1) if self.config.strategy == "maker" else _MIN_TOKEN_QTY
+            self._redeemer = PositionRedeemer(client=self.client, min_order_size=redeem_min)
             self._executor = OrderExecutor(
                 client=self.client,
                 use_market_orders=self.config.use_market_orders,
@@ -1131,6 +1133,117 @@ class SpreadTrader:
             return None
         return min(level.price for level in book.asks)
 
+    async def _maybe_take_profit_maker(self) -> None:
+        """Sell a single filled maker leg when the bid exceeds entry by the take-profit threshold.
+
+        For PENDING maker positions where exactly one side has filled and
+        the current best bid for that token is above the entry price by
+        ``maker_take_profit_pct``, sell the filled leg immediately instead
+        of waiting for settlement.  This locks in a guaranteed profit without
+        the settlement coin-flip risk.
+        """
+        threshold = self.config.maker_take_profit_pct
+        if threshold <= ZERO:
+            return
+
+        candidates = [
+            (cid, pos)
+            for cid, pos in self._positions.items()
+            if pos.state == PositionState.PENDING
+            and (pos.pending_up_order_id is None) != (pos.pending_down_order_id is None)
+        ]
+
+        for cid, pos in candidates:
+            opp = pos.opportunity
+            up_filled = pos.pending_up_order_id is None
+            filled_side = "Up" if up_filled else "Down"
+            filled_leg = pos.up_leg if up_filled else pos.down_leg
+            if filled_leg is None:
+                continue
+
+            token_id = opp.up_token_id if up_filled else opp.down_token_id
+            min_sell_price = filled_leg.entry_price * (ONE + threshold)
+
+            # Check the bid price from WS feed or REST
+            best_bid = self._get_best_bid(token_id)
+            if best_bid is None or best_bid < min_sell_price:
+                continue
+
+            profit_per_token = best_bid - filled_leg.entry_price
+            total_profit = profit_per_token * filled_leg.quantity
+
+            if pos.is_paper:
+                # Paper mode: simulate the sell
+                pnl = total_profit
+            elif self._executor is not None:
+                # Live mode: sell at market
+                try:
+                    resp = await self._executor.place_order(
+                        token_id, "SELL", best_bid, filled_leg.quantity
+                    )
+                except (httpx.HTTPError, Exception):
+                    logger.debug("Take-profit sell failed for %s", cid[:12])
+                    continue
+                if resp is None or resp.filled <= ZERO:
+                    continue
+                pnl = resp.price * resp.filled - filled_leg.cost_basis
+            else:
+                continue
+
+            # Cancel the unfilled side's resting order
+            unfilled_order_id = pos.pending_down_order_id if up_filled else pos.pending_up_order_id
+            await self._cancel_order_safe(unfilled_order_id)
+
+            result = SpreadResult(
+                opportunity=opp,
+                state=PositionState.SETTLED,
+                up_entry=pos.up_leg.entry_price,
+                up_qty=pos.up_leg.quantity,
+                down_entry=pos.down_leg.entry_price if pos.down_leg else None,
+                down_qty=pos.down_leg.quantity if pos.down_leg else None,
+                total_cost_basis=filled_leg.cost_basis,
+                entry_time=pos.entry_time,
+                exit_time=int(time.time()),
+                winning_side=filled_side,
+                pnl=pnl,
+                is_paper=pos.is_paper,
+                order_ids=tuple(filled_leg.order_ids),
+                outcome_known=True,
+            )
+            self._results.append(result)
+            await self._persist_result(result)
+            del self._positions[cid]
+
+            mode = "PAPER" if pos.is_paper else "LIVE"
+            logger.info(
+                "%s TAKE-PROFIT %s sell %s at bid=%.4f entry=%.4f profit=%.4f qty=%.0f asset=%s",
+                mode,
+                cid[:12],
+                filled_side,
+                best_bid,
+                filled_leg.entry_price,
+                pnl,
+                filled_leg.quantity,
+                opp.asset,
+            )
+
+    def _get_best_bid(self, token_id: str) -> Decimal | None:
+        """Return the best bid price for a token from the WS feed cache.
+
+        Args:
+            token_id: CLOB token identifier.
+
+        Returns:
+            Best bid price or ``None`` if unavailable.
+
+        """
+        if self._book_feed is None:
+            return None
+        book = self._book_feed.get_book(token_id)
+        if book is None or not book.bids:
+            return None
+        return max(level.price for level in book.bids)
+
     async def _manage_pending_orders(self) -> None:
         """Check fill status of pending GTC limit orders and transition states.
 
@@ -1149,6 +1262,7 @@ class SpreadTrader:
         if self.config.strategy == "maker":
             await self._manage_paper_maker_orders()
             await self._maybe_hedge_maker_positions()
+            await self._maybe_take_profit_maker()
 
         if self.client is None:
             return
@@ -1202,6 +1316,16 @@ class SpreadTrader:
                     pos.opportunity.margin,
                     pos.opportunity.asset,
                 )
+                continue
+
+            # Maker strategy: mark filled sides so hedge can see them,
+            # then let the hedge run before the timeout kicks in.
+            if self.config.strategy == "maker":
+                if not up_still_open and pos.pending_up_order_id is not None:
+                    pos.pending_up_order_id = None
+                if not down_still_open and pos.pending_down_order_id is not None:
+                    pos.pending_down_order_id = None
+                # Skip timeout — let hedge and window expiry handle maker positions
                 continue
 
             # Timeout — one side filled, cancel the other and try to unwind

@@ -139,6 +139,10 @@ class SpreadCaptureConfig:
         maker_max_hedge_combined: Maximum combined cost (filled bid + hedge
             ask) to accept for a hedge.  Must be below 1.0 to guarantee
             profit.
+        maker_take_profit_pct: Minimum profit as fraction of entry price to
+            trigger an early sell on a single filled leg.  For example,
+            0.40 means sell when the bid is 40%+ above entry (bought at
+            $0.30, sell at $0.42+).
 
     """
 
@@ -177,6 +181,7 @@ class SpreadCaptureConfig:
     maker_order_size: Decimal = Decimal(20)
     maker_hedge_age_pct: Decimal = Decimal("0.60")
     maker_max_hedge_combined: Decimal = Decimal("0.98")
+    maker_take_profit_pct: Decimal = Decimal("0.40")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "SpreadCaptureConfig":
