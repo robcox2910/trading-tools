@@ -1048,12 +1048,24 @@ class SpreadTrader:
             )
             combined = filled_bid + hedge_ask
 
-            if combined >= max_combined:
+            # Scale max hedge cost with time: at hedge_age (60%) accept
+            # max_combined ($0.98), at 100% accept max_combined + 0.12 ($1.10).
+            # Linear interpolation minimises loss as window runs out.
+            max_extra = Decimal("0.12")
+            time_range = ONE - hedge_age
+            if time_range > ZERO:
+                progress = min((elapsed_pct - hedge_age) / time_range, ONE)
+            else:
+                progress = ONE
+            effective_max = max_combined + max_extra * progress
+
+            if combined >= effective_max:
                 logger.debug(
-                    "HEDGE SKIP %s: combined=%.4f >= max %.4f",
+                    "HEDGE SKIP %s: combined=%.4f >= max %.4f (elapsed=%.0f%%)",
                     cid[:12],
                     combined,
-                    max_combined,
+                    effective_max,
+                    elapsed_pct * 100,
                 )
                 continue
 
