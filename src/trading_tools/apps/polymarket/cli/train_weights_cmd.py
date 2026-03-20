@@ -31,11 +31,42 @@ from trading_tools.apps.polymarket.backtest_common import (
 from trading_tools.apps.polymarket.cli.directional_backtest_cmd import fetch_binance_candles
 from trading_tools.apps.tick_collector.repository import TickRepository
 from trading_tools.apps.whale_monitor.repository import WhaleRepository
+from trading_tools.clients.binance.client import BinanceAPIError
+from trading_tools.core.models import Candle
 
 _DEFAULT_DB_URL = os.environ.get("TICK_DB_URL", "sqlite+aiosqlite:///tick_data.db")
 _DEFAULT_WHALE_DB_URL = os.environ.get("WHALE_DB_URL", "")
 
 _MS_PER_SECOND = 1000
+
+
+async def _fetch_candles_safe(
+    assets: list[str], start_ts: int, end_ts: int, lookback: int
+) -> dict[str, list[Candle]]:
+    """Fetch Binance candles, skipping assets that fail (e.g. invalid symbols).
+
+    Args:
+        assets: Asset names to fetch.
+        start_ts: Start epoch seconds.
+        end_ts: End epoch seconds.
+        lookback: Extra seconds before start for feature extraction.
+
+    Returns:
+        Mapping from asset name to candles, excluding failed assets.
+
+    """
+    try:
+        return await fetch_binance_candles(assets, start_ts, end_ts, lookback)
+    except BinanceAPIError:
+        # Fall back to fetching one at a time, skipping failures
+        result: dict[str, list[Candle]] = {}
+        for asset in assets:
+            try:
+                batch = await fetch_binance_candles([asset], start_ts, end_ts, lookback)
+                result.update(batch)
+            except BinanceAPIError:
+                typer.echo(f"  Skipping {asset} (not available on Binance)")
+        return result
 
 
 async def _load_and_train(
@@ -79,7 +110,7 @@ async def _load_and_train(
             f"Found {len(metadata_list)} windows across {len(assets)} assets: {', '.join(assets)}"
         )
 
-        candles_by_asset = await fetch_binance_candles(assets, start_ts, end_ts, signal_lookback)
+        candles_by_asset = await _fetch_candles_safe(assets, start_ts, end_ts, signal_lookback)
 
         snapshots = await repo.get_all_book_snapshots_in_range(
             start_ts * _MS_PER_SECOND, end_ts * _MS_PER_SECOND
