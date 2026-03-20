@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 _WIN_PAYOUT = Decimal("1.0")
 _MIN_TOKEN_QTY = Decimal(5)
 _HALF = Decimal("0.5")
+_LEADER_ASSET = "BTC-USD"
 
 
 def _empty_positions() -> dict[str, DirectionalPosition]:
@@ -195,7 +196,20 @@ class DirectionalEngine:
 
         whale_direction = await self.market_data.get_whale_signal(market.condition_id)
 
-        features = extract_features(candles, up_book, down_book, whale_direction=whale_direction)
+        # Fetch BTC candles for non-BTC assets (leader momentum feature)
+        leader_candles = None
+        if market.asset != _LEADER_ASSET:
+            leader_candles = await self.market_data.get_binance_candles(
+                _LEADER_ASSET, lookback_start, now
+            )
+
+        features = extract_features(
+            candles,
+            up_book,
+            down_book,
+            whale_direction=whale_direction,
+            leader_candles=leader_candles,
+        )
         est = (
             self.estimator_by_slug.get(market.series_slug, self.estimator)
             if market.series_slug

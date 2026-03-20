@@ -199,13 +199,13 @@ class TestWeightsBySlug:
         # Non-overridden weights come from global
         assert weights["w_whale"] == Decimal("0.50")
 
-    def test_weights_for_slug_all_eight_keys(self) -> None:
-        """Return dict always contains all 7 weight keys plus bias."""
+    def test_weights_for_slug_all_nine_keys(self) -> None:
+        """Return dict always contains all 8 weight keys plus bias."""
         config = DirectionalConfig(
             weights_by_slug={"btc-updown-5m": {"w_momentum": Decimal("0.99")}},
         )
         weights = config.weights_for_slug("btc-updown-5m")
-        expected_keys = 8
+        expected_keys = 9
         assert len(weights) == expected_keys
 
     def test_from_yaml_weights_by_slug(self, tmp_path: Path) -> None:

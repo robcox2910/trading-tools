@@ -63,6 +63,7 @@ class ProbabilityEstimator:
             ("rsi_signal", config.w_rsi),
             ("price_change_pct", config.w_price_change),
             ("whale_signal", config.w_whale),
+            ("leader_momentum", config.w_leader_momentum),
         )
         self._bias = config.bias
 
