@@ -10,6 +10,7 @@ from trading_tools.apps.polymarket.cli.backtest_ticks_cmd import backtest_ticks
 from trading_tools.apps.polymarket.cli.book_cmd import book
 from trading_tools.apps.polymarket.cli.bot_cmd import bot
 from trading_tools.apps.polymarket.cli.bot_live_cmd import bot_live
+from trading_tools.apps.polymarket.cli.copy_backtest_cmd import copy_backtest
 from trading_tools.apps.polymarket.cli.directional_backtest_cmd import directional_backtest
 from trading_tools.apps.polymarket.cli.directional_cmd import directional
 from trading_tools.apps.polymarket.cli.directional_grid_cmd import directional_grid
@@ -52,6 +53,7 @@ app.command(name="whale-analyse")(whale_analyse)
 app.command(name="whale-markets")(whale_markets)
 app.command(name="spread-capture")(spread_capture)
 app.command(name="whale-correlate")(whale_correlate)
+app.command(name="copy-backtest")(copy_backtest)
 app.command(name="backtest-spread")(backtest_spread)
 app.command(name="grid-spread")(grid_spread)
 app.command(name="directional-backtest")(directional_backtest)
