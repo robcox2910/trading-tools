@@ -12,6 +12,7 @@ ExecStartPre=/bin/bash /opt/trading-tools/fetch-secrets.sh /run/directional-pape
 EnvironmentFile=-/run/directional-paper.env
 
 ExecStart=/opt/trading-tools/.venv/bin/trading-tools-polymarket directional \
+  --config-file /opt/trading-tools/src/trading_tools/config/directional_weights.yaml \
   --series-slugs btc-updown-5m,eth-updown-5m,xrp-updown-5m,sol-updown-5m,btc-updown-15m,eth-updown-15m,xrp-updown-15m,sol-updown-15m \
   --poll-interval 3 \
   --capital 100 \
