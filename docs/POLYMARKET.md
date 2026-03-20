@@ -321,10 +321,10 @@ trading-tools-polymarket whale-markets --address 0x1234... --days 1 --min-trades
 
 ### `whale-correlate` — Correlate Whale Bets with Spot Price
 
-Correlate a whale's directional bets with actual spot price movement using Binance 1-minute candles. For each market the whale traded, this command determines whether their favoured side matched the actual price direction.
+Cross-reference a whale's directional bet per market with actual spot price movement fetched from Binance.
 
 ```bash
-trading-tools-polymarket whale-correlate --address 0x1234... --days 1 --min-trades 10
+trading-tools-polymarket whale-correlate --address 0x1234... --days 7 --min-trades 10
 ```
 
 | Flag | Default | Description |
@@ -333,6 +333,8 @@ trading-tools-polymarket whale-correlate --address 0x1234... --days 1 --min-trad
 | `--days` | `1` | Number of days to analyse |
 | `--min-trades` | `10` | Minimum trades per market to include |
 | `--db-url` | env `WHALE_DB_URL` or `sqlite+aiosqlite:///whale_data.db` | SQLAlchemy async DB URL |
+
+For each market the command shows: the whale's favoured side (Up/Down), the actual price change over the market window, and whether the whale's call was correct.
 
 ## Spread Capture Bot
 

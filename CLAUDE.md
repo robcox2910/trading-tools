@@ -86,19 +86,7 @@ Documentation must be kept up to date with every code change. Outdated docs are 
 
 ### What to update
 
-| Change | Files to update |
-|--------|----------------|
-| New/changed CLI flags or commands | `docs/BACKTESTER.md`, `docs/POLYMARKET.md`, or `docs/GETTING_STARTED.md` |
-| New module or application | `docs/ARCHITECTURE.md` project tree and module tables |
-| New user-facing feature | `README.md` feature list and usage examples |
-| New env var or config key | `docs/GETTING_STARTED.md` and `.env.example` |
-| New backtester strategy | Strategy table in `docs/BACKTESTER.md` and `docs/ARCHITECTURE.md` |
-| New Polymarket strategy | Strategy table in `docs/POLYMARKET.md` and `docs/ARCHITECTURE.md` |
-| Changed dependencies | `docs/GETTING_STARTED.md` if they require system-level setup |
-
-### How to verify
-
-Before committing, grep `docs/` for references to the code you changed and update any stale content:
+When in doubt, grep the `docs/` directory for references to the code you changed and update any stale content.
 
 ```bash
 grep -r "old_function_name" docs/
