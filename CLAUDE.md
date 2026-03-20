@@ -51,7 +51,13 @@ uv run pytest
 - Ruff enforces a comprehensive rule set — run `uv run ruff check .` before committing
 - Pyright in strict mode — run `uv run pyright src tests` before committing
 - All violations must be fixed, not ignored (except D203/D213 incompatible pair)
-- Inline `# noqa:` is acceptable only when tools genuinely conflict (e.g., ARG002 vs pyright protocol parameter names, PLW0108 for typed default_factory lambdas)
+- **Suppression comments (`# noqa`, `# type: ignore`, `# pyright: ignore`) are a last resort**
+  - NEVER add an inline suppression without first exhausting alternatives
+  - If genuinely unavoidable, MUST include an inline comment explaining why
+  - Prefer `per-file-ignores` in `pyproject.toml` over inline `# noqa` for rules that legitimately apply to entire file categories
+  - Do NOT use `from __future__ import annotations` — we target Python 3.14+
+  - Do NOT use `if TYPE_CHECKING:` blocks — TCH rule is disabled by design
+- For unused protocol parameters (ARG002), prefix with `_` when pyright allows it; use `# noqa: ARG002` only when pyright strict requires matching parameter names
 
 ## Testing
 

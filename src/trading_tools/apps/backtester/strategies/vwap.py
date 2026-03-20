@@ -46,9 +46,11 @@ class VwapStrategy:
     above, it's considered expensive (sell opportunity).
     """
 
+    _MIN_PERIOD = 2
+
     def __init__(self, period: int = 20) -> None:
         """Initialize the VWAP strategy."""
-        if period < 2:  # noqa: PLR2004
+        if period < self._MIN_PERIOD:
             msg = f"period must be >= 2, got {period}"
             raise ValueError(msg)
         self._period = period

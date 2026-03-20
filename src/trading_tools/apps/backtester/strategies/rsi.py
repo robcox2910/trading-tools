@@ -52,6 +52,9 @@ class RsiStrategy:
     price to come back down.
     """
 
+    _MIN_PERIOD = 2
+    _PERCENT_MAX = 100
+
     def __init__(
         self,
         period: int = 14,
@@ -59,10 +62,10 @@ class RsiStrategy:
         oversold: int = 30,
     ) -> None:
         """Initialize the RSI strategy."""
-        if period < 2:  # noqa: PLR2004
+        if period < self._MIN_PERIOD:
             msg = f"period must be >= 2, got {period}"
             raise ValueError(msg)
-        if not (0 < oversold < overbought < 100):  # noqa: PLR2004
+        if not (0 < oversold < overbought < self._PERCENT_MAX):
             msg = f"Need 0 < oversold ({oversold}) < overbought ({overbought}) < 100"
             raise ValueError(msg)
         self._period = period

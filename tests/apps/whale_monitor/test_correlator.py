@@ -307,10 +307,10 @@ class TestCorrelateMarkets:
 
             async def get_candles(
                 self,
-                symbol: str,  # noqa: ARG002
-                interval: Interval,  # noqa: ARG002
-                start_ts: int,  # noqa: ARG002
-                end_ts: int,  # noqa: ARG002
+                symbol: str,
+                interval: Interval,
+                start_ts: int,
+                end_ts: int,
             ) -> list[Candle]:
                 """Return preset candles."""
                 return candles
@@ -331,10 +331,10 @@ class TestCorrelateMarkets:
 
             async def get_candles(
                 self,
-                symbol: str,  # noqa: ARG002
-                interval: Interval,  # noqa: ARG002
-                start_ts: int,  # noqa: ARG002
-                end_ts: int,  # noqa: ARG002
+                symbol: str,
+                interval: Interval,
+                start_ts: int,
+                end_ts: int,
             ) -> list[Candle]:
                 """Return empty list (should not be reached)."""
                 return []
@@ -354,10 +354,10 @@ class TestCorrelateMarkets:
 
             async def get_candles(
                 self,
-                symbol: str,  # noqa: ARG002
-                interval: Interval,  # noqa: ARG002
-                start_ts: int,  # noqa: ARG002
-                end_ts: int,  # noqa: ARG002
+                symbol: str,
+                interval: Interval,
+                start_ts: int,
+                end_ts: int,
             ) -> list[Candle]:
                 """Return empty list."""
                 return []

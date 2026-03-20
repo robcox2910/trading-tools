@@ -50,9 +50,7 @@ def tick_collect(
         int,
         typer.Option(help="Milliseconds between polling each token"),
     ] = 100,
-    verbose: Annotated[  # noqa: FBT002
-        bool, typer.Option("--verbose", "-v", help="Enable debug logging")
-    ] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Enable debug logging")] = False,
 ) -> None:
     """Run the Polymarket tick collector service.
 

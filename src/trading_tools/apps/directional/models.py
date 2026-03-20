@@ -69,6 +69,9 @@ class FeatureVector:
         rsi_signal: RSI mapped from ``[0, 100]`` to ``[-1, 1]``.
         price_change_pct: Percentage price change over the lookback
             period, normalised to ``[-1, 1]``.
+        whale_signal: Whale net directional positioning.  ``1`` = whales
+            heavily buying Up, ``-1`` = heavily buying Down, ``0`` = no
+            whale activity or balanced.
 
     """
 
@@ -78,6 +81,7 @@ class FeatureVector:
     book_imbalance: Decimal
     rsi_signal: Decimal
     price_change_pct: Decimal
+    whale_signal: Decimal = Decimal(0)
 
 
 @dataclass
@@ -225,6 +229,7 @@ class DirectionalResultRecord(DirectionalBase):
     f_book_imbalance: Mapped[float] = mapped_column(Float)
     f_rsi: Mapped[float] = mapped_column(Float)
     f_price_change: Mapped[float] = mapped_column(Float)
+    f_whale: Mapped[float] = mapped_column(Float, default=0.0)
 
     __table_args__ = (
         Index("ix_directional_condition_settled", "condition_id", "settled_at"),
@@ -272,4 +277,5 @@ class DirectionalResultRecord(DirectionalBase):
             f_book_imbalance=float(feat.book_imbalance),
             f_rsi=float(feat.rsi_signal),
             f_price_change=float(feat.price_change_pct),
+            f_whale=float(feat.whale_signal),
         )

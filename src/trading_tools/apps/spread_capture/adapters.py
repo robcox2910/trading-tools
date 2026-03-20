@@ -449,7 +449,7 @@ class LiveMarketData:
                         "limit": 100,
                     },
                 )
-                if resp.status_code != 200:  # noqa: PLR2004
+                if not resp.is_success:
                     continue
                 for trade in resp.json():
                     if trade.get("side", "").upper() != "BUY":
@@ -462,7 +462,7 @@ class LiveMarketData:
         if not dollar_vol:
             return None
 
-        top = max(dollar_vol, key=dollar_vol.get)  # type: ignore[arg-type]
+        top = max(dollar_vol, key=lambda k: dollar_vol[k])
         if top in ("Up", "Down"):
             return top
         return None

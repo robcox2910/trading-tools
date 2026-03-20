@@ -1,6 +1,7 @@
 """Tests for SpreadTrader core trading engine."""
 
 from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -31,9 +32,9 @@ _ZERO_FEE = Decimal("0.0")
 _DEFAULT_FEE_EXPONENT = 2
 
 
-def _make_config(**overrides: object) -> SpreadCaptureConfig:
+def _make_config(**overrides: Any) -> SpreadCaptureConfig:
     """Create a SpreadCaptureConfig with test defaults."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "capital": _CAPITAL,
         "max_position_pct": _MAX_POS_PCT,
         "max_combined_cost": Decimal("0.98"),
@@ -49,12 +50,12 @@ def _make_config(**overrides: object) -> SpreadCaptureConfig:
         "fee_exponent": _DEFAULT_FEE_EXPONENT,
     }
     defaults.update(overrides)
-    return SpreadCaptureConfig(**defaults)  # type: ignore[arg-type]
+    return SpreadCaptureConfig(**defaults)
 
 
-def _make_opportunity(**overrides: object) -> SpreadOpportunity:
+def _make_opportunity(**overrides: Any) -> SpreadOpportunity:
     """Create a SpreadOpportunity with sensible defaults."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "condition_id": "cond_a",
         "title": "Bitcoin Up or Down?",
         "asset": "BTC-USD",
@@ -68,14 +69,14 @@ def _make_opportunity(**overrides: object) -> SpreadOpportunity:
         "window_end_ts": _WINDOW_END,
     }
     defaults.update(overrides)
-    return SpreadOpportunity(**defaults)  # type: ignore[arg-type]
+    return SpreadOpportunity(**defaults)
 
 
-def _make_trader(**overrides: object) -> SpreadTrader:
+def _make_trader(**overrides: Any) -> SpreadTrader:
     """Create a SpreadTrader with mock client and sensible defaults."""
-    config = overrides.pop("config", _make_config())  # type: ignore[arg-type]
-    client = overrides.pop("client", AsyncMock())  # type: ignore[arg-type]
-    return SpreadTrader(config=config, live=False, client=client, **overrides)  # type: ignore[arg-type]
+    config = overrides.pop("config", _make_config())
+    client = overrides.pop("client", AsyncMock())
+    return SpreadTrader(config=config, live=False, client=client, **overrides)
 
 
 @pytest.mark.asyncio
@@ -688,3 +689,474 @@ class TestFeeAdjustedPnl:
         result = trader._results[0]
         expected_pnl = _QTY * Decimal(1) - (_UP_PRICE * _QTY + _DOWN_PRICE * _QTY)
         assert result.pnl == expected_pnl
+
+
+_MAKER_BID_UP = Decimal("0.25")
+_MAKER_BID_DOWN = Decimal("0.25")
+_MAKER_QTY = Decimal(20)
+
+
+def _make_maker_config(**overrides: Any) -> SpreadCaptureConfig:
+    """Create a SpreadCaptureConfig for maker strategy tests."""
+    defaults: dict[str, Any] = {
+        "capital": _CAPITAL,
+        "max_position_pct": _MAX_POS_PCT,
+        "max_combined_cost": Decimal("0.98"),
+        "min_spread_margin": Decimal("0.01"),
+        "max_open_positions": 10,
+        "poll_interval": _DEFAULT_POLL,
+        "paper_slippage_pct": Decimal("0.0"),
+        "circuit_breaker_losses": 3,
+        "circuit_breaker_cooldown": 300,
+        "max_drawdown_pct": Decimal("0.15"),
+        "compound_profits": True,
+        "fee_rate": _ZERO_FEE,
+        "fee_exponent": _DEFAULT_FEE_EXPONENT,
+        "strategy": "maker",
+        "maker_bid_up": _MAKER_BID_UP,
+        "maker_bid_down": _MAKER_BID_DOWN,
+        "maker_order_size": _MAKER_QTY,
+        "single_leg_timeout": 300,
+    }
+    defaults.update(overrides)
+    return SpreadCaptureConfig(**defaults)
+
+
+@pytest.mark.asyncio
+class TestMakerStrategy:
+    """Test maker strategy entry and fill simulation."""
+
+    async def test_maker_paper_entry_creates_pending_position(self) -> None:
+        """Maker paper entry creates a PENDING position with both legs at bid prices."""
+        config = _make_maker_config()
+        trader = _make_trader(config=config)
+        opp = _make_opportunity()
+
+        with patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time:
+            mock_time.time.return_value = _NOW
+            await trader._enter_spread(opp)
+
+        assert "cond_a" in trader._positions
+        pos = trader._positions["cond_a"]
+        assert pos.state == PositionState.PENDING
+        assert pos.is_paper is True
+        assert pos.up_leg.entry_price == _MAKER_BID_UP
+        assert pos.down_leg is not None
+        assert pos.down_leg.entry_price == _MAKER_BID_DOWN
+        assert pos.up_leg.quantity == _MAKER_QTY
+        assert pos.pending_up_order_id == "paper_up"
+        assert pos.pending_down_order_id == "paper_down"
+
+    async def test_maker_skips_combined_bid_gte_one(self) -> None:
+        """Maker entry is skipped when combined bid prices >= $1.00."""
+        config = _make_maker_config(maker_bid_up=Decimal("0.55"), maker_bid_down=Decimal("0.50"))
+        trader = _make_trader(config=config)
+        opp = _make_opportunity()
+
+        with patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time:
+            mock_time.time.return_value = _NOW
+            await trader._enter_spread(opp)
+
+        assert "cond_a" not in trader._positions
+
+    async def test_maker_paper_fill_both_sides(self) -> None:
+        """Paper maker position transitions to PAIRED when order book asks <= bids."""
+        config = _make_maker_config()
+        client = AsyncMock()
+
+        # Order books with asks at or below our bid prices
+        up_ask = MagicMock()
+        up_ask.price = Decimal("0.24")
+        up_book = MagicMock()
+        up_book.asks = [up_ask]
+
+        down_ask = MagicMock()
+        down_ask.price = Decimal("0.25")
+        down_book = MagicMock()
+        down_book.asks = [down_ask]
+
+        client.get_order_book = AsyncMock(side_effect=[up_book, down_book])
+        trader = _make_trader(config=config, client=client)
+
+        opp = _make_opportunity()
+        up_leg = SideLeg(
+            side="Up",
+            entry_price=_MAKER_BID_UP,
+            quantity=_MAKER_QTY,
+            cost_basis=_MAKER_BID_UP * _MAKER_QTY,
+        )
+        down_leg = SideLeg(
+            side="Down",
+            entry_price=_MAKER_BID_DOWN,
+            quantity=_MAKER_QTY,
+            cost_basis=_MAKER_BID_DOWN * _MAKER_QTY,
+        )
+        trader._positions["cond_a"] = PairedPosition(
+            opportunity=opp,
+            state=PositionState.PENDING,
+            up_leg=up_leg,
+            down_leg=down_leg,
+            entry_time=_NOW,
+            is_paper=True,
+            pending_up_order_id="paper_up",
+            pending_down_order_id="paper_down",
+        )
+
+        with patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time:
+            mock_time.time.return_value = _NOW
+            await trader._manage_paper_maker_orders()
+
+        pos = trader._positions["cond_a"]
+        assert pos.state == PositionState.PAIRED
+        assert pos.pending_up_order_id is None
+        assert pos.pending_down_order_id is None
+
+    async def test_maker_paper_no_fill_when_ask_above_bid(self) -> None:
+        """Paper maker position stays PENDING when asks are above bid prices."""
+        config = _make_maker_config()
+        client = AsyncMock()
+
+        up_ask = MagicMock()
+        up_ask.price = Decimal("0.50")
+        up_book = MagicMock()
+        up_book.asks = [up_ask]
+
+        down_ask = MagicMock()
+        down_ask.price = Decimal("0.50")
+        down_book = MagicMock()
+        down_book.asks = [down_ask]
+
+        client.get_order_book = AsyncMock(side_effect=[up_book, down_book])
+        trader = _make_trader(config=config, client=client)
+
+        opp = _make_opportunity()
+        up_leg = SideLeg(
+            side="Up",
+            entry_price=_MAKER_BID_UP,
+            quantity=_MAKER_QTY,
+            cost_basis=_MAKER_BID_UP * _MAKER_QTY,
+        )
+        down_leg = SideLeg(
+            side="Down",
+            entry_price=_MAKER_BID_DOWN,
+            quantity=_MAKER_QTY,
+            cost_basis=_MAKER_BID_DOWN * _MAKER_QTY,
+        )
+        trader._positions["cond_a"] = PairedPosition(
+            opportunity=opp,
+            state=PositionState.PENDING,
+            up_leg=up_leg,
+            down_leg=down_leg,
+            entry_time=_NOW,
+            is_paper=True,
+            pending_up_order_id="paper_up",
+            pending_down_order_id="paper_down",
+        )
+
+        with patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time:
+            mock_time.time.return_value = _NOW
+            await trader._manage_paper_maker_orders()
+
+        pos = trader._positions["cond_a"]
+        assert pos.state == PositionState.PENDING
+        assert pos.pending_up_order_id == "paper_up"
+        assert pos.pending_down_order_id == "paper_down"
+
+    async def test_maker_paper_expired_removes_position(self) -> None:
+        """Paper maker position is removed when the market window expires."""
+        config = _make_maker_config()
+        client = AsyncMock()
+        trader = _make_trader(config=config, client=client)
+
+        opp = _make_opportunity(window_end_ts=_NOW - 1)
+        up_leg = SideLeg(
+            side="Up",
+            entry_price=_MAKER_BID_UP,
+            quantity=_MAKER_QTY,
+            cost_basis=_MAKER_BID_UP * _MAKER_QTY,
+        )
+        down_leg = SideLeg(
+            side="Down",
+            entry_price=_MAKER_BID_DOWN,
+            quantity=_MAKER_QTY,
+            cost_basis=_MAKER_BID_DOWN * _MAKER_QTY,
+        )
+        trader._positions["cond_a"] = PairedPosition(
+            opportunity=opp,
+            state=PositionState.PENDING,
+            up_leg=up_leg,
+            down_leg=down_leg,
+            entry_time=_PAST_TS,
+            is_paper=True,
+            pending_up_order_id="paper_up",
+            pending_down_order_id="paper_down",
+        )
+
+        with patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time:
+            mock_time.time.return_value = _NOW
+            await trader._manage_paper_maker_orders()
+
+        assert "cond_a" not in trader._positions
+
+    async def test_maker_partial_fill_one_side_stays_pending(self) -> None:
+        """Paper maker with only one side filled stays PENDING."""
+        config = _make_maker_config()
+        client = AsyncMock()
+
+        # Up fills (ask <= bid) but Down doesn't
+        up_ask = MagicMock()
+        up_ask.price = Decimal("0.20")
+        up_book = MagicMock()
+        up_book.asks = [up_ask]
+
+        down_ask = MagicMock()
+        down_ask.price = Decimal("0.50")
+        down_book = MagicMock()
+        down_book.asks = [down_ask]
+
+        client.get_order_book = AsyncMock(side_effect=[up_book, down_book])
+        trader = _make_trader(config=config, client=client)
+
+        opp = _make_opportunity()
+        up_leg = SideLeg(
+            side="Up",
+            entry_price=_MAKER_BID_UP,
+            quantity=_MAKER_QTY,
+            cost_basis=_MAKER_BID_UP * _MAKER_QTY,
+        )
+        down_leg = SideLeg(
+            side="Down",
+            entry_price=_MAKER_BID_DOWN,
+            quantity=_MAKER_QTY,
+            cost_basis=_MAKER_BID_DOWN * _MAKER_QTY,
+        )
+        trader._positions["cond_a"] = PairedPosition(
+            opportunity=opp,
+            state=PositionState.PENDING,
+            up_leg=up_leg,
+            down_leg=down_leg,
+            entry_time=_NOW,
+            is_paper=True,
+            pending_up_order_id="paper_up",
+            pending_down_order_id="paper_down",
+        )
+
+        with patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time:
+            mock_time.time.return_value = _NOW
+            await trader._manage_paper_maker_orders()
+
+        pos = trader._positions["cond_a"]
+        assert pos.state == PositionState.PENDING
+        # Up filled, Down still pending
+        assert pos.pending_up_order_id is None
+        assert pos.pending_down_order_id == "paper_down"
+
+
+_HEDGE_WINDOW_START = 1_710_000_000
+_HEDGE_WINDOW_END = 1_710_000_300
+# 70% elapsed = 210s into window
+_HEDGE_NOW = _HEDGE_WINDOW_START + 210
+
+
+def _make_hedge_config(**overrides: Any) -> SpreadCaptureConfig:
+    """Create a SpreadCaptureConfig for maker hedge tests."""
+    defaults: dict[str, Any] = {
+        "capital": _CAPITAL,
+        "max_position_pct": _MAX_POS_PCT,
+        "max_combined_cost": Decimal("0.98"),
+        "min_spread_margin": Decimal("0.01"),
+        "max_open_positions": 10,
+        "poll_interval": _DEFAULT_POLL,
+        "paper_slippage_pct": Decimal("0.0"),
+        "circuit_breaker_losses": 3,
+        "circuit_breaker_cooldown": 300,
+        "max_drawdown_pct": Decimal("0.15"),
+        "compound_profits": True,
+        "fee_rate": _ZERO_FEE,
+        "fee_exponent": _DEFAULT_FEE_EXPONENT,
+        "strategy": "maker",
+        "maker_bid_up": _MAKER_BID_UP,
+        "maker_bid_down": _MAKER_BID_DOWN,
+        "maker_order_size": _MAKER_QTY,
+        "single_leg_timeout": 300,
+        "maker_hedge_age_pct": Decimal("0.60"),
+        "maker_max_hedge_combined": Decimal("0.98"),
+    }
+    defaults.update(overrides)
+    return SpreadCaptureConfig(**defaults)
+
+
+def _make_pending_position_with_one_fill(
+    *, filled_side: str = "Down"
+) -> tuple[SpreadOpportunity, PairedPosition]:
+    """Create a PENDING position where one side has filled at the maker bid."""
+    opp = _make_opportunity(
+        window_start_ts=_HEDGE_WINDOW_START,
+        window_end_ts=_HEDGE_WINDOW_END,
+    )
+    up_leg = SideLeg(
+        side="Up",
+        entry_price=_MAKER_BID_UP,
+        quantity=_MAKER_QTY,
+        cost_basis=_MAKER_BID_UP * _MAKER_QTY,
+    )
+    down_leg = SideLeg(
+        side="Down",
+        entry_price=_MAKER_BID_DOWN,
+        quantity=_MAKER_QTY,
+        cost_basis=_MAKER_BID_DOWN * _MAKER_QTY,
+    )
+    if filled_side == "Down":
+        pending_up = "paper_up"
+        pending_down = None
+    else:
+        pending_up = None
+        pending_down = "paper_down"
+
+    pos = PairedPosition(
+        opportunity=opp,
+        state=PositionState.PENDING,
+        up_leg=up_leg,
+        down_leg=down_leg,
+        entry_time=_HEDGE_WINDOW_START,
+        is_paper=True,
+        pending_up_order_id=pending_up,
+        pending_down_order_id=pending_down,
+    )
+    return opp, pos
+
+
+@pytest.mark.asyncio
+class TestMakerHedge:
+    """Test maker strategy hedge logic for single-filled positions."""
+
+    async def test_hedge_triggers_when_unfilled_side_winning(self) -> None:
+        """Hedge buys the unfilled side when Binance shows it winning."""
+        config = _make_hedge_config()
+        client = AsyncMock()
+
+        # Down filled, Up unfilled. Binance shows price going Up (unfilled wins).
+        down_ask = MagicMock()
+        down_ask.price = Decimal("0.50")
+        down_book = MagicMock()
+        down_book.asks = [down_ask]
+
+        # Order book for Up (the unfilled side we want to hedge)
+        up_ask = MagicMock()
+        up_ask.price = Decimal("0.70")
+        up_book = MagicMock()
+        up_book.asks = [up_ask]
+
+        client.get_order_book = AsyncMock(return_value=up_book)
+        trader = _make_trader(config=config, client=client)
+
+        _, pos = _make_pending_position_with_one_fill(filled_side="Down")
+        trader._positions["cond_a"] = pos
+
+        with (
+            patch.object(trader, "_get_binance_direction", return_value="Up"),
+            patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time,
+        ):
+            mock_time.time.return_value = _HEDGE_NOW
+            await trader._maybe_hedge_maker_positions()
+
+        pos = trader._positions["cond_a"]
+        assert pos.state == PositionState.PAIRED
+        assert pos.up_leg.entry_price == Decimal("0.70")
+        assert pos.pending_up_order_id is None
+
+    async def test_hedge_skipped_when_filled_side_winning(self) -> None:
+        """No hedge when the filled side is already winning."""
+        config = _make_hedge_config()
+        client = AsyncMock()
+        trader = _make_trader(config=config, client=client)
+
+        # Down filled, Up unfilled. Binance shows price going Down (filled wins).
+        _, pos = _make_pending_position_with_one_fill(filled_side="Down")
+        trader._positions["cond_a"] = pos
+
+        with (
+            patch.object(trader, "_get_binance_direction", return_value="Down"),
+            patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time,
+        ):
+            mock_time.time.return_value = _HEDGE_NOW
+            await trader._maybe_hedge_maker_positions()
+
+        pos = trader._positions["cond_a"]
+        assert pos.state == PositionState.PENDING
+
+    async def test_hedge_skipped_before_age_threshold(self) -> None:
+        """No hedge when not enough of the window has elapsed."""
+        config = _make_hedge_config(maker_hedge_age_pct=Decimal("0.80"))
+        client = AsyncMock()
+        trader = _make_trader(config=config, client=client)
+
+        _, pos = _make_pending_position_with_one_fill(filled_side="Down")
+        trader._positions["cond_a"] = pos
+
+        # Window is 70% elapsed which is below the 80% hedge threshold
+        with (
+            patch.object(trader, "_get_binance_direction", return_value="Up"),
+            patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time,
+        ):
+            mock_time.time.return_value = _HEDGE_NOW
+            await trader._maybe_hedge_maker_positions()
+
+        pos = trader._positions["cond_a"]
+        assert pos.state == PositionState.PENDING
+
+    async def test_hedge_skipped_when_combined_too_expensive(self) -> None:
+        """No hedge when combined cost exceeds max_hedge_combined."""
+        config = _make_hedge_config(maker_max_hedge_combined=Decimal("0.90"))
+        client = AsyncMock()
+
+        # Up ask at 0.70, combined = 0.25 + 0.70 = 0.95 > 0.90
+        up_ask = MagicMock()
+        up_ask.price = Decimal("0.70")
+        up_book = MagicMock()
+        up_book.asks = [up_ask]
+        client.get_order_book = AsyncMock(return_value=up_book)
+
+        trader = _make_trader(config=config, client=client)
+
+        _, pos = _make_pending_position_with_one_fill(filled_side="Down")
+        trader._positions["cond_a"] = pos
+
+        with (
+            patch.object(trader, "_get_binance_direction", return_value="Up"),
+            patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time,
+        ):
+            mock_time.time.return_value = _HEDGE_NOW
+            await trader._maybe_hedge_maker_positions()
+
+        pos = trader._positions["cond_a"]
+        assert pos.state == PositionState.PENDING
+
+    async def test_hedge_up_filled_down_unfilled(self) -> None:
+        """Hedge buys Down when Up is filled and price is falling."""
+        config = _make_hedge_config()
+        client = AsyncMock()
+
+        down_ask = MagicMock()
+        down_ask.price = Decimal("0.65")
+        down_book = MagicMock()
+        down_book.asks = [down_ask]
+        client.get_order_book = AsyncMock(return_value=down_book)
+
+        trader = _make_trader(config=config, client=client)
+
+        _, pos = _make_pending_position_with_one_fill(filled_side="Up")
+        trader._positions["cond_a"] = pos
+
+        with (
+            patch.object(trader, "_get_binance_direction", return_value="Down"),
+            patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time,
+        ):
+            mock_time.time.return_value = _HEDGE_NOW
+            await trader._maybe_hedge_maker_positions()
+
+        pos = trader._positions["cond_a"]
+        assert pos.state == PositionState.PAIRED
+        assert pos.down_leg is not None
+        assert pos.down_leg.entry_price == Decimal("0.65")
+        assert pos.pending_down_order_id is None

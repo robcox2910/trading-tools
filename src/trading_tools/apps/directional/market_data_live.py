@@ -20,6 +20,7 @@ from .models import MarketOpportunity
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from trading_tools.apps.whale_monitor.repository import WhaleRepository
     from trading_tools.clients.polymarket.client import PolymarketClient
     from trading_tools.clients.polymarket.models import OrderBook
     from trading_tools.core.models import Candle
@@ -49,6 +50,7 @@ class LiveMarketData:
         client: PolymarketClient,
         candle_provider: BinanceCandleProvider,
         series_slugs: tuple[str, ...] = ("btc-updown-5m", "eth-updown-5m"),
+        whale_repo: WhaleRepository | None = None,
     ) -> None:
         """Initialize with API clients and create the market scanner.
 
@@ -56,10 +58,12 @@ class LiveMarketData:
             client: Authenticated Polymarket client.
             candle_provider: Binance candle provider for fetching candles.
             series_slugs: Series slugs to scan for active markets.
+            whale_repo: Optional whale trade repository for signal queries.
 
         """
         self._client = client
         self._candle_provider = candle_provider
+        self._whale_repo = whale_repo
         self._scanner = MarketScanner(
             client=client,
             series_slugs=series_slugs,
@@ -147,6 +151,24 @@ class LiveMarketData:
             start_ts=start_ts,
             end_ts=end_ts,
         )
+
+    async def get_whale_signal(
+        self,
+        condition_id: str,
+    ) -> str | None:
+        """Query whale net positioning from the whale trades database.
+
+        Args:
+            condition_id: Polymarket market condition identifier.
+
+        Returns:
+            ``"Up"`` or ``"Down"`` if whales have a directional bet,
+            ``None`` if no whale repo or no activity.
+
+        """
+        if self._whale_repo is None:
+            return None
+        return await self._whale_repo.get_whale_signal(condition_id)
 
     async def resolve_outcome(
         self,

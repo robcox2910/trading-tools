@@ -171,7 +171,8 @@ class ConfigLoader:
         return path.read_bytes()
 
 
-_config: ConfigLoader | None = None
+_config: dict[str, ConfigLoader] = {}
+"""Module-level cache for the singleton ``ConfigLoader`` instance."""
 
 
 def get_config() -> ConfigLoader:
@@ -184,7 +185,6 @@ def get_config() -> ConfigLoader:
         The shared ``ConfigLoader`` instance.
 
     """
-    global _config  # noqa: PLW0603
-    if _config is None:
-        _config = ConfigLoader()
-    return _config
+    if "instance" not in _config:
+        _config["instance"] = ConfigLoader()
+    return _config["instance"]

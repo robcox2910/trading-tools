@@ -24,6 +24,7 @@ from trading_tools.apps.polymarket.cli._helpers import (
     configure_logging,
     parse_series_slugs,
 )
+from trading_tools.apps.whale_monitor.repository import WhaleRepository
 
 _logger = logging.getLogger(__name__)
 
@@ -79,12 +80,10 @@ def directional(
         str | None,
         typer.Option(help="Max session drawdown as fraction (e.g. 0.15)"),
     ] = None,
-    confirm_live: Annotated[  # noqa: FBT002
+    confirm_live: Annotated[
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
-    verbose: Annotated[  # noqa: FBT002
-        bool, typer.Option("--verbose", "-v", help="Enable DEBUG logging")
-    ] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Enable DEBUG logging")] = False,
 ) -> None:
     """Trade directionally on Up/Down markets by buying the predicted winner.
 
@@ -143,6 +142,7 @@ def directional(
     async def _run() -> None:
         client = build_authenticated_client()
         repo: DirectionalResultRepository | None = None
+        whale_repo: WhaleRepository | None = None
 
         # Persist results when SPREAD_DB_URL or WHALE_DB_URL is configured
         db_url = os.environ.get("SPREAD_DB_URL", "") or os.environ.get("WHALE_DB_URL", "")
@@ -151,6 +151,10 @@ def directional(
             await repo.init_db()
             _logger.info("Directional result persistence enabled")
 
+            # Reuse same DB for whale signal queries
+            whale_repo = WhaleRepository(db_url)
+            _logger.info("Whale signal feature enabled")
+
         trader = DirectionalTrader(
             config=config,
             client=client,
@@ -158,6 +162,8 @@ def directional(
         )
         if repo is not None:
             trader.set_repository(repo)
+        if whale_repo is not None:
+            trader.set_whale_repo(whale_repo)
 
         try:
             await trader.run()
@@ -165,5 +171,7 @@ def directional(
             await client.close()
             if repo is not None:
                 await repo.close()
+            if whale_repo is not None:
+                await whale_repo.close()
 
     asyncio.run(_run())

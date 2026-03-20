@@ -12,7 +12,9 @@ from trading_tools.apps.polymarket.cli.bot_cmd import bot
 from trading_tools.apps.polymarket.cli.bot_live_cmd import bot_live
 from trading_tools.apps.polymarket.cli.directional_backtest_cmd import directional_backtest
 from trading_tools.apps.polymarket.cli.directional_cmd import directional
+from trading_tools.apps.polymarket.cli.directional_grid_cmd import directional_grid
 from trading_tools.apps.polymarket.cli.grid_backtest_cmd import grid_backtest
+from trading_tools.apps.polymarket.cli.limit_backtest_cmd import limit_backtest
 from trading_tools.apps.polymarket.cli.markets_cmd import markets
 from trading_tools.apps.polymarket.cli.odds_cmd import odds
 from trading_tools.apps.polymarket.cli.spread_backtest_cmd import backtest_spread
@@ -20,8 +22,10 @@ from trading_tools.apps.polymarket.cli.spread_capture_cmd import spread_capture
 from trading_tools.apps.polymarket.cli.spread_grid_cmd import grid_spread
 from trading_tools.apps.polymarket.cli.tick_collector_cmd import tick_collect
 from trading_tools.apps.polymarket.cli.trade_cmd import balance, cancel, orders, redeem, trade
+from trading_tools.apps.polymarket.cli.train_weights_cmd import train_weights_cmd
 from trading_tools.apps.polymarket.cli.whale_add_cmd import whale_add
 from trading_tools.apps.polymarket.cli.whale_analyse_cmd import whale_analyse
+from trading_tools.apps.polymarket.cli.whale_copy_cmd import whale_copy
 from trading_tools.apps.polymarket.cli.whale_correlate_cmd import whale_correlate
 from trading_tools.apps.polymarket.cli.whale_markets_cmd import whale_markets
 from trading_tools.apps.polymarket.cli.whale_monitor_cmd import whale_monitor
@@ -52,5 +56,9 @@ app.command(name="backtest-spread")(backtest_spread)
 app.command(name="grid-spread")(grid_spread)
 app.command(name="directional-backtest")(directional_backtest)
 app.command(name="directional")(directional)
+app.command(name="whale-copy")(whale_copy)
+app.command(name="directional-grid")(directional_grid)
+app.command(name="limit-backtest")(limit_backtest)
+app.command(name="train-weights")(train_weights_cmd)
 
 __all__ = ["app"]

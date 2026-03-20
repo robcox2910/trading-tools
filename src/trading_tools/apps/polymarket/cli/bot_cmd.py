@@ -62,7 +62,7 @@ def bot(
     max_loss_pct: Annotated[
         float, typer.Option(help="Stop bot at this drawdown %% (e.g. -20)")
     ] = -100.0,
-    verbose: Annotated[  # noqa: FBT002
+    verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable tick-by-tick logging")
     ] = False,
 ) -> None:

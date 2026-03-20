@@ -27,6 +27,7 @@ _PERCENTAGE_MULTIPLIER = 100
 _MAX_TITLE_LENGTH = 50
 
 _FLAT_THRESHOLD = Decimal("0.001")
+_NOON = 12
 
 # Regex patterns for time windows in market titles
 _RANGE_PATTERN = re.compile(
@@ -259,7 +260,6 @@ def _parse_time(hour: int, minute: int, ampm: str) -> time:
         A ``time`` object in 24-hour format.
 
     """
-    _NOON = 12  # noqa: N806
     if ampm.upper() == "AM" and hour == _NOON:
         hour = 0
     elif ampm.upper() == "PM" and hour != _NOON:

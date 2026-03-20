@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_MIN_OUTCOMES = 2
+
 
 # ── Outcome structure enum ────────────────────────────────────────────────────
 
@@ -204,7 +206,7 @@ def _parse_outcome_structure(raw_outcomes: object) -> OutcomeStructure:
         return OutcomeStructure.YES_NO
     if normalised == {"up", "down"}:
         return OutcomeStructure.UP_DOWN
-    if len(outcomes) >= 2:  # noqa: PLR2004
+    if len(outcomes) >= _MIN_OUTCOMES:
         return OutcomeStructure.MULTI
     return OutcomeStructure.UNKNOWN
 

@@ -25,7 +25,7 @@ from trading_tools.apps.backtester.cli._output import (
 from trading_tools.apps.backtester.walk_forward import run_walk_forward
 
 
-def walk_forward_cmd(  # noqa: PLR0913
+def walk_forward_cmd(
     source: Annotated[
         str,
         typer.Option(
@@ -61,7 +61,7 @@ def walk_forward_cmd(  # noqa: PLR0913
         float | None, typer.Option(help="Take-profit threshold as decimal")
     ] = None,
     position_size: Annotated[float, typer.Option(help="Fraction of capital per trade (0-1)")] = 1.0,
-    volatility_sizing: Annotated[bool, typer.Option(help="Use ATR-based position sizing")] = False,  # noqa: FBT002
+    volatility_sizing: Annotated[bool, typer.Option(help="Use ATR-based position sizing")] = False,
     atr_period: Annotated[int, typer.Option(help="ATR period for volatility sizing")] = 14,
     target_risk_pct: Annotated[float, typer.Option(help="Target risk per trade as decimal")] = 0.02,
     circuit_breaker: Annotated[
@@ -78,7 +78,7 @@ def walk_forward_cmd(  # noqa: PLR0913
     sort_metric: Annotated[
         str, typer.Option(help="Metric to select best strategy")
     ] = "total_return",
-    chart: Annotated[bool, typer.Option(help="Generate interactive charts")] = False,  # noqa: FBT002
+    chart: Annotated[bool, typer.Option(help="Generate interactive charts")] = False,
     chart_output: Annotated[
         Path | None, typer.Option(help="Save charts to HTML file instead of browser")
     ] = None,
@@ -126,7 +126,7 @@ def walk_forward_cmd(  # noqa: PLR0913
     )
 
 
-async def _walk_forward(  # noqa: PLR0913
+async def _walk_forward(
     *,
     source: str,
     csv: Path | None,
@@ -221,7 +221,7 @@ async def _walk_forward(  # noqa: PLR0913
         print_walk_forward(wf_result)
 
         if chart or chart_output is not None:
-            render_walk_forward_charts(wf_result, chart=chart, chart_output=chart_output)
+            render_walk_forward_charts(wf_result, _chart=chart, chart_output=chart_output)
     finally:
         if client is not None:
             await client.close()

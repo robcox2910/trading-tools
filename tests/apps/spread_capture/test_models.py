@@ -1,6 +1,7 @@
 """Tests for spread capture data models."""
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -23,9 +24,9 @@ _WINDOW_END = 1_710_000_300
 _NOW = 1_710_000_100
 
 
-def _make_opportunity(**overrides: object) -> SpreadOpportunity:
+def _make_opportunity(**overrides: Any) -> SpreadOpportunity:
     """Create a SpreadOpportunity with sensible defaults."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "condition_id": "cond_a",
         "title": "Bitcoin Up or Down?",
         "asset": "BTC-USD",
@@ -39,7 +40,7 @@ def _make_opportunity(**overrides: object) -> SpreadOpportunity:
         "window_end_ts": _WINDOW_END,
     }
     defaults.update(overrides)
-    return SpreadOpportunity(**defaults)  # type: ignore[arg-type]
+    return SpreadOpportunity(**defaults)
 
 
 class TestSpreadOpportunity:

@@ -160,30 +160,38 @@ class WhaleRepository:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def get_whale_signal(self, condition_id: str) -> str | None:
+    async def get_whale_signal(
+        self, condition_id: str, *, before_ts: int | None = None
+    ) -> str | None:
         """Return the whale's directional bet for a market.
 
-        Query ALL BUY trades for the given condition_id (each condition_id
-        is unique to one market window), group by outcome, and return the
-        outcome with the larger total dollar volume (size * price).
+        Query BUY trades for the given condition_id, group by outcome, and
+        return the outcome with the larger total dollar volume (size * price).
 
         Args:
             condition_id: Polymarket market condition identifier.
+            before_ts: Only consider trades before this epoch-second
+                timestamp.  Use in backtesting to prevent look-ahead bias.
+                When ``None``, all trades are included (live behaviour).
 
         Returns:
             ``"Up"`` or ``"Down"`` if a whale has a clear directional
             bet, ``None`` if no whale activity.
 
         """
+        filters = [
+            WhaleTrade.condition_id == condition_id,
+            WhaleTrade.side == "BUY",
+        ]
+        if before_ts is not None:
+            filters.append(WhaleTrade.timestamp <= before_ts)
+
         stmt = (
             select(
                 WhaleTrade.outcome,
                 func.sum(WhaleTrade.size * WhaleTrade.price).label("dollar_vol"),
             )
-            .where(
-                WhaleTrade.condition_id == condition_id,
-                WhaleTrade.side == "BUY",
-            )
+            .where(*filters)
             .group_by(WhaleTrade.outcome)
             .order_by(func.sum(WhaleTrade.size * WhaleTrade.price).desc())
         )
@@ -196,6 +204,39 @@ class WhaleRepository:
             if top_outcome in ("Up", "Down"):
                 return top_outcome
             return None
+
+    async def get_buy_trades_for_conditions(
+        self,
+        condition_ids: set[str],
+    ) -> list[WhaleTrade]:
+        """Fetch all BUY trades for a set of condition IDs in one query.
+
+        Return every BUY-side whale trade matching any of the given
+        ``condition_ids``, ordered by ``(condition_id, timestamp)``.  Designed
+        for bulk pre-fetching to avoid per-window DB round-trips in grid
+        search backtests.
+
+        Args:
+            condition_ids: Set of Polymarket condition identifiers to query.
+
+        Returns:
+            List of matching ``WhaleTrade`` rows sorted by
+            ``(condition_id, timestamp)``.
+
+        """
+        if not condition_ids:
+            return []
+        stmt = (
+            select(WhaleTrade)
+            .where(
+                WhaleTrade.condition_id.in_(condition_ids),
+                WhaleTrade.side == "BUY",
+            )
+            .order_by(WhaleTrade.condition_id, WhaleTrade.timestamp)
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
 
     async def get_trade_count(self, address: str | None = None) -> int:
         """Return the total number of whale trade records.

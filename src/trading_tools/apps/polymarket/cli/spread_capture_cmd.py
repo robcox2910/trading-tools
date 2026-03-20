@@ -53,6 +53,11 @@ _PARAM_MAP: tuple[tuple[str, str, bool], ...] = (
     ("hedge_end_threshold", "hedge_end_threshold", True),
     ("hedge_start_pct", "hedge_start_pct", True),
     ("max_primary_price", "max_primary_price", True),
+    ("maker_bid_up", "maker_bid_up", True),
+    ("maker_bid_down", "maker_bid_down", True),
+    ("maker_order_size", "maker_order_size", True),
+    ("maker_hedge_age_pct", "maker_hedge_age_pct", True),
+    ("maker_max_hedge_combined", "maker_max_hedge_combined", True),
     # Direct params (int, passed through unchanged)
     ("poll_interval", "poll_interval", False),
     ("max_window", "max_window_seconds", False),
@@ -205,9 +210,7 @@ def spread_capture(
     ] = None,
     strategy: Annotated[
         str | None,
-        typer.Option(
-            help="Strategy: 'simultaneous' (both sides at once) or 'accumulate' (per-side)"
-        ),
+        typer.Option(help="Strategy: 'simultaneous', 'accumulate', or 'maker' (resting bids)"),
     ] = None,
     max_imbalance_ratio: Annotated[
         str | None,
@@ -245,12 +248,36 @@ def spread_capture(
         str | None,
         typer.Option(help="Max ask price for primary side fills (e.g. 0.60)"),
     ] = None,
-    confirm_live: Annotated[  # noqa: FBT002
+    maker_bid_up: Annotated[
+        str | None,
+        typer.Option("--maker-bid-up", help="Maker bid price for Up token (e.g. 0.25)"),
+    ] = None,
+    maker_bid_down: Annotated[
+        str | None,
+        typer.Option("--maker-bid-down", help="Maker bid price for Down token (e.g. 0.25)"),
+    ] = None,
+    maker_order_size: Annotated[
+        str | None,
+        typer.Option("--maker-order-size", help="Maker order size in tokens per side (e.g. 20)"),
+    ] = None,
+    maker_hedge_age_pct: Annotated[
+        str | None,
+        typer.Option(
+            "--maker-hedge-age-pct",
+            help="Fraction of window elapsed before hedge (e.g. 0.60)",
+        ),
+    ] = None,
+    maker_max_hedge_combined: Annotated[
+        str | None,
+        typer.Option(
+            "--maker-max-hedge-combined",
+            help="Max combined cost for hedge to guarantee profit (e.g. 0.98)",
+        ),
+    ] = None,
+    confirm_live: Annotated[
         bool, typer.Option("--confirm-live", help="Enable LIVE trading with real orders")
     ] = False,
-    verbose: Annotated[  # noqa: FBT002
-        bool, typer.Option("--verbose", "-v", help="Enable DEBUG logging")
-    ] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Enable DEBUG logging")] = False,
 ) -> None:
     """Capture spreads on Up/Down markets by buying both sides below $1.00.
 
@@ -296,6 +323,11 @@ def spread_capture(
         hedge_end_threshold=hedge_end_threshold,
         hedge_start_pct=hedge_start_pct,
         max_primary_price=max_primary_price,
+        maker_bid_up=maker_bid_up,
+        maker_bid_down=maker_bid_down,
+        maker_order_size=maker_order_size,
+        maker_hedge_age_pct=maker_hedge_age_pct,
+        maker_max_hedge_combined=maker_max_hedge_combined,
     )
 
     if confirm_live:

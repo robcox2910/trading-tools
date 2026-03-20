@@ -1,6 +1,7 @@
 """Tests for AccumulatingPosition model properties."""
 
 from decimal import Decimal
+from typing import Any
 
 from trading_tools.apps.spread_capture.models import (
     AccumulatingPosition,
@@ -16,9 +17,9 @@ _EXPECTED_COMBINED_VWAP = Decimal("0.9200")
 _EXPECTED_RATIO_TWO = Decimal(2)
 
 
-def _make_opportunity(**overrides: object) -> SpreadOpportunity:
+def _make_opportunity(**overrides: Any) -> SpreadOpportunity:
     """Create a SpreadOpportunity with sensible defaults."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "condition_id": "cond_a",
         "title": "Bitcoin Up or Down?",
         "asset": "BTC-USD",
@@ -32,7 +33,7 @@ def _make_opportunity(**overrides: object) -> SpreadOpportunity:
         "window_end_ts": _WINDOW_END,
     }
     defaults.update(overrides)
-    return SpreadOpportunity(**defaults)  # type: ignore[arg-type]
+    return SpreadOpportunity(**defaults)
 
 
 def _make_position(

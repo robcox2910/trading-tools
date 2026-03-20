@@ -6,6 +6,7 @@ and MarketDataPort protocols so tests run without any I/O.
 """
 
 from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -42,9 +43,9 @@ _HEDGE_START_PCT = Decimal("0.20")
 _SIGNAL_DELAY = 60
 
 
-def _make_config(**overrides: object) -> SpreadCaptureConfig:
+def _make_config(**overrides: Any) -> SpreadCaptureConfig:
     """Create a SpreadCaptureConfig with accumulate strategy defaults."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "capital": _CAPITAL,
         "max_position_pct": _MAX_POS_PCT,
         "max_combined_cost": Decimal("0.98"),
@@ -67,12 +68,12 @@ def _make_config(**overrides: object) -> SpreadCaptureConfig:
         "hedge_start_pct": _HEDGE_START_PCT,
     }
     defaults.update(overrides)
-    return SpreadCaptureConfig(**defaults)  # type: ignore[arg-type]
+    return SpreadCaptureConfig(**defaults)
 
 
-def _make_opportunity(**overrides: object) -> SpreadOpportunity:
+def _make_opportunity(**overrides: Any) -> SpreadOpportunity:
     """Create a SpreadOpportunity with sensible defaults."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "condition_id": "cond_a",
         "title": "Bitcoin Up or Down?",
         "asset": "BTC-USD",
@@ -88,7 +89,7 @@ def _make_opportunity(**overrides: object) -> SpreadOpportunity:
         "down_ask_depth": Decimal(100),
     }
     defaults.update(overrides)
-    return SpreadOpportunity(**defaults)  # type: ignore[arg-type]
+    return SpreadOpportunity(**defaults)
 
 
 class _MockExecution:
@@ -108,8 +109,8 @@ class _MockExecution:
 
     async def execute_fill(
         self,
-        token_id: str,  # noqa: ARG002
-        side: str,  # noqa: ARG002
+        token_id: str,
+        side: str,
         price: Decimal,
         quantity: Decimal,
     ) -> FillResult | None:
@@ -153,17 +154,17 @@ def _default_mock_market_data() -> AsyncMock:
     return md
 
 
-def _make_engine(**overrides: object) -> SpreadEngine:
+def _make_engine(**overrides: Any) -> SpreadEngine:
     """Create a SpreadEngine with mock adapters and sensible defaults."""
-    config = overrides.pop("config", _make_config())  # type: ignore[arg-type]
-    execution = overrides.pop("execution", _MockExecution())  # type: ignore[arg-type]
-    market_data = overrides.pop("market_data", _default_mock_market_data())  # type: ignore[arg-type]
+    config = overrides.pop("config", _make_config())
+    execution = overrides.pop("execution", _MockExecution())
+    market_data = overrides.pop("market_data", _default_mock_market_data())
     return SpreadEngine(
-        config=config,  # type: ignore[arg-type]
-        execution=execution,  # type: ignore[arg-type]
-        market_data=market_data,  # type: ignore[arg-type]
+        config=config,
+        execution=execution,
+        market_data=market_data,
         mode_label="PAPER",
-        **overrides,  # type: ignore[arg-type]
+        **overrides,
     )
 
 
@@ -174,12 +175,12 @@ def _make_accum_position(
     down_qty: Decimal = Decimal(0),
     budget: Decimal = Decimal(10),
     primary_side: str | None = None,
-    **overrides: object,
+    **overrides: Any,
 ) -> AccumulatingPosition:
     """Create an AccumulatingPosition with specified leg values."""
-    opp = overrides.pop("opportunity", _make_opportunity())  # type: ignore[arg-type]
+    opp = overrides.pop("opportunity", _make_opportunity())
     return AccumulatingPosition(
-        opportunity=opp,  # type: ignore[arg-type]
+        opportunity=opp,
         state=PositionState.ACCUMULATING,
         up_leg=SideLeg(
             side="Up",
@@ -196,7 +197,7 @@ def _make_accum_position(
         entry_time=_NOW,
         budget=budget,
         primary_side=primary_side,
-        **overrides,  # type: ignore[arg-type]
+        **overrides,
     )
 
 

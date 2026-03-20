@@ -102,6 +102,7 @@ class DirectionalConfig:
             feature.
         w_rsi: Estimator weight for the RSI signal feature.
         w_price_change: Estimator weight for the price change feature.
+        w_whale: Estimator weight for the whale positioning feature.
         min_token_price: Minimum token price to buy.  Skip tokens the
             market has already written off (e.g. $0.06 with 30s left
             means 94% decided against this side).
@@ -126,12 +127,13 @@ class DirectionalConfig:
     paper_slippage_pct: Decimal = Decimal("0.005")
     max_open_positions: int = 10
     series_slugs: tuple[str, ...] = ("btc-updown-5m", "eth-updown-5m")
-    w_momentum: Decimal = Decimal("0.30")
-    w_volatility: Decimal = Decimal("0.10")
-    w_volume: Decimal = Decimal("0.15")
-    w_book_imbalance: Decimal = Decimal("0.20")
-    w_rsi: Decimal = Decimal("0.10")
-    w_price_change: Decimal = Decimal("0.15")
+    w_momentum: Decimal = Decimal("0.15")
+    w_volatility: Decimal = Decimal("0.05")
+    w_volume: Decimal = Decimal("0.05")
+    w_book_imbalance: Decimal = Decimal("0.10")
+    w_rsi: Decimal = Decimal("0.05")
+    w_price_change: Decimal = Decimal("0.10")
+    w_whale: Decimal = Decimal("0.50")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "DirectionalConfig":

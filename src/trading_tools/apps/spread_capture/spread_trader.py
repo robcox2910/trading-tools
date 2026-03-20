@@ -124,11 +124,21 @@ class SpreadTrader:
             msg = "PolymarketClient is required — pass client at construction"
             raise RuntimeError(msg)
 
+        # Maker strategy bids at fixed prices, so accept all markets.
+        # Use 2.0 (not 1.0) because best asks often sum to > $1.00.
+        scanner_max_cost = (
+            Decimal("2.0") if self.config.strategy == "maker" else self.config.max_combined_cost
+        )
+        # Net margin is negative for typical markets (combined > 1.0),
+        # so use a very negative floor to pass all markets through.
+        scanner_min_margin = (
+            Decimal(-10) if self.config.strategy == "maker" else self.config.min_spread_margin
+        )
         self._scanner = MarketScanner(
             client=self.client,
             series_slugs=self.config.series_slugs,
-            max_combined_cost=self.config.max_combined_cost,
-            min_spread_margin=self.config.min_spread_margin,
+            max_combined_cost=scanner_max_cost,
+            min_spread_margin=scanner_min_margin,
             max_window_seconds=self.config.max_window_seconds,
             max_entry_age_pct=self.config.max_entry_age_pct,
             rediscovery_interval=self.config.rediscovery_interval,
@@ -398,6 +408,78 @@ class SpreadTrader:
                     pnl,
                 )
 
+    async def _enter_maker_position(self, opp: SpreadOpportunity, now: int) -> None:
+        """Place resting GTC limit buy orders at fixed bid prices on both sides.
+
+        Post maker bids at configured prices (``maker_bid_up``,
+        ``maker_bid_down``) and wait for taker sells to fill them.
+        Position starts as PENDING and transitions to PAIRED when both
+        sides fill via ``_manage_pending_orders()``.
+
+        Args:
+            opp: The spread opportunity (market) to enter.
+            now: Current epoch seconds.
+
+        """
+        bid_up = self.config.maker_bid_up
+        bid_down = self.config.maker_bid_down
+        qty = self.config.maker_order_size
+
+        combined = bid_up + bid_down
+        if combined >= ONE:
+            logger.warning("SKIP %s: combined bid %.4f >= 1.00", opp.condition_id[:12], combined)
+            return
+
+        up_leg = SideLeg(side="Up", entry_price=bid_up, quantity=qty, cost_basis=bid_up * qty)
+        down_leg = SideLeg(
+            side="Down", entry_price=bid_down, quantity=qty, cost_basis=bid_down * qty
+        )
+
+        if self.live:
+            result = await self._place_spread_orders(opp, up_leg, down_leg)
+            up_result, down_result = result
+            if up_result is None and down_result is None:
+                logger.warning("Both maker orders failed for %s", opp.condition_id[:12])
+                return
+
+            pos = PairedPosition(
+                opportunity=opp,
+                state=PositionState.PENDING,
+                up_leg=up_result or up_leg,
+                down_leg=down_result or down_leg,
+                entry_time=now,
+                is_paper=False,
+                pending_up_order_id=(up_result.order_ids[-1] if up_result else None),
+                pending_down_order_id=(down_result.order_ids[-1] if down_result else None),
+            )
+        else:
+            # Paper mode: position stays PENDING, fills simulated by
+            # checking if market best ask <= our bid in _manage_pending_orders()
+            pos = PairedPosition(
+                opportunity=opp,
+                state=PositionState.PENDING,
+                up_leg=up_leg,
+                down_leg=down_leg,
+                entry_time=now,
+                is_paper=True,
+                pending_up_order_id="paper_up",
+                pending_down_order_id="paper_down",
+            )
+
+        self._positions[opp.condition_id] = pos
+        mode = "LIVE" if self.live else "PAPER"
+        logger.info(
+            "%s MAKER %s bid_up=%.4f bid_down=%.4f combined=%.4f margin=%.4f qty=%.0f asset=%s",
+            mode,
+            opp.condition_id[:12],
+            bid_up,
+            bid_down,
+            combined,
+            ONE - combined,
+            qty,
+            opp.asset,
+        )
+
     async def _enter_spread(self, opp: SpreadOpportunity) -> None:
         """Enter a spread position by buying both sides simultaneously.
 
@@ -410,6 +492,10 @@ class SpreadTrader:
 
         """
         now = int(time.time())
+
+        if self.config.strategy == "maker":
+            await self._enter_maker_position(opp, now)
+            return
 
         # Max drawdown kill-switch
         if self._check_drawdown_halt():
@@ -633,6 +719,322 @@ class SpreadTrader:
 
         return result_up, result_down
 
+    async def _manage_paper_maker_orders(self) -> None:
+        """Simulate fills for paper-mode maker positions using order book data.
+
+        For each PENDING paper position in maker strategy, fetch the order
+        book and check whether the best ask is at or below our bid price.
+        If both sides fill, transition to PAIRED.  If the market expires
+        with unfilled sides, remove the position.
+        """
+        if self.client is None:
+            return
+
+        pending = [
+            (cid, pos)
+            for cid, pos in self._positions.items()
+            if pos.state == PositionState.PENDING and pos.is_paper
+        ]
+        if not pending:
+            return
+
+        now = int(time.time())
+        for cid, pos in pending:
+            if pos.opportunity.window_end_ts <= now:
+                del self._positions[cid]
+                logger.info("PAPER EXPIRED %s: market expired while pending", cid[:12])
+                continue
+
+            up_filled = pos.pending_up_order_id is None
+            down_filled = pos.pending_down_order_id is None
+
+            if up_filled and down_filled:
+                continue
+
+            try:
+                books = await asyncio.gather(
+                    self.client.get_order_book(pos.opportunity.up_token_id),
+                    self.client.get_order_book(pos.opportunity.down_token_id),
+                )
+                up_book, down_book = books
+            except (httpx.HTTPError, Exception):
+                logger.debug("Failed to fetch order books for paper maker fill check")
+                continue
+
+            if not up_filled and up_book.asks:
+                best_ask = min(level.price for level in up_book.asks)
+                if best_ask <= pos.up_leg.entry_price:
+                    pos.pending_up_order_id = None
+                    up_filled = True
+                    logger.info(
+                        "PAPER FILL %s Up: ask=%.4f <= bid=%.4f",
+                        cid[:12],
+                        best_ask,
+                        pos.up_leg.entry_price,
+                    )
+
+            if not down_filled and pos.down_leg is not None and down_book.asks:
+                best_ask = min(level.price for level in down_book.asks)
+                if best_ask <= pos.down_leg.entry_price:
+                    pos.pending_down_order_id = None
+                    down_filled = True
+                    logger.info(
+                        "PAPER FILL %s Down: ask=%.4f <= bid=%.4f",
+                        cid[:12],
+                        best_ask,
+                        pos.down_leg.entry_price,
+                    )
+
+            if up_filled and down_filled:
+                pos.state = PositionState.PAIRED
+                combined = pos.up_leg.entry_price + (
+                    pos.down_leg.entry_price if pos.down_leg else ZERO
+                )
+                logger.info(
+                    "PAPER PAIRED %s: both maker bids filled, combined=%.4f margin=%.4f asset=%s",
+                    cid[:12],
+                    combined,
+                    ONE - combined,
+                    pos.opportunity.asset,
+                )
+
+    async def _get_binance_direction(self, opp: SpreadOpportunity, now: int) -> str | None:
+        """Determine the current price direction for a market's underlying asset.
+
+        Fetch Binance 1-min candles from the window start to now and compare
+        the opening price with the latest close.
+
+        Args:
+            opp: The spread opportunity with asset and window timestamps.
+            now: Current epoch seconds.
+
+        Returns:
+            ``"Up"`` if price rose, ``"Down"`` if price fell, ``None`` if
+            candle data is unavailable or price is flat.
+
+        """
+        if self._binance is None:
+            return None
+        try:
+            provider = BinanceCandleProvider(self._binance)
+            candles = await provider.get_candles(
+                opp.asset,
+                Interval.M1,
+                opp.window_start_ts,
+                now,
+            )
+        except (BinanceError, httpx.HTTPError, KeyError, ValueError):
+            logger.debug("Failed to fetch Binance candles for hedge signal on %s", opp.asset)
+            return None
+
+        if not candles:
+            return None
+
+        open_price = candles[0].open
+        close_price = candles[-1].close
+        if close_price > open_price:
+            return "Up"
+        if close_price < open_price:
+            return "Down"
+        return None
+
+    def _apply_hedge_to_position(
+        self,
+        pos: PairedPosition,
+        unfilled_side: str,
+        hedge_leg: SideLeg,
+    ) -> None:
+        """Apply a hedge fill to a pending position and transition to PAIRED.
+
+        Replace the unfilled leg with the hedge leg, clear its pending
+        order ID, and set the position state to PAIRED.
+
+        Args:
+            pos: The pending position to hedge.
+            unfilled_side: ``"Up"`` or ``"Down"`` — which side was hedged.
+            hedge_leg: The filled hedge leg.
+
+        """
+        if unfilled_side == "Up":
+            pos.up_leg = hedge_leg
+            pos.pending_up_order_id = None
+        elif pos.down_leg is not None:
+            pos.down_leg = hedge_leg
+            pos.pending_down_order_id = None
+        pos.state = PositionState.PAIRED
+
+    async def _execute_live_hedge(
+        self,
+        cid: str,
+        pos: PairedPosition,
+        unfilled_token_id: str,
+        unfilled_side: str,
+        hedge_ask: Decimal,
+        qty: Decimal,
+    ) -> bool:
+        """Place a live hedge order and apply the fill.
+
+        Args:
+            cid: Condition ID for logging.
+            pos: The pending position.
+            unfilled_token_id: CLOB token ID for the unfilled side.
+            unfilled_side: ``"Up"`` or ``"Down"``.
+            hedge_ask: Ask price for the hedge order.
+            qty: Token quantity to buy.
+
+        Returns:
+            ``True`` if the hedge was executed successfully.
+
+        """
+        if self._executor is None:
+            return False
+        try:
+            resp = await self._executor.place_order(unfilled_token_id, "BUY", hedge_ask, qty)
+        except (httpx.HTTPError, Exception):
+            logger.debug("Hedge order failed for %s %s", cid[:12], unfilled_side)
+            return False
+
+        if resp is None or resp.filled <= ZERO:
+            return False
+
+        hedge_leg = SideLeg(
+            side=unfilled_side,
+            entry_price=resp.price,
+            quantity=resp.filled,
+            cost_basis=resp.price * resp.filled,
+            order_ids=[resp.order_id],
+        )
+        self._apply_hedge_to_position(pos, unfilled_side, hedge_leg)
+        return True
+
+    async def _maybe_hedge_maker_positions(self) -> None:
+        """Hedge single-filled maker positions when the unfilled side is winning.
+
+        For PENDING maker positions where one side has filled and enough of
+        the window has elapsed (``maker_hedge_age_pct``), check Binance spot
+        direction.  If the **unfilled** side is winning (meaning our filled
+        side will lose), market-buy the unfilled side at the current ask to
+        lock in guaranteed spread profit.
+
+        Only hedge when the combined cost (filled bid + hedge ask) is below
+        ``maker_max_hedge_combined``.
+        """
+        if self.client is None:
+            return
+
+        now = int(time.time())
+        hedge_age = self.config.maker_hedge_age_pct
+        max_combined = self.config.maker_max_hedge_combined
+
+        candidates = [
+            (cid, pos)
+            for cid, pos in self._positions.items()
+            if pos.state == PositionState.PENDING
+            and (pos.pending_up_order_id is None) != (pos.pending_down_order_id is None)
+        ]
+
+        for cid, pos in candidates:
+            opp = pos.opportunity
+            window_duration = opp.window_end_ts - opp.window_start_ts
+            if window_duration <= 0:
+                continue
+            elapsed_pct = Decimal(str(now - opp.window_start_ts)) / Decimal(str(window_duration))
+            if elapsed_pct < hedge_age:
+                continue
+
+            up_filled = pos.pending_up_order_id is None
+            filled_side = "Up" if up_filled else "Down"
+            unfilled_side = "Down" if up_filled else "Up"
+
+            direction = await self._get_binance_direction(opp, now)
+            if direction is None or direction != unfilled_side:
+                continue
+
+            hedge_ask = await self._get_hedge_ask(cid, pos, unfilled_side)
+            if hedge_ask is None:
+                continue
+
+            filled_bid = (
+                pos.up_leg.entry_price
+                if up_filled
+                else (pos.down_leg.entry_price if pos.down_leg else ZERO)
+            )
+            combined = filled_bid + hedge_ask
+
+            if combined >= max_combined:
+                logger.debug(
+                    "HEDGE SKIP %s: combined=%.4f >= max %.4f",
+                    cid[:12],
+                    combined,
+                    max_combined,
+                )
+                continue
+
+            qty = (
+                pos.up_leg.quantity
+                if up_filled
+                else (pos.down_leg.quantity if pos.down_leg else ZERO)
+            )
+
+            if pos.is_paper:
+                hedge_leg = SideLeg(
+                    side=unfilled_side,
+                    entry_price=hedge_ask,
+                    quantity=qty,
+                    cost_basis=hedge_ask * qty,
+                )
+                self._apply_hedge_to_position(pos, unfilled_side, hedge_leg)
+            else:
+                unfilled_token_id = (
+                    opp.down_token_id if unfilled_side == "Down" else opp.up_token_id
+                )
+                if not await self._execute_live_hedge(
+                    cid, pos, unfilled_token_id, unfilled_side, hedge_ask, qty
+                ):
+                    continue
+
+            mode = "PAPER" if pos.is_paper else "LIVE"
+            logger.info(
+                "%s HEDGE %s %s at ask=%.4f combined=%.4f margin=%.4f"
+                " direction=%s filled=%s asset=%s",
+                mode,
+                cid[:12],
+                unfilled_side,
+                hedge_ask,
+                combined,
+                ONE - combined,
+                direction,
+                filled_side,
+                opp.asset,
+            )
+
+    async def _get_hedge_ask(
+        self, cid: str, pos: PairedPosition, unfilled_side: str
+    ) -> Decimal | None:
+        """Fetch the best ask price for the unfilled side of a maker position.
+
+        Args:
+            cid: Condition ID for logging.
+            pos: The pending position.
+            unfilled_side: ``"Up"`` or ``"Down"``.
+
+        Returns:
+            Best ask price, or ``None`` if order book is unavailable.
+
+        """
+        if self.client is None:
+            return None
+        opp = pos.opportunity
+        token_id = opp.down_token_id if unfilled_side == "Down" else opp.up_token_id
+        try:
+            book = await self.client.get_order_book(token_id)
+        except (httpx.HTTPError, Exception):
+            logger.debug("Failed to fetch order book for hedge on %s", cid[:12])
+            return None
+        if not book.asks:
+            return None
+        return min(level.price for level in book.asks)
+
     async def _manage_pending_orders(self) -> None:
         """Check fill status of pending GTC limit orders and transition states.
 
@@ -642,12 +1044,23 @@ class SpreadTrader:
           unfilled order, unwind filled side, and mark SINGLE_LEG.
         - If neither filled and market is about to expire -> cancel both
           and remove position.
+
+        For paper-mode maker positions, delegate to
+        ``_manage_paper_maker_orders()`` which simulates fills using
+        order book snapshots.
         """
+        # Handle paper-mode maker fills via order book simulation
+        if self.config.strategy == "maker":
+            await self._manage_paper_maker_orders()
+            await self._maybe_hedge_maker_positions()
+
         if self.client is None:
             return
 
         pending = [
-            (cid, pos) for cid, pos in self._positions.items() if pos.state == PositionState.PENDING
+            (cid, pos)
+            for cid, pos in self._positions.items()
+            if pos.state == PositionState.PENDING and not pos.is_paper
         ]
         if not pending:
             return

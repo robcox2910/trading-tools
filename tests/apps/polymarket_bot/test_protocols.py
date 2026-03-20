@@ -19,8 +19,8 @@ class _StubStrategy:
     def on_snapshot(
         self,
         snapshot: MarketSnapshot,
-        history: list[MarketSnapshot],  # noqa: ARG002
-        related: list[MarketSnapshot] | None = None,  # noqa: ARG002
+        history: list[MarketSnapshot],
+        related: list[MarketSnapshot] | None = None,
     ) -> Signal | None:
         """Return a BUY signal unconditionally."""
         return Signal(
@@ -36,9 +36,9 @@ class _IncompleteStrategy:
 
     def on_snapshot(
         self,
-        snapshot: MarketSnapshot,  # noqa: ARG002
-        history: list[MarketSnapshot],  # noqa: ARG002
-        related: list[MarketSnapshot] | None = None,  # noqa: ARG002
+        snapshot: MarketSnapshot,
+        history: list[MarketSnapshot],
+        related: list[MarketSnapshot] | None = None,
     ) -> Signal | None:
         """Return None."""
         return None

@@ -437,7 +437,7 @@ class TestRefreshOrderBooksLoop:
 
         _original_sleep = asyncio.sleep
 
-        async def _fast_sleep(delay: float) -> None:  # noqa: ARG001
+        async def _fast_sleep(delay: float) -> None:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
@@ -463,7 +463,7 @@ class TestRefreshOrderBooksLoop:
         call_count = 0
         _original_sleep = asyncio.sleep
 
-        async def _fast_sleep(delay: float) -> None:  # noqa: ARG001
+        async def _fast_sleep(delay: float) -> None:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
@@ -491,7 +491,7 @@ class TestRefreshOrderBooksLoop:
         call_count = 0
         _original_sleep = asyncio.sleep
 
-        async def _fast_sleep(delay: float) -> None:  # noqa: ARG001
+        async def _fast_sleep(delay: float) -> None:
             nonlocal call_count
             call_count += 1
             if call_count > 1:

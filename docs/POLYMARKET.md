@@ -21,6 +21,8 @@ Some commands require no authentication (market queries), while trading and bot 
 | Directional bot (paper) | No |
 | Directional bot (live) | Yes |
 | Directional backtest | No |
+| Whale copy bot (paper) | No (requires WHALE_DB_URL) |
+| Whale copy bot (live) | Yes |
 
 ## Market Queries
 
@@ -392,7 +394,7 @@ circuit_breaker_cooldown: 600
 |------|---------|-------------|
 | `--series-slugs` | `btc-updown-5m,eth-updown-5m` | Comma-separated series slugs or `crypto-5m`/`crypto-15m` shortcut |
 | `--config` | *none* | Path to YAML config file (CLI flags override YAML values) |
-| `--strategy` | `simultaneous` | Execution strategy: `simultaneous` (both sides at once) or `accumulate` (independent per-side fills over time) |
+| `--strategy` | `simultaneous` | Execution strategy: `simultaneous` (both sides at once), `accumulate` (independent per-side fills over time), or `maker` (resting GTC limit bids on both sides) |
 | `--poll-interval` | `5` | Seconds between scan cycles |
 | `--capital` | `100` | Starting capital in USDC (paper mode) |
 | `--max-position-pct` | `0.10` | Max fraction of capital per spread trade |
@@ -414,6 +416,35 @@ circuit_breaker_cooldown: 600
 | `--paper-slippage-pct` | `0.005` | Simulated slippage for paper fills |
 | `--confirm-live` | `false` | **Required flag** for live trading |
 | `--verbose`, `-v` | `false` | Enable DEBUG logging |
+
+**`maker` strategy flags** (only active when `--strategy maker`):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--maker-bid-up` | `0.25` | Resting bid price for the Up token |
+| `--maker-bid-down` | `0.25` | Resting bid price for the Down token |
+| `--maker-order-size` | `20` | Token quantity per maker order |
+
+The maker strategy places resting GTC limit buy orders at fixed bid prices on both Up and Down sides, waiting for taker sells instead of taking liquidity at the best ask. Use `--single-leg-timeout 300` to wait until the full window expires. Backtest results show 13.9% of 5-min windows see both sides fill at $0.25/$0.25 bids.
+
+```bash
+# Paper maker bot
+trading-tools-polymarket spread-capture \
+  --strategy maker \
+  --maker-bid-up 0.25 --maker-bid-down 0.25 \
+  --maker-order-size 20 \
+  --series-slugs btc-updown-5m \
+  --single-leg-timeout 300
+
+# Live maker bot
+trading-tools-polymarket spread-capture \
+  --confirm-live \
+  --strategy maker \
+  --maker-bid-up 0.25 --maker-bid-down 0.25 \
+  --maker-order-size 20 \
+  --series-slugs btc-updown-5m \
+  --single-leg-timeout 300
+```
 
 **`accumulate` strategy flags** (only active when `--strategy accumulate`):
 
@@ -517,12 +548,91 @@ trading-tools-polymarket directional-backtest \
 | `--signal-lookback` | `300` | Binance candle lookback seconds |
 | `--series-slug` | — | Filter to a specific series slug |
 | `--db-url` | `$TICK_DB_URL` | Database URL for tick data |
+| `--whale-db-url` | `$WHALE_DB_URL` | DB URL for whale trades (defaults to `--db-url`) |
 | `-v` / `--verbose` | `False` | Enable per-window logging |
 
 Output includes standard metrics (P&L, win rate, avg P&L) plus calibration metrics:
 - **Brier score**: Mean squared error of probability predictions (< 0.25 = better than random)
 - **Avg P(win) when correct**: Confidence when the algorithm was right
 - **Avg P(win) when incorrect**: Confidence when the algorithm was wrong
+
+### `train-weights` — Train Estimator Weights via Logistic Regression
+
+Fit all 7 feature weights simultaneously on historical market outcome data using gradient descent. The learned weights are mathematically optimal for the existing `P(Up) = sigmoid(dot(features, w))` model form and slot directly into `DirectionalConfig`.
+
+```bash
+trading-tools-polymarket train-weights \
+  --start 2026-03-01 --end 2026-03-19 \
+  --signal-lookback 1200 --l2-lambda 0.01 \
+  --output-yaml trained_weights.yaml
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--start` | — | Start date (YYYY-MM-DD, required) |
+| `--end` | — | End date (YYYY-MM-DD, required) |
+| `--entry-start` | `30` | Seconds before close to evaluate entry |
+| `--signal-lookback` | `1200` | Binance candle lookback seconds |
+| `--learning-rate` | `0.1` | Gradient descent step size |
+| `--max-iterations` | `10000` | Maximum gradient descent iterations |
+| `--l2-lambda` | `0.0` | L2 regularisation coefficient (0 = none) |
+| `--output-yaml` | — | Write learned weights to a YAML config file |
+| `--series-slug` | — | Filter to a specific series slug |
+| `--db-url` | `$TICK_DB_URL` | Database URL for tick data |
+| `--whale-db-url` | `$WHALE_DB_URL` | DB URL for whale trades (defaults to `--db-url`) |
+| `-v` / `--verbose` | `False` | Enable verbose logging |
+
+Output includes learned vs. default weight comparison, accuracy, and log-loss. Use `--output-yaml` to save weights for loading via `DirectionalConfig.from_yaml()`.
+
+## Whale Copy Bot
+
+The whale copy bot mirrors the net directional positioning of tracked whale traders in real time. Unlike the spread capture strategy (which locks in a signal early), this bot re-reads the whale's current direction every poll cycle and buys tokens on whichever side they currently favour. If the whale flips mid-window, both sides can accumulate tokens — winning tokens pay $1.00, losing tokens pay $0.00.
+
+### `whale-copy` — Mirror Whale Directional Positioning
+
+```bash
+# Paper mode (default) — mirror whales on 5m crypto markets
+trading-tools-polymarket whale-copy --series-slugs crypto-5m --capital 1000
+
+# With custom conviction threshold and fill size
+trading-tools-polymarket whale-copy \
+  --series-slugs crypto-5m \
+  --capital 500 \
+  --min-conviction 2.0 \
+  --fill-size 10 \
+  --max-price 0.55
+
+# Live mode
+trading-tools-polymarket whale-copy \
+  --series-slugs crypto-5m \
+  --capital 1000 \
+  --confirm-live
+```
+
+Requires `WHALE_DB_URL` environment variable (whale addresses loaded from database). Optionally set `SPREAD_DB_URL` or `WHALE_DB_URL` for result persistence.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--series-slugs` | `btc-updown-5m,eth-updown-5m,xrp-updown-5m,sol-updown-5m` | Comma-separated series slugs or `crypto-5m` shortcut |
+| `--config` | `None` | Path to YAML config file (CLI flags override) |
+| `--poll-interval` | `5` | Seconds between scan cycles |
+| `--capital` | `1000` | Starting capital in USDC (paper mode) |
+| `--fill-size` | `5` | Tokens per fill (must meet min order size) |
+| `--max-price` | `0.60` | Maximum ask price to buy |
+| `--min-conviction` | `1.5` | Minimum whale dollar ratio on favoured side |
+| `--max-position-pct` | `0.10` | Max fraction of capital per market |
+| `--max-open-positions` | `10` | Max concurrent positions |
+| `--circuit-breaker-losses` | `5` | Consecutive losses to trigger cooldown |
+| `--circuit-breaker-cooldown` | `300` | Seconds to pause after circuit breaker |
+| `--max-drawdown-pct` | `0.20` | Max session drawdown as fraction |
+| `--confirm-live` | `False` | Enable live trading with real orders |
+| `-v` / `--verbose` | `False` | Enable DEBUG logging |
+
+**Logging keywords for CloudWatch/log monitoring:**
+- `WHALE-DIRECTION` — whale's current favoured side each poll
+- `WHALE-FLIP` — whale changed direction mid-window
+- `FILL` — token purchase on the favoured side
+- `CLOSE` — position settled with P&L
 
 ## Backtesting Polymarket Strategies
 
@@ -651,6 +761,38 @@ trading-tools-polymarket grid-spread \
 | `--poll-interval` | `5` | Seconds between poll cycles during replay |
 | `--slippage` | `0.005` | Paper slippage percentage |
 | `--verbose`, `-v` | `false` | Enable per-window logging |
+
+### `limit-backtest` — Backtest Limit Order Spread Capture
+
+Simulate placing resting limit buy orders on both Up and Down tokens across a grid of bid prices, order sizes, and entry delays. Display fill rates, P&L, and Sharpe ratios as markdown tables.
+
+```bash
+trading-tools-polymarket limit-backtest \
+  --start 2026-03-05 --end 2026-03-19 \
+  --bid-up 0.05,0.10,0.15,0.20,0.25,0.30 \
+  --bid-down 0.05,0.10,0.15,0.20,0.25,0.30 \
+  --order-sizes 10,20,50 \
+  --entry-delays 0.0,0.10,0.20 \
+  --series-slug btc-updown-5m -v
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--start` | *(required)* | Start date `YYYY-MM-DD` |
+| `--end` | *(required)* | End date `YYYY-MM-DD` |
+| `--db-url` | env `TICK_DB_URL` or `sqlite+aiosqlite:///tick_data.db` | SQLAlchemy async DB URL |
+| `--bid-up` | `0.05,0.10,0.15,0.20,0.25,0.30` | Comma-separated Up bid prices |
+| `--bid-down` | `0.05,0.10,0.15,0.20,0.25,0.30` | Comma-separated Down bid prices |
+| `--order-sizes` | `10,20,50` | Comma-separated order sizes in tokens |
+| `--entry-delays` | `0.0,0.10,0.20` | Comma-separated entry delay fractions (0.0 = at open) |
+| `--series-slug` | `None` | Filter to a specific series slug |
+| `--verbose`, `-v` | `false` | Enable per-window logging |
+
+Output tables show:
+- **Fill Rate (Both Sides)** — fraction of windows where both limit orders filled
+- **Total P&L** — sum of guaranteed + directional P&L across all windows
+- **Sharpe Ratio** — avg P&L / std P&L per window
+- **Avg Guaranteed P&L** — mean profit from paired tokens in both-filled windows
 
 ## Database Support
 

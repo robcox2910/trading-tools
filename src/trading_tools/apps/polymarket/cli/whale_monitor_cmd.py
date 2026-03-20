@@ -22,9 +22,7 @@ def whale_monitor(
     poll_interval: Annotated[
         int, typer.Option(help="Seconds between polling cycles")
     ] = _DEFAULT_POLL_INTERVAL,
-    verbose: Annotated[  # noqa: FBT002
-        bool, typer.Option("--verbose", "-v", help="Enable debug logging")
-    ] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Enable debug logging")] = False,
 ) -> None:
     """Run the whale trade monitor service.
 

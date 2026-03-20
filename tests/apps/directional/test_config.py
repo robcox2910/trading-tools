@@ -43,8 +43,8 @@ class TestDefaults:
     def test_default_entry_window(self) -> None:
         """Default entry window is 30s start, 10s end."""
         config = DirectionalConfig()
-        assert config.entry_window_start == 30  # noqa: PLR2004
-        assert config.entry_window_end == 10  # noqa: PLR2004
+        assert config.entry_window_start == 30
+        assert config.entry_window_end == 10
 
     def test_default_series_slugs(self) -> None:
         """Default series slugs cover BTC and ETH 5-minute markets."""
@@ -66,6 +66,7 @@ class TestDefaults:
             + config.w_book_imbalance
             + config.w_rsi
             + config.w_price_change
+            + config.w_whale
         )
         assert total == Decimal(1)
 

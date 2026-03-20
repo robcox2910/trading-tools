@@ -11,6 +11,7 @@ from trading_tools.apps.directional.features import (
     compute_rsi_signal,
     compute_volatility_regime,
     compute_volume_profile,
+    compute_whale_signal,
     extract_features,
 )
 from trading_tools.clients.polymarket.models import OrderBook, OrderLevel
@@ -293,6 +294,22 @@ class TestComputePriceChange:
             compute_price_change([candle])
 
 
+class TestComputeWhaleSignal:
+    """Test whale signal conversion."""
+
+    def test_up_returns_one(self) -> None:
+        """Up whale direction returns 1."""
+        assert compute_whale_signal("Up") == Decimal(1)
+
+    def test_down_returns_negative_one(self) -> None:
+        """Down whale direction returns -1."""
+        assert compute_whale_signal("Down") == Decimal(-1)
+
+    def test_none_returns_zero(self) -> None:
+        """No whale activity returns 0."""
+        assert compute_whale_signal(None) == ZERO
+
+
 class TestExtractFeatures:
     """Test the feature extraction orchestrator."""
 
@@ -308,13 +325,14 @@ class TestExtractFeatures:
         assert isinstance(result.book_imbalance, Decimal)
         assert isinstance(result.rsi_signal, Decimal)
         assert isinstance(result.price_change_pct, Decimal)
+        assert isinstance(result.whale_signal, Decimal)
 
     def test_all_features_in_range(self) -> None:
         """All features are in [-1, 1]."""
         candles = _make_rising_candles(20)
         up_book = _make_order_book("up", [Decimal(100)], [Decimal(50)])
         down_book = _make_order_book("down", [Decimal(50)], [Decimal(50)])
-        result = extract_features(candles, up_book, down_book)
+        result = extract_features(candles, up_book, down_book, whale_direction="Up")
         for field_name in (
             "momentum",
             "volatility_regime",
@@ -322,6 +340,7 @@ class TestExtractFeatures:
             "book_imbalance",
             "rsi_signal",
             "price_change_pct",
+            "whale_signal",
         ):
             val = getattr(result, field_name)
             assert -1 <= val <= 1, f"{field_name}={val} out of range"

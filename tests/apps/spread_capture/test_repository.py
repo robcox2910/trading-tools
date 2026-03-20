@@ -1,6 +1,7 @@
 """Tests for SpreadResultRepository async persistence."""
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -24,9 +25,9 @@ _ENTRY_TIME = 1_710_000_100
 _EXIT_TIME = 1_710_000_310
 
 
-def _make_opportunity(**overrides: object) -> SpreadOpportunity:
+def _make_opportunity(**overrides: Any) -> SpreadOpportunity:
     """Create a SpreadOpportunity with sensible defaults."""
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "condition_id": "cond_a",
         "title": "Bitcoin Up or Down?",
         "asset": "BTC-USD",
@@ -40,13 +41,13 @@ def _make_opportunity(**overrides: object) -> SpreadOpportunity:
         "window_end_ts": _WINDOW_END,
     }
     defaults.update(overrides)
-    return SpreadOpportunity(**defaults)  # type: ignore[arg-type]
+    return SpreadOpportunity(**defaults)
 
 
-def _make_result(**overrides: object) -> SpreadResult:
+def _make_result(**overrides: Any) -> SpreadResult:
     """Create a SpreadResult with sensible defaults."""
-    opp = _make_opportunity(**(overrides.pop("opp_overrides", {}) or {}))  # type: ignore[arg-type]
-    defaults: dict[str, object] = {
+    opp = _make_opportunity(**(overrides.pop("opp_overrides", {}) or {}))
+    defaults: dict[str, Any] = {
         "opportunity": opp,
         "state": PositionState.SETTLED,
         "up_entry": _UP_PRICE,
@@ -62,7 +63,7 @@ def _make_result(**overrides: object) -> SpreadResult:
         "order_ids": (),
     }
     defaults.update(overrides)
-    return SpreadResult(**defaults)  # type: ignore[arg-type]
+    return SpreadResult(**defaults)
 
 
 @pytest_asyncio.fixture

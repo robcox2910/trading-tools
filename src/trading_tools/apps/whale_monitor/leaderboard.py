@@ -115,20 +115,21 @@ async def _resolve_events_to_condition_ids(
 
     if slugs:
         raw_event_lists = await asyncio.gather(
-            *(client._gamma.get_events(slug=slug, active=False, limit=50) for slug in slugs),  # type: ignore[reportPrivateUsage]
+            *(client.gamma.get_events(slug=slug, active=False, limit=50) for slug in slugs),
             return_exceptions=True,
         )
         for slug, result in zip(slugs, raw_event_lists, strict=True):
             if isinstance(result, Exception):
                 logger.warning("Failed to resolve slug '%s': %s", slug, result)
                 continue
-            for event_raw in cast("list[dict[str, object]]", result):
+            event_list = cast("list[dict[str, object]]", result)
+            for event_raw in event_list:
                 markets = cast("list[dict[str, object]]", event_raw.get("markets", []))
                 for market_raw in markets:
                     cid = str(market_raw.get("conditionId") or market_raw.get("condition_id", ""))
                     if cid:
                         condition_ids.add(cid.lower())
-            if not result:  # type: ignore[union-attr]
+            if not event_list:
                 logger.warning("No Gamma events found for slug '%s'", slug)
 
     logger.info(
@@ -202,8 +203,8 @@ def _compute_pnl(trades: list[dict[str, object]]) -> tuple[float, float, int]:
     pnl = 0.0
     volume = 0.0
     for trade in trades:
-        size = float(trade.get("size") or 0)  # type: ignore[arg-type]
-        price = float(trade.get("price") or 0)  # type: ignore[arg-type]
+        size = float(str(trade.get("size") or 0))
+        price = float(str(trade.get("price") or 0))
         notional = size * price
         volume += notional
         if str(trade.get("side", "")).upper() == "SELL":

@@ -226,7 +226,7 @@ class TestTickCollectorEndToEnd:
             _make_trade_event(price="0.72"),
         ]
 
-        async def _mock_stream(asset_ids: list[str]) -> Any:  # noqa: ARG001
+        async def _mock_stream(asset_ids: list[str]) -> Any:
             for event in events:
                 yield event
 
@@ -276,7 +276,7 @@ class TestTickCollectorEndToEnd:
         """Verify shutdown flushes any remaining buffered ticks."""
         config = _make_config(flush_batch_size=100)
 
-        async def _mock_stream(asset_ids: list[str]) -> Any:  # noqa: ARG001
+        async def _mock_stream(asset_ids: list[str]) -> Any:
             yield _make_trade_event()
             # Simulate shutdown after one event
             collector._shutdown.request()
@@ -637,7 +637,7 @@ class TestPeriodicTasks:
             # Patch sleep to run once then shut down
             call_count = 0
 
-            async def fast_sleep(delay: float) -> None:  # noqa: ARG001
+            async def fast_sleep(delay: float) -> None:
                 nonlocal call_count
                 call_count += 1
                 if call_count > 1:
@@ -663,7 +663,7 @@ class TestPeriodicTasks:
 
         call_count = 0
 
-        async def fast_sleep(delay: float) -> None:  # noqa: ARG001
+        async def fast_sleep(delay: float) -> None:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
@@ -695,7 +695,7 @@ class TestPeriodicTasks:
 
         call_count = 0
 
-        async def fast_sleep(delay: float) -> None:  # noqa: ARG001
+        async def fast_sleep(delay: float) -> None:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
@@ -720,7 +720,7 @@ class TestPeriodicTasks:
 
         call_count = 0
 
-        async def fast_sleep(delay: float) -> None:  # noqa: ARG001
+        async def fast_sleep(delay: float) -> None:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
@@ -833,7 +833,7 @@ class TestBookPollingBufferAndFlush:
 
         call_count = 0
 
-        async def fast_sleep(delay: float) -> None:  # noqa: ARG001
+        async def fast_sleep(delay: float) -> None:
             nonlocal call_count
             call_count += 1
             if call_count > 1:
