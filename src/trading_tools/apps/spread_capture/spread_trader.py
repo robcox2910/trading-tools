@@ -1324,9 +1324,13 @@ class SpreadTrader:
         return max(level.price for level in book.bids)
 
     async def _record_expired_loss(
-        self, cid: str, pos: PairedPosition, *, up_still_open: bool, now: int
+        self, cid: str, pos: PairedPosition, *, up_still_open: bool
     ) -> None:
-        """Record a loss when a pending position expires with one side filled.
+        """Transition an expired pending position with one side filled to SINGLE_LEG.
+
+        Instead of recording an immediate total loss, keep the position so
+        ``_settle_expired_positions()`` can resolve the outcome via Binance
+        and compute the actual P&L (win $0.70 or lose $0.30 on a $0.30 bet).
 
         Args:
             cid: Condition ID.
@@ -1344,33 +1348,46 @@ class SpreadTrader:
             return
 
         filled_side = "Down" if up_still_open else "Up"
-        filled_leg = pos.down_leg if up_still_open else pos.up_leg
-        cost = filled_leg.cost_basis if filled_leg else ZERO
-        result = SpreadResult(
-            opportunity=pos.opportunity,
-            state=PositionState.SETTLED,
-            up_entry=pos.up_leg.entry_price,
-            up_qty=pos.up_leg.quantity,
-            down_entry=pos.down_leg.entry_price if pos.down_leg else None,
-            down_qty=pos.down_leg.quantity if pos.down_leg else None,
-            total_cost_basis=cost,
-            entry_time=pos.entry_time,
-            exit_time=now,
-            winning_side=None,
-            pnl=ZERO - cost,
-            is_paper=pos.is_paper,
-            outcome_known=False,
-        )
-        self._results.append(result)
-        await self._persist_result(result)
-        self._record_loss()
+        # Transition to SINGLE_LEG so normal settlement handles the outcome
+        pos.state = PositionState.SINGLE_LEG
+        if up_still_open:
+            pos.down_leg = pos.down_leg  # keep filled Down leg
+        else:
+            pos.down_leg = None  # drop unfilled Down leg
+        pos.pending_up_order_id = None
+        pos.pending_down_order_id = None
         logger.info(
-            "LIVE EXPIRED-LOSS %s %s filled, cost=$%.4f asset=%s",
+            "LIVE SINGLE-LEG %s %s filled at expiry, awaiting settlement asset=%s",
             cid[:12],
             filled_side,
-            cost,
             pos.opportunity.asset,
         )
+
+    async def _handle_expired_pending(
+        self,
+        cid: str,
+        pos: PairedPosition,
+        *,
+        up_still_open: bool,
+        down_still_open: bool,
+    ) -> None:
+        """Handle a pending position whose market window has expired.
+
+        Cancel open orders, then either transition single-filled positions
+        to SINGLE_LEG for proper settlement, or remove unfilled positions.
+
+        Args:
+            cid: Condition ID.
+            pos: The expired pending position.
+            up_still_open: Whether the Up order is still open.
+            down_still_open: Whether the Down order is still open.
+
+        """
+        await self._cancel_pending_orders(pos, up_open=up_still_open, down_open=down_still_open)
+        await self._record_expired_loss(cid, pos, up_still_open=up_still_open)
+        if pos.state != PositionState.SINGLE_LEG:
+            self._settled_cids.add(cid)
+            del self._positions[cid]
 
     async def _manage_pending_orders(self) -> None:
         """Check fill status of pending GTC limit orders and transition states.
@@ -1421,14 +1438,11 @@ class SpreadTrader:
                 and pos.pending_down_order_id in open_order_ids
             )
 
-            # Market about to expire — cancel everything
+            # Market about to expire — cancel and handle
             if pos.opportunity.window_end_ts <= now:
-                await self._cancel_pending_orders(
-                    pos, up_open=up_still_open, down_open=down_still_open
+                await self._handle_expired_pending(
+                    cid, pos, up_still_open=up_still_open, down_still_open=down_still_open
                 )
-                await self._record_expired_loss(cid, pos, up_still_open=up_still_open, now=now)
-                self._settled_cids.add(cid)
-                del self._positions[cid]
                 continue
 
             # Both filled — transition to PAIRED
