@@ -1037,15 +1037,18 @@ class SpreadTrader:
             logger.debug("Hedge order failed for %s %s", cid[:12], unfilled_side)
             return False
 
-        if resp is None or resp.filled <= ZERO:
+        if resp is None:
             return False
 
+        # Always transition to PAIRED after placing a hedge order, even if
+        # not immediately filled.  This prevents the hedge from firing again
+        # on the next poll cycle and placing duplicate orders.
         hedge_leg = SideLeg(
             side=unfilled_side,
-            entry_price=resp.price,
-            quantity=resp.filled,
-            cost_basis=resp.price * resp.filled,
-            order_ids=[resp.order_id],
+            entry_price=hedge_ask,
+            quantity=qty,
+            cost_basis=hedge_ask * qty,
+            order_ids=[resp.order_id] if resp.order_id else [],
         )
         self._apply_hedge_to_position(pos, unfilled_side, hedge_leg)
         return True
