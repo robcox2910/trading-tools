@@ -512,9 +512,14 @@ class SpreadTrader:
         """
         bid_up = self.config.maker_bid_up
         bid_down = self.config.maker_bid_down
-        qty = self.config.maker_order_size
-
         combined = bid_up + bid_down
+
+        # Scale order size with capital, floored by maker_order_size minimum
+        capital = self._get_capital()
+        spend = capital * self.config.max_position_pct
+        scaled_qty = (spend / combined).quantize(Decimal("0.01"))
+        qty = max(scaled_qty, self.config.maker_order_size)
+        qty = max(qty, _MIN_TOKEN_QTY)
         if combined >= ONE:
             logger.warning("SKIP %s: combined bid %.4f >= 1.00", opp.condition_id[:12], combined)
             return
