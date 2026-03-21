@@ -76,7 +76,8 @@ def _make_trader(**overrides: Any) -> SpreadTrader:
     """Create a SpreadTrader with mock client and sensible defaults."""
     config = overrides.pop("config", _make_config())
     client = overrides.pop("client", AsyncMock())
-    return SpreadTrader(config=config, live=False, client=client, **overrides)
+    live = overrides.pop("live", False)
+    return SpreadTrader(config=config, live=live, client=client, **overrides)
 
 
 @pytest.mark.asyncio
@@ -338,7 +339,7 @@ class TestPendingOrderManagement:
         client = AsyncMock()
         # No open orders -- both filled
         client.get_open_orders = AsyncMock(return_value=[])
-        trader = _make_trader(client=client)
+        trader = _make_trader(client=client, live=True)
 
         opp = _make_opportunity()
         up_leg = SideLeg(
@@ -376,7 +377,7 @@ class TestPendingOrderManagement:
         client.get_open_orders = AsyncMock(return_value=[open_order])
         client.cancel_order = AsyncMock()
         config = _make_config(single_leg_timeout=10)
-        trader = _make_trader(config=config, client=client)
+        trader = _make_trader(config=config, client=client, live=True)
 
         opp = _make_opportunity()
         up_leg = SideLeg(
@@ -418,7 +419,7 @@ class TestPendingOrderManagement:
         client.get_open_orders = AsyncMock(return_value=[open_up, open_down])
         client.cancel_order = AsyncMock()
         config = _make_config(single_leg_timeout=10)
-        trader = _make_trader(config=config, client=client)
+        trader = _make_trader(config=config, client=client, live=True)
 
         opp = _make_opportunity()
         up_leg = SideLeg(
@@ -453,7 +454,7 @@ class TestPendingOrderManagement:
         open_down.order_id = "order_down_1"
         client.get_open_orders = AsyncMock(return_value=[open_up, open_down])
         client.cancel_order = AsyncMock()
-        trader = _make_trader(client=client)
+        trader = _make_trader(client=client, live=True)
 
         # Market already expired
         opp = _make_opportunity(window_end_ts=_NOW - 1)
@@ -483,7 +484,7 @@ class TestPendingOrderManagement:
     async def test_no_pending_positions_is_noop(self) -> None:
         """No-op when there are no PENDING positions."""
         client = AsyncMock()
-        trader = _make_trader(client=client)
+        trader = _make_trader(client=client, live=True)
 
         await trader._manage_pending_orders()
 

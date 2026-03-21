@@ -1374,7 +1374,7 @@ class SpreadTrader:
             await self._maybe_hedge_maker_positions()
             await self._maybe_take_profit_maker()
 
-        if self.client is None:
+        if self.client is None or not self.live:
             return
 
         pending = [
