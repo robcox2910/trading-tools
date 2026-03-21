@@ -1074,8 +1074,8 @@ class SpreadTrader:
             return
 
         now = int(time.time())
-        hedge_age = self.config.maker_hedge_age_pct
         max_combined = self.config.maker_max_hedge_combined
+        hedge_window = 90  # Start hedging in the last 90 seconds
 
         candidates = [
             (cid, pos)
@@ -1086,11 +1086,8 @@ class SpreadTrader:
 
         for cid, pos in candidates:
             opp = pos.opportunity
-            window_duration = opp.window_end_ts - opp.window_start_ts
-            if window_duration <= 0:
-                continue
-            elapsed_pct = Decimal(str(now - opp.window_start_ts)) / Decimal(str(window_duration))
-            if elapsed_pct < hedge_age:
+            remaining = opp.window_end_ts - now
+            if remaining > hedge_window:
                 continue
 
             up_filled = pos.pending_up_order_id is None
@@ -1113,24 +1110,20 @@ class SpreadTrader:
             )
             combined = filled_bid + hedge_ask
 
-            # Scale hedge ceiling with elapsed time. Later in the window the
-            # Binance signal is more accurate (85-90%), making expensive hedges
-            # worthwhile. At 60% elapsed accept $0.98, at 100% accept $1.15.
+            # Linear scale: at 90s accept $0.98, at 0s accept $1.15.
             max_extra = Decimal("0.17")
-            time_range = ONE - hedge_age
-            if time_range > ZERO:
-                progress = min((elapsed_pct - hedge_age) / time_range, ONE)
-            else:
-                progress = ONE
+            progress = (
+                ONE - Decimal(str(remaining)) / Decimal(hedge_window) if remaining > 0 else ONE
+            )
             effective_max = max_combined + max_extra * progress
 
             if combined >= effective_max:
                 logger.debug(
-                    "HEDGE SKIP %s: combined=%.4f >= max %.4f (elapsed=%.0f%%)",
+                    "HEDGE SKIP %s: combined=%.4f >= max %.4f (remaining=%ds)",
                     cid[:12],
                     combined,
                     effective_max,
-                    elapsed_pct * 100,
+                    remaining,
                 )
                 continue
 

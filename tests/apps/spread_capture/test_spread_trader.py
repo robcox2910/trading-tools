@@ -1086,21 +1086,21 @@ class TestMakerHedge:
         pos = trader._positions["cond_a"]
         assert pos.state == PositionState.PENDING
 
-    async def test_hedge_skipped_before_age_threshold(self) -> None:
-        """No hedge when not enough of the window has elapsed."""
-        config = _make_hedge_config(maker_hedge_age_pct=Decimal("0.80"))
+    async def test_hedge_skipped_before_time_threshold(self) -> None:
+        """No hedge when more than 90 seconds remaining in window."""
+        config = _make_hedge_config()
         client = AsyncMock()
         trader = _make_trader(config=config, client=client)
 
         _, pos = _make_pending_position_with_one_fill(filled_side="Down")
         trader._positions["cond_a"] = pos
 
-        # Window is 70% elapsed which is below the 80% hedge threshold
+        early_time = _HEDGE_WINDOW_END - 120
         with (
             patch.object(trader, "_get_binance_direction", return_value="Up"),
             patch("trading_tools.apps.spread_capture.spread_trader.time") as mock_time,
         ):
-            mock_time.time.return_value = _HEDGE_NOW
+            mock_time.time.return_value = early_time
             await trader._maybe_hedge_maker_positions()
 
         pos = trader._positions["cond_a"]
