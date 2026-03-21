@@ -8,7 +8,6 @@ not blocked by slow Polygon transactions.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -24,6 +23,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MIN_ORDER_SIZE = Decimal(5)
+
+
+def _empty_cid_set() -> set[str]:
+    """Return an empty set for dataclass default_factory."""
+    return set()
 
 
 @dataclass
@@ -45,19 +49,19 @@ class PositionRedeemer:
     client: PolymarketClient
     min_order_size: Decimal = _DEFAULT_MIN_ORDER_SIZE
     _task: asyncio.Task[None] | None = field(default=None, repr=False)
+    _redeemed_cids: set[str] = field(default_factory=_empty_cid_set, repr=False)
 
     async def redeem_if_available(self) -> None:
         """Discover redeemable positions and spawn background CTF redemption.
 
-        Cancel any in-flight redemption task before starting a new one.
-        Positions below ``min_order_size`` are logged and skipped.
-        Discovery errors are caught and logged without propagation.
+        Skip condition IDs that have already been submitted for redemption
+        to prevent duplicate on-chain calls.  Wait for an in-flight task
+        to finish before starting a new one.  Positions below
+        ``min_order_size`` are logged and skipped.  Discovery errors are
+        caught and logged without propagation.
         """
         if self._task is not None and not self._task.done():
-            logger.info("AUTO-REDEEM: cancelling previous redemption task")
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+            return
 
         try:
             redeemable = await self.client.get_redeemable_positions()
@@ -68,9 +72,10 @@ class PositionRedeemer:
         if not redeemable:
             return
 
-        logger.info("AUTO-REDEEM: found %d redeemable positions", len(redeemable))
         condition_ids: list[str] = []
         for pos in redeemable:
+            if pos.condition_id in self._redeemed_cids:
+                continue
             if pos.size < self.min_order_size:
                 logger.info(
                     "REDEEM skip %s: size=%s below minimum %s",
@@ -84,6 +89,8 @@ class PositionRedeemer:
         if not condition_ids:
             return
 
+        logger.info("AUTO-REDEEM: found %d new redeemable positions", len(condition_ids))
+        self._redeemed_cids.update(condition_ids)
         self._task = asyncio.create_task(self._redeem_on_chain(condition_ids))
 
     async def _redeem_on_chain(self, condition_ids: list[str]) -> None:
