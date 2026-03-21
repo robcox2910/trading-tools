@@ -1090,10 +1090,11 @@ class SpreadTrader:
             unfilled_side = "Down" if up_filled else "Up"
 
             direction = await self._get_binance_direction(opp, now)
-            if direction is None or direction != unfilled_side:
-                continue
-
-            hedge_ask = await self._get_hedge_ask(cid, pos, unfilled_side)
+            hedge_ask = (
+                await self._get_hedge_ask(cid, pos, unfilled_side)
+                if direction == unfilled_side
+                else None
+            )
             if hedge_ask is None:
                 continue
 
@@ -1149,6 +1150,11 @@ class SpreadTrader:
                     cid, pos, unfilled_token_id, unfilled_side, hedge_ask, qty
                 ):
                     continue
+
+            # Cancel all resting orders to prevent the filled side's GTC
+            # from accumulating more fills after the hedge.
+            if not pos.is_paper:
+                await self._cancel_orders_for_market(opp)
 
             mode = "PAPER" if pos.is_paper else "LIVE"
             logger.info(
@@ -1260,9 +1266,8 @@ class SpreadTrader:
             else:
                 continue
 
-            # Cancel the unfilled side's resting order
-            unfilled_order_id = pos.pending_down_order_id if up_filled else pos.pending_up_order_id
-            await self._cancel_order_safe(unfilled_order_id)
+            # Cancel BOTH sides' resting orders to prevent overfill
+            await self._cancel_orders_for_market(opp)
 
             result = SpreadResult(
                 opportunity=opp,
