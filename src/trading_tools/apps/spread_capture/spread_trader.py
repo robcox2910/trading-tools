@@ -65,6 +65,11 @@ def _empty_position_dict() -> dict[str, PairedPosition]:
     return {}
 
 
+def _empty_str_set() -> set[str]:
+    """Return an empty set for dataclass default_factory."""
+    return set()
+
+
 def _empty_result_list() -> list[SpreadResult]:
     """Return an empty list for dataclass default_factory."""
     return []
@@ -91,6 +96,7 @@ class SpreadTrader:
     _scanner: MarketScanner | None = field(default=None, repr=False)
     _binance: BinanceClient | None = field(default=None, repr=False)
     _positions: dict[str, PairedPosition] = field(default_factory=_empty_position_dict, repr=False)
+    _settled_cids: set[str] = field(default_factory=_empty_str_set, init=False, repr=False)
     _results: list[SpreadResult] = field(default_factory=_empty_result_list, repr=False)
     _poll_count: int = field(default=0, repr=False)
     _shutdown: GracefulShutdown = field(default_factory=GracefulShutdown, init=False, repr=False)
@@ -321,7 +327,8 @@ class SpreadTrader:
         # Attempt early exit for single-leg positions
         await self._manage_single_leg_positions()
 
-        opportunities = await self._scanner.scan(set(self._positions.keys()))
+        exclude_cids = set(self._positions.keys()) | self._settled_cids
+        opportunities = await self._scanner.scan(exclude_cids)
 
         for opp in opportunities:
             if len(self._positions) >= self.config.max_open_positions:
@@ -482,6 +489,7 @@ class SpreadTrader:
                 )
                 self._results.append(result)
                 await self._persist_result(result)
+                self._settled_cids.add(cid)
                 del self._positions[cid]
                 logger.info(
                     "LIVE UNWIND %s single-leg early exit pnl=%.4f",
@@ -880,6 +888,7 @@ class SpreadTrader:
         now = int(time.time())
         for cid, pos in pending:
             if pos.opportunity.window_end_ts <= now:
+                self._settled_cids.add(cid)
                 del self._positions[cid]
                 logger.info("PAPER EXPIRED %s: market expired while pending", cid[:12])
                 continue
@@ -1273,6 +1282,7 @@ class SpreadTrader:
             )
             self._results.append(result)
             await self._persist_result(result)
+            self._settled_cids.add(cid)
             del self._positions[cid]
 
             mode = "PAPER" if pos.is_paper else "LIVE"
@@ -1409,6 +1419,7 @@ class SpreadTrader:
                     pos, up_open=up_still_open, down_open=down_still_open
                 )
                 await self._record_expired_loss(cid, pos, up_still_open=up_still_open, now=now)
+                self._settled_cids.add(cid)
                 del self._positions[cid]
                 continue
 
@@ -1474,6 +1485,7 @@ class SpreadTrader:
                     pos.opportunity.down_token_id, pos.down_leg
                 )
                 if unwind_pnl != ZERO:
+                    self._settled_cids.add(cid)
                     del self._positions[cid]
                     logger.info(
                         "LIVE UNWIND %s: Up timed out, sold Down pnl=%.4f", cid[:12], unwind_pnl
@@ -1485,6 +1497,7 @@ class SpreadTrader:
             await self._cancel_order_safe(pos.pending_down_order_id)
             unwind_pnl = await self._unwind_filled_leg(pos.opportunity.up_token_id, pos.up_leg)
             if unwind_pnl != ZERO:
+                self._settled_cids.add(cid)
                 del self._positions[cid]
                 logger.info(
                     "LIVE UNWIND %s: Down timed out, sold Up pnl=%.4f", cid[:12], unwind_pnl
@@ -1495,6 +1508,7 @@ class SpreadTrader:
             logger.warning("LIVE SINGLE-LEG %s: Down order timed out, Up filled", cid[:12])
         else:
             await self._cancel_pending_orders(pos, up_open=up_still_open, down_open=down_still_open)
+            self._settled_cids.add(cid)
             del self._positions[cid]
             logger.warning("LIVE CANCELLED %s: both orders timed out", cid[:12])
             return True
@@ -1578,6 +1592,7 @@ class SpreadTrader:
         ]
 
         for cid in expired:
+            self._settled_cids.add(cid)
             pos = self._positions.pop(cid)
 
             # Use live resolution when in live mode
